@@ -55,3 +55,6 @@ jobs:
 
       - name: No em dash in tracked files
         run: ./ci/check-no-em-dash.sh
+
+      - name: No conflict markers in tracked files
+        run: ./ci/check-no-conflict-markers.sh
