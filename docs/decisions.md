@@ -98,4 +98,16 @@ Measured on 2026-10-09 on commit `d664f1d`, release build, against the synthetic
 | Idle repaints, zero | 0 frames in 10 s (real binary); 0 of 100 idle frames (headless, WebSocket live, 50 listens) | Real binary counts its `void_oscq::frame` trace lines. Headless, a tree appearing starts egui's scroll bar fade in, 13 frames, before idle | Within |
 | Slider drag to UDP packet leaving the socket, under 2 ms | median 0.54 ms, p95 0.88 ms, max 4.41 ms, 300 sends | `budget_slider_to_udp_packet`: a keyboard step on the slider of `/g0/p0`, from the frame that reads the key to the packet received on loopback, through the real service and WebSocket session; an upper bound of the packet leaving | Within |
 | Resident memory with 5000 nodes connected, under 150 MB | 166.1, 166.5, 168.7 MB with wgpu's default backends; 145.8 MB with `WGPU_BACKEND=vulkan`; 145.7 MB with `WGPU_BACKEND=gl` | Real binary, `VmRSS`. Same window with no tree: 130.7 MB (Vulkan), 135.4 MB (GL). The 5000 nodes cost 10 to 15 MB; the rest is the software renderer, and the defaults load both Vulkan and GL here | Over with the defaults in this container; not measured on macOS, where wgpu uses Metal |
-| Release binary size, macOS aarch64, under 25 MB | not measured here; Linux x86_64: 39 080 960 bytes, 37.3 MB | `ci/binary-size.sh`, also run in CI on macOS | See the CI measurements below |
+| Release binary size, macOS aarch64, under 25 MB | 23 594 704 bytes, 22.5 MB, in CI on `macos-latest`; here, Linux x86_64: 39 080 960 bytes, 37.3 MB | `ci/binary-size.sh` on the release build | Within on macOS aarch64 |
+
+Measured in CI on GitHub hosted runners, release build, Rust 1.99.0, job `budgets`. Code of commit `d664f1d`: run 37950457503 for macOS, run 37950653368 (commit `513b040`, documentation only on top) for Linux and Windows. Virtual machines without a display; the real binary test does not run there.
+
+| Budget | macOS aarch64 (`macos-latest`) | Linux x86_64 (`ubuntu-22.04`) | Windows x86_64 (`windows-latest`) |
+| --- | --- | --- | --- |
+| Parse and model 5000 nodes, under 150 ms | median 7.37, p95 8.42, max 9.46 ms | median 6.82, p95 6.92, max 7.91 ms | median 17.33, p95 19.79, max 23.06 ms |
+| Frame while scrolling 5050 rows, under 8 ms at p95 | median 0.30, p95 0.71, max 1.15 ms | median 0.36, p95 0.37, max 0.41 ms | median 0.38, p95 0.45, max 1.37 ms |
+| Idle repaints, zero | 0 of 100 | 0 of 100 | 0 of 100 |
+| Slider to UDP packet, under 2 ms | median 0.32, p95 0.61, max 1.01 ms | median 0.25, p95 0.30, max 0.36 ms | median 0.33, p95 0.55, max 15.51 ms |
+| Release binary size | 23 594 704 bytes, 22.5 MB, within 25 MB | 39 022 192 bytes, 37.2 MB | 22 717 952 bytes, 21.7 MB |
+
+Not measured anywhere yet: cold start, idle CPU and resident memory on macOS and Windows, which need the real binary test run with a display, and GPU frame time.
