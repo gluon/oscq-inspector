@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 mdns-sd = "0.21.5"
+oscq-core = { version = "0.1.0", path = "../oscq-core" }
 thiserror = "2.0.21"
 tracing = "0.1.44"
 

@@ -1,0 +1,21 @@
+{
+	"FULL_PATH": "/",
+	"CONTENTS": {
+		"bang": {
+			"FULL_PATH": "/bang",
+			"DESCRIPTION": "no CONTENTS and no TYPE: a method that takes no value"
+		},
+		"group": {
+			"FULL_PATH": "/group",
+			"TYPE": "f",
+			"VALUE": [0.5],
+			"CONTENTS": {
+				"child": {"FULL_PATH": "/group/child", "TYPE": "i"}
+			}
+		},
+		"empty_container": {
+			"FULL_PATH": "/empty_container",
+			"CONTENTS": {}
+		}
+	}
+}

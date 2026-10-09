@@ -1,0 +1,11 @@
+{
+	"FULL_PATH": "/",
+	"CONTENTS": {
+		"with space": {"FULL_PATH": "/with space", "TYPE": "f"},
+		"hash#tag": {"FULL_PATH": "/hash#tag", "TYPE": "f"},
+		"star*": {"FULL_PATH": "/star*", "TYPE": "f"},
+		"café": {"FULL_PATH": "/café", "TYPE": "f"},
+		"ctrl": {"FULL_PATH": "/ctrl\u0001", "TYPE": "f"},
+		"ok": {"FULL_PATH": "/ok", "TYPE": "f"}
+	}
+}

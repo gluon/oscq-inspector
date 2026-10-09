@@ -1,0 +1,14 @@
+{
+	"FULL_PATH": "/grouped",
+	"ACCESS": 3,
+	"TYPE": "i[ff]i",
+	"VALUE": [100, [1.0, 1.0], 100],
+	"RANGE": [
+		{"MIN": 0, "MAX": 100},
+		[{"MIN": 0.0, "MAX": 1.0}, {"MIN": 0.0, "MAX": 1.0}],
+		{"MIN": 0, "MAX": 100}
+	],
+	"UNIT": ["distance.mm", ["distance.miles", "distance.miles"], "distance.mm"],
+	"EXTENDED_TYPE": ["position.cartesian.x", ["position.cartesian.y", "position.cartesian.z"], "position.cartesian.x"],
+	"CLIPMODE": ["none", ["low", "high"], "both"]
+}

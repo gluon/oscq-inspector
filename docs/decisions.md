@@ -19,3 +19,22 @@ One line per decision. Newest entries at the bottom. A dependency not listed in 
 | 2026-10-09 | Versions added with `cargo add`, `Cargo.lock` committed, CI runs with `--locked` | Exact resolved versions live in the lock file, not in the PRD (PRD 5) |
 | 2026-10-09 | `clippy::unwrap_used` denied workspace wide, allowed in tests via `clippy.toml` | Enforces "No `unwrap` outside tests" (PRD 11) as a gate rather than a review rule |
 | 2026-10-09 | All crates `publish = false` | Crate name to be verified again before any publication (PRD header) |
+| 2026-10-09 | PRD amended with the rulings on the M0 discrepancies; `crossbeam-channel` and `url` added to the PRD 5 table | Human ruling: the proposal wins, VVOSCQueryProtocol wins where the proposal contradicts itself |
+| 2026-10-09 | `oscq-discovery` depends on `oscq-core`, never the reverse | Human ruling, shared types live in `oscq-core` (PRD 6.1) |
+| 2026-10-09 | `serde_json` feature `unbounded_depth`, with a non recursive depth scan rejecting JSON nested deeper than 160 before parsing | The default limit of 128 is below the 64 node cap (each node nests twice); the scan bounds stack use instead. Parsing at the limit is tested on a 512 KiB stack |
+| 2026-10-09 | Nodes deeper than 64 keep an empty `CONTENTS` and get a `DepthLimit` diagnostic | PRD 11 "cap depth at 64 and report": the rest of the tree stays browsable |
+| 2026-10-09 | Problems that do not prevent parsing are diagnostics, not errors; the offending raw value is kept in `extra` | PRD 7.1 "render what is there"; the raw body is also kept whole for the JSON tab |
+| 2026-10-09 | Missing `FULL_PATH` is derived from the parent path and the child key, with a diagnostic; not reported on `OVERLOADS` entries | The proposal's own `OVERLOADS` example and OSCQuery Helper's sample document carry no `FULL_PATH` |
+| 2026-10-09 | A node with both `CONTENTS` and `TYPE` is a container and a method | Not ruled by the human. VVOSCQueryProtocol nodes carry both, and Vidvox oscqueryhtml treats such a node as a control (`test/extract.js`, "has contents and type", commit `ca25041`) |
+| 2026-10-09 | OSC addresses validated strictly against OSC 1.0: printable ASCII, none of `space # * , / ? [ ] { }`, no empty part | PRD 11 case "characters legal in JSON but not in OSC"; such nodes are shown and never sent to |
+| 2026-10-09 | `TYPE` accepts one leading `,`; array groups nested deeper than 16 are rejected | The wire form of a type tag string starts with `,`; the cap bounds every recursion over a signature |
+| 2026-10-09 | Coercion: a non integral number sent to `i` or `h` is rounded to nearest, ties away from zero, then range checked | PRD 7.5 "never send a float where the node declared an int"; the rounding rule is this project's choice |
+| 2026-10-09 | `S` (symbol) is refused on send | `rosc` 0.11 has no symbol type; sending it as `s` would change the type tag |
+| 2026-10-09 | `OSC_TRANSPORT` compared case insensitively; any other value is a diagnostic and UDP is assumed | The proposal defines `"TCP"` and `"UDP"` only; VVOSCQueryProtocol falls back to UDP |
+| 2026-10-09 | `OSC_PORT` present but not a valid port makes the server not controllable, it is not inferred | The ruling infers the port only when the key is absent |
+| 2026-10-09 | Ports given as numeric strings are accepted | VVOSCQueryProtocol client does the same (`VVOSCQueryRemoteServer.mm`) |
+| 2026-10-09 | An attribute query answered 200 with keys other than the queried one is treated like an empty object | A server that ignores the query must not be reported as broken |
+| 2026-10-09 | HTTP client: no proxy, connect timeout 3 s, request timeout 10 s, body cap 64 MB | OSCQuery servers are on the LAN, a system proxy would misroute; the timeouts are this project's choice |
+| 2026-10-09 | OSC destination resolution prefers IPv4, falls back to the first address | Matches the discovery preference in PRD 8.2 |
+| 2026-10-09 | `CONTENTS` children are kept sorted by name | `serde_json` without `preserve_order` does not keep server order; enabling it would add `indexmap` |
+| 2026-10-09 | Dev dependencies of `oscq-core`: `anyhow` for the example, `tokio` features `macros` and `io-util` for the synthetic server | `anyhow` is in PRD 5 for binary boundaries; no new crate |
