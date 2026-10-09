@@ -28,6 +28,14 @@ Linux build dependencies, as installed in CI:
 sudo apt-get install -y libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
 ```
 
+## Discover servers
+
+`oscq_discover` lists OSCQuery and OSC servers live, with each address and the interface it was seen on, and a summary two seconds after start:
+
+```
+cargo run -p oscq-discovery --example oscq_discover
+```
+
 ## Probe a server
 
 `oscq_probe` prints the `HOST_INFO` summary and the full tree of a server, and can send one value:
@@ -43,9 +51,11 @@ Arguments are parsed against the node's `TYPE`, one per top level type tag.
 
 - M0, protocol groundwork: done, merged.
 - M1, core client: implemented on branch `void/m1-core`. `cargo test` covers the parser, `HOST_INFO`, attribute queries and UDP sending against a synthetic server. Not yet proven against a running OSCQuery Helper.
+- M2, discovery: implemented on branch `void/m2-discovery`. `cargo test` covers deduplication, stale marking, address order, manual history, and real mDNS on the build machine, including a server killed without a goodbye. Not yet proven on the human's LAN.
 
 Backlog:
 
 - M1 acceptance on the human's machine: `oscq_probe` against OSCQuery Helper, and the value received by the Helper's target.
 - Real captured documents from VDMX, OSCQuery Helper and ossia in `tests/fixtures/captured/`, PRD 12.
-- M2 discovery, M3 application, M4 WebSocket and performance, M5 release, as in PRD 14.
+- M2 acceptance on the human's LAN: `oscq_discover` lists OSCQuery Helper as exactly one entry within two seconds.
+- M3 application, M4 WebSocket and performance, M5 release, as in PRD 14.

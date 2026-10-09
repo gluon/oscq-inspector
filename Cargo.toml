@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.dependencies]
-flume = { version = "0.12.0", default-features = false, features = ["async"] }
+flume = { version = "0.12.0", default-features = false, features = ["async", "select"] }
 
 [workspace.lints.clippy]
 unwrap_used = "deny"
