@@ -1,0 +1,210 @@
+{
+    "FULL_PATH": "/",
+    "CONTENTS": {
+        "test": {
+            "FULL_PATH": "/test",
+            "CONTENTS": {
+                "param": {
+                    "FULL_PATH": "/test/param",
+                    "CONTENTS": {
+                        "gain": {
+                            "FULL_PATH": "/test/param/gain",
+                            "CONTENTS": {
+                                "longname": {
+                                    "FULL_PATH": "/test/param/gain/longname",
+                                    "TYPE": "s",
+                                    "ACCESS": 1,
+                                    "VALUE": [ "gain" ]
+                                },
+                                "shortname": {
+                                    "FULL_PATH": "/test/param/gain/shortname",
+                                    "TYPE": "s",
+                                    "ACCESS": 1,
+                                    "VALUE": [ "gain" ]
+                                },
+                                "scriptname": {
+                                    "FULL_PATH": "/test/param/gain/scriptname",
+                                    "TYPE": "s",
+                                    "ACCESS": 1,
+                                    "VALUE": [ "gain" ]
+                                },
+                                "type": {
+                                    "FULL_PATH": "/test/param/gain/type",
+                                    "TYPE": "s",
+                                    "ACCESS": 1,
+                                    "VALUE": [ "float" ]
+                                },
+                                "visibility": {
+                                    "FULL_PATH": "/test/param/gain/visibility",
+                                    "TYPE": "s",
+                                    "ACCESS": 1,
+                                    "VALUE": [ "automated" ]
+                                },
+                                "min": {
+                                    "FULL_PATH": "/test/param/gain/min",
+                                    "TYPE": "d",
+                                    "ACCESS": 1,
+                                    "VALUE": [ 0.0 ]
+                                },
+                                "max": {
+                                    "FULL_PATH": "/test/param/gain/max",
+                                    "TYPE": "d",
+                                    "ACCESS": 1,
+                                    "VALUE": [ 127.0 ]
+                                },
+                                "exponent": {
+                                    "FULL_PATH": "/test/param/gain/exponent",
+                                    "TYPE": "d",
+                                    "ACCESS": 1,
+                                    "VALUE": [ 1.0 ]
+                                },
+                                "raw": {
+                                    "FULL_PATH": "/test/param/gain/raw",
+                                    "TYPE": "d",
+                                    "ACCESS": 3,
+                                    "VALUE": [ 0.0 ]
+                                },
+                                "normalized": {
+                                    "FULL_PATH": "/test/param/gain/normalized",
+                                    "TYPE": "d",
+                                    "ACCESS": 3,
+                                    "VALUE": [ 0.0 ]
+                                }
+                            }
+                        },
+                        "freq": {
+                            "FULL_PATH": "/test/param/freq",
+                            "CONTENTS": {
+                                "longname": {
+                                    "FULL_PATH": "/test/param/freq/longname",
+                                    "TYPE": "s",
+                                    "ACCESS": 1,
+                                    "VALUE": [ "freq" ]
+                                },
+                                "shortname": {
+                                    "FULL_PATH": "/test/param/freq/shortname",
+                                    "TYPE": "s",
+                                    "ACCESS": 1,
+                                    "VALUE": [ "freq" ]
+                                },
+                                "scriptname": {
+                                    "FULL_PATH": "/test/param/freq/scriptname",
+                                    "TYPE": "s",
+                                    "ACCESS": 1,
+                                    "VALUE": [ "freq" ]
+                                },
+                                "type": {
+                                    "FULL_PATH": "/test/param/freq/type",
+                                    "TYPE": "s",
+                                    "ACCESS": 1,
+                                    "VALUE": [ "float" ]
+                                },
+                                "visibility": {
+                                    "FULL_PATH": "/test/param/freq/visibility",
+                                    "TYPE": "s",
+                                    "ACCESS": 1,
+                                    "VALUE": [ "automated" ]
+                                },
+                                "min": {
+                                    "FULL_PATH": "/test/param/freq/min",
+                                    "TYPE": "d",
+                                    "ACCESS": 1,
+                                    "VALUE": [ 0.0 ]
+                                },
+                                "max": {
+                                    "FULL_PATH": "/test/param/freq/max",
+                                    "TYPE": "d",
+                                    "ACCESS": 1,
+                                    "VALUE": [ 1000.0 ]
+                                },
+                                "exponent": {
+                                    "FULL_PATH": "/test/param/freq/exponent",
+                                    "TYPE": "d",
+                                    "ACCESS": 1,
+                                    "VALUE": [ 1.0 ]
+                                },
+                                "raw": {
+                                    "FULL_PATH": "/test/param/freq/raw",
+                                    "TYPE": "d",
+                                    "ACCESS": 3,
+                                    "VALUE": [ 0.0 ]
+                                },
+                                "normalized": {
+                                    "FULL_PATH": "/test/param/freq/normalized",
+                                    "TYPE": "d",
+                                    "ACCESS": 3,
+                                    "VALUE": [ 0.0 ]
+                                }
+                            }
+                        },
+                        "fader": {
+                            "FULL_PATH": "/test/param/fader",
+                            "CONTENTS": {
+                                "longname": {
+                                    "FULL_PATH": "/test/param/fader/longname",
+                                    "TYPE": "s",
+                                    "ACCESS": 1,
+                                    "VALUE": [ "fader" ]
+                                },
+                                "shortname": {
+                                    "FULL_PATH": "/test/param/fader/shortname",
+                                    "TYPE": "s",
+                                    "ACCESS": 1,
+                                    "VALUE": [ "fader" ]
+                                },
+                                "scriptname": {
+                                    "FULL_PATH": "/test/param/fader/scriptname",
+                                    "TYPE": "s",
+                                    "ACCESS": 1,
+                                    "VALUE": [ "fader" ]
+                                },
+                                "type": {
+                                    "FULL_PATH": "/test/param/fader/type",
+                                    "TYPE": "s",
+                                    "ACCESS": 1,
+                                    "VALUE": [ "float" ]
+                                },
+                                "visibility": {
+                                    "FULL_PATH": "/test/param/fader/visibility",
+                                    "TYPE": "s",
+                                    "ACCESS": 1,
+                                    "VALUE": [ "automated" ]
+                                },
+                                "min": {
+                                    "FULL_PATH": "/test/param/fader/min",
+                                    "TYPE": "d",
+                                    "ACCESS": 1,
+                                    "VALUE": [ -1000.0 ]
+                                },
+                                "max": {
+                                    "FULL_PATH": "/test/param/fader/max",
+                                    "TYPE": "d",
+                                    "ACCESS": 1,
+                                    "VALUE": [ 1000.0 ]
+                                },
+                                "exponent": {
+                                    "FULL_PATH": "/test/param/fader/exponent",
+                                    "TYPE": "d",
+                                    "ACCESS": 1,
+                                    "VALUE": [ 1.0 ]
+                                },
+                                "raw": {
+                                    "FULL_PATH": "/test/param/fader/raw",
+                                    "TYPE": "d",
+                                    "ACCESS": 3,
+                                    "VALUE": [ 0.0 ]
+                                },
+                                "normalized": {
+                                    "FULL_PATH": "/test/param/fader/normalized",
+                                    "TYPE": "d",
+                                    "ACCESS": 3,
+                                    "VALUE": [ 0.5 ]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
