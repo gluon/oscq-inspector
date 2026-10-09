@@ -46,18 +46,32 @@ fn nested_type_signatures() {
 }
 
 /// The Helper declares `ACCESS` 2 on every node: it forwards to an OSC target whose address
-/// space it cannot read. The declared value is what the parser must report.
+/// space it cannot read. An explicit `ACCESS` always wins: every node is reported write only,
+/// even though `EXTENSIONS` lists `VALUE`, and even on the nodes that carry a `VALUE`.
 #[test]
-fn access_is_declared_on_every_node() {
+fn every_node_is_write_only_as_declared() {
     let r = root();
+    let (host, _) = HostInfo::parse(&read_fixture("helper-hostinfo.json")).unwrap();
+    let value_supported = host.supports("VALUE");
+    assert!(value_supported);
     let mut stack = vec![&r.root];
     let mut seen = 0;
+    let mut with_value = 0;
     while let Some(n) = stack.pop() {
         assert_eq!(n.access, Some(Access::WRITE), "{}", n.full_path);
+        let effective = n.effective_access(value_supported);
+        assert_eq!(effective, Access::WRITE, "{}", n.full_path);
+        assert!(
+            !effective.readable() && effective.writable(),
+            "{}",
+            n.full_path
+        );
         seen += 1;
+        with_value += usize::from(n.value.is_some());
         stack.extend(n.children());
     }
     assert_eq!(seen, 22);
+    assert_eq!(with_value, 2, "my_true and my_false carry a VALUE");
 }
 
 #[test]

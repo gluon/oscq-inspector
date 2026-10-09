@@ -47,5 +47,4 @@ Arguments are parsed against the node's `TYPE`, one per top level type tag.
 Backlog:
 
 - Real captured documents from VDMX and ossia, PRD 12. OSCQuery Helper is captured.
-- Ruling pending: OSCQuery Helper declares `ACCESS` 2 on every node, so they are reported write only; the human expected read and write.
 - M2 discovery, M3 application, M4 WebSocket and performance, M5 release, as in PRD 14.
