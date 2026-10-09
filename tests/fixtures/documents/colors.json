@@ -1,0 +1,23 @@
+{
+	"FULL_PATH": "/",
+	"CONTENTS": {
+		"native": {"FULL_PATH": "/native", "ACCESS": 3, "TYPE": "r", "VALUE": ["#FA6432FF"]},
+		"rgb_spelling": {
+			"FULL_PATH": "/rgb_spelling", "ACCESS": 3, "TYPE": "ffff",
+			"VALUE": [1.0, 0.5, 0.0, 1.0],
+			"EXTENDED_TYPE": ["color.rgb.r", "color.rgb.g", "color.rgb.b", "color.rgb.a"]
+		},
+		"rgba_spelling": {
+			"FULL_PATH": "/rgba_spelling", "ACCESS": 3, "TYPE": "r",
+			"VALUE": ["#FA6432FF"],
+			"OVERLOADS": [
+				{
+					"TYPE": "ffff",
+					"VALUE": [0.98, 0.39, 0.19, 1.0],
+					"EXTENDED_TYPE": ["color.rgba.r", "color.rgba.g", "color.rgba.b", "color.rgba.a"]
+				},
+				{"TYPE": "iiii", "VALUE": [250, 100, 50, 255]}
+			]
+		}
+	}
+}

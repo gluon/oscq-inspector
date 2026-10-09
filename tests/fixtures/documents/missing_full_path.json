@@ -1,0 +1,6 @@
+{
+	"CONTENTS": {
+		"a": {"TYPE": "f", "CONTENTS": {"b": {"TYPE": "i"}}},
+		"c": 42
+	}
+}

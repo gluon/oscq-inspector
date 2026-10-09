@@ -1,0 +1,41 @@
+{
+	"DESCRIPTION": "root node",
+	"FULL_PATH": "/",
+	"ACCESS": 0,
+	"CONTENTS": {
+		"foo": {
+			"DESCRIPTION": "read only float ranged 0 to 100",
+			"FULL_PATH": "/foo",
+			"ACCESS": 1,
+			"TYPE": "f",
+			"VALUE": [0.5],
+			"RANGE": [{"MIN": 0.0, "MAX": 100.0}]
+		},
+		"bar": {
+			"DESCRIPTION": "read and write, two ints with different ranges",
+			"FULL_PATH": "/bar",
+			"ACCESS": 3,
+			"TYPE": "ii",
+			"VALUE": [4, 51],
+			"RANGE": [{"MIN": 0, "MAX": 50}, {"MIN": 51, "MAX": 100}]
+		},
+		"baz": {
+			"DESCRIPTION": "container with one string method",
+			"FULL_PATH": "/baz",
+			"ACCESS": 0,
+			"CONTENTS": {
+				"qux": {
+					"DESCRIPTION": "one of three strings",
+					"FULL_PATH": "/baz/qux",
+					"ACCESS": 3,
+					"TYPE": "s",
+					"VALUE": ["half-full"],
+					"RANGE": [{"VALS": ["empty", "half-full", "full"]}],
+					"TAGS": ["level"],
+					"CRITICAL": true,
+					"X_VENDOR_KEY": {"kept": "verbatim"}
+				}
+			}
+		}
+	}
+}

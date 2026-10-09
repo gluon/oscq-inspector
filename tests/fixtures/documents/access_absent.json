@@ -1,0 +1,8 @@
+{
+	"FULL_PATH": "/",
+	"CONTENTS": {
+		"level": {"FULL_PATH": "/level", "TYPE": "f", "VALUE": [0.3]},
+		"silent": {"FULL_PATH": "/silent", "TYPE": "f", "ACCESS": 0},
+		"bad_access": {"FULL_PATH": "/bad_access", "TYPE": "f", "ACCESS": 9}
+	}
+}

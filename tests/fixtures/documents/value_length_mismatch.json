@@ -1,0 +1,8 @@
+{
+	"FULL_PATH": "/",
+	"CONTENTS": {
+		"short": {"FULL_PATH": "/short", "TYPE": "fff", "VALUE": [0.1]},
+		"long": {"FULL_PATH": "/long", "TYPE": "f", "VALUE": [0.1, 0.2, 0.3]},
+		"untyped": {"FULL_PATH": "/untyped", "VALUE": [1]}
+	}
+}

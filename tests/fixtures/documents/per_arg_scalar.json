@@ -1,0 +1,10 @@
+{
+	"FULL_PATH": "/scalar",
+	"ACCESS": 3,
+	"TYPE": "fff",
+	"VALUE": 0.25,
+	"RANGE": {"MIN": 0.0, "MAX": 1.0},
+	"UNIT": "gain.linear",
+	"EXTENDED_TYPE": "position.cartesian.x",
+	"CLIPMODE": "both"
+}

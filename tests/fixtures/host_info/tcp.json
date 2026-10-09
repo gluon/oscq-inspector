@@ -1,0 +1,1 @@
+{"NAME": "TCP server", "OSC_PORT": 9001, "OSC_TRANSPORT": "TCP", "EXTENSIONS": {"VALUE": true}}

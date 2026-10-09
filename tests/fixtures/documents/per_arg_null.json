@@ -1,0 +1,10 @@
+{
+	"FULL_PATH": "/asdf",
+	"ACCESS": 3,
+	"TYPE": "iii",
+	"VALUE": [1, null, 3],
+	"RANGE": [{"MIN": 0, "MAX": 10}, null, {"VALS": [1, 2, 3]}],
+	"UNIT": ["distance.m", null, "distance"],
+	"EXTENDED_TYPE": [null, null, "position.cartesian.x"],
+	"CLIPMODE": ["both", null, "none"]
+}

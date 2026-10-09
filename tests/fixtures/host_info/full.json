@@ -1,0 +1,13 @@
+{
+	"NAME": "Synthetic Server",
+	"OSC_IP": "127.0.0.1",
+	"OSC_PORT": 9001,
+	"OSC_TRANSPORT": "UDP",
+	"WS_IP": "127.0.0.1",
+	"WS_PORT": 9002,
+	"EXTENSIONS": {
+		"ACCESS": true, "VALUE": true, "RANGE": true, "DESCRIPTION": true, "TAGS": true,
+		"EXTENDED_TYPE": true, "UNIT": true, "CRITICAL": true, "CLIPMODE": true,
+		"LISTEN": true, "PATH_CHANGED": true, "HTML": false
+	}
+}

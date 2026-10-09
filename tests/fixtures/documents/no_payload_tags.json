@@ -1,0 +1,9 @@
+{
+	"FULL_PATH": "/",
+	"CONTENTS": {
+		"toggle": {"FULL_PATH": "/toggle", "ACCESS": 3, "TYPE": "T", "VALUE": [true]},
+		"impulse": {"FULL_PATH": "/impulse", "ACCESS": 2, "TYPE": "I", "VALUE": [null]},
+		"nil": {"FULL_PATH": "/nil", "ACCESS": 2, "TYPE": "N", "VALUE": [null]},
+		"bad_type": {"FULL_PATH": "/bad_type", "TYPE": "fx"}
+	}
+}
