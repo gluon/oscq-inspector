@@ -4309,11 +4309,17 @@ dependencies = [
  "anyhow",
  "eframe",
  "egui",
+ "flume",
  "nucleo-matcher",
  "oscq-core",
  "oscq-discovery",
+ "rosc",
+ "serde",
+ "serde_json",
+ "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
