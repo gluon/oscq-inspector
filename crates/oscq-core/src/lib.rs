@@ -9,6 +9,7 @@ pub mod model;
 pub mod osc;
 pub mod path;
 pub mod server;
+pub mod service;
 pub mod types;
 
 pub use client::{AttributeReply, ClientConfig, ClientError, Document, OscQueryClient};
@@ -19,5 +20,8 @@ pub use osc::{CoerceError, OscError, OscUdpSender};
 pub use path::{OscPath, PathError};
 pub use server::{
     AddressClass, DiscoveredServer, InterfaceRef, Origin, ServerAddress, ServerId, ServiceKind,
+};
+pub use service::{
+    Command, Direction, Event, Notify, TrafficRecord, TransportState, UserFacingError,
 };
 pub use types::{ArgType, TypeError, TypeSignature, TypeTag};
