@@ -42,10 +42,10 @@ Arguments are parsed against the node's `TYPE`, one per top level type tag.
 ## Status
 
 - M0, protocol groundwork: done, merged.
-- M1, core client: implemented on branch `void/m1-core`. `cargo test` covers the parser, `HOST_INFO`, attribute queries and UDP sending against a synthetic server. Not yet proven against a running OSCQuery Helper.
+- M1, core client: on branch `void/m1-core`. `cargo test` covers the parser, `HOST_INFO`, attribute queries and UDP sending against a synthetic server and real OSCQuery Helper captures. Proven by the human on 2026-10-09: `oscq_probe` printed the Helper's 22 node tree and a value sent to `/test/my_float` reached the Helper's target.
 
 Backlog:
 
-- M1 acceptance on the human's machine: `oscq_probe` against OSCQuery Helper, and the value received by the Helper's target.
-- Real captured documents from VDMX, OSCQuery Helper and ossia in `tests/fixtures/captured/`, PRD 12.
+- Real captured documents from VDMX and ossia, PRD 12. OSCQuery Helper is captured.
+- Ruling pending: OSCQuery Helper declares `ACCESS` 2 on every node, so they are reported write only; the human expected read and write.
 - M2 discovery, M3 application, M4 WebSocket and performance, M5 release, as in PRD 14.

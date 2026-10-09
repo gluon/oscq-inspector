@@ -4,11 +4,18 @@ Inputs for the `oscq-core` tests. Provenance of every file is listed here. A fix
 
 ## Real server captures
 
-None yet. PRD section 12 requires captured documents from VDMX, OSCQuery Helper and ossia. They can only be captured on a machine running those servers. Procedure, for each server, with its HTTP host and port:
+| File | Source |
+| --- | --- |
+| `helper-root.json` | GET `/` on Vidvox OSCQuery Helper serving `SampleDocument`, HTTP port 2345, captured on 2026-10-09 |
+| `helper-hostinfo.json` | GET `/?HOST_INFO` on the same Helper, OSC target port 1240 |
+
+The Helper declares `ACCESS` 2, write only, on every node, by design: it forwards to an OSC target whose address space it cannot read (`OSCQueryHelper/OSCQueryHelperAppDelegate.m`, VVOSCQueryProtocol commit `cebb6f8`). Its `HOST_INFO` has no `OSC_IP`, `WS_IP` or `WS_PORT` and advertises no WebSocket extension, the nominal case.
+
+Still missing: VDMX and ossia. They can only be captured on a machine running those servers. Procedure, for each server, with its HTTP host and port:
 
 ```
-curl -s http://HOST:PORT/ -o tests/fixtures/captured/SERVER_tree.json
-curl -s "http://HOST:PORT/?HOST_INFO" -o tests/fixtures/captured/SERVER_host_info.json
+curl -s http://HOST:PORT/ -o tests/fixtures/SERVER_tree.json
+curl -s "http://HOST:PORT/?HOST_INFO" -o tests/fixtures/SERVER_host_info.json
 ```
 
 ## Third party
