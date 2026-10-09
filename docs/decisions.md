@@ -38,3 +38,4 @@ One line per decision. Newest entries at the bottom. A dependency not listed in 
 | 2026-10-09 | OSC destination resolution prefers IPv4, falls back to the first address | Matches the discovery preference in PRD 8.2 |
 | 2026-10-09 | `CONTENTS` children are kept sorted by name | `serde_json` without `preserve_order` does not keep server order; enabling it would add `indexmap` |
 | 2026-10-09 | Dev dependencies of `oscq-core`: `anyhow` for the example, `tokio` features `macros` and `io-util` for the synthetic server | `anyhow` is in PRD 5 for binary boundaries; no new crate |
+| 2026-10-09 | `flume` replaces `crossbeam-channel` as the network to UI channel and the `Discovery` receiver, in PRD 5, 6.2 and 8.1 | Human ruling on the M1 conflict: `mdns-sd` returns a `flume::Receiver`, which covers the same need and avoids a bridge thread in M2. Supersedes the `crossbeam-channel` part of the entry above |
