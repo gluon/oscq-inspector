@@ -153,7 +153,7 @@ Contradiction inside SPEC: SPEC#L64 says a query "for an attribute that the serv
 
 ## 10. Discrepancies between PRD.md and the sources
 
-Listed for the human. PRD.md was not edited.
+Listed for the human during M0. All items were ruled on 2026-10-09: the proposal wins, and VVOSCQueryProtocol wins where the proposal contradicts itself. The rulings are applied in PRD.md in the sections each item names. The list below is kept as the record of what was found.
 
 1. PRD 4, reference implementation URL: PRD points to `https://github.com/Vidvox/VVOpenSource`. SPEC#L12 points to `https://github.com/Vidvox/VVOSCQueryProtocol`, which exists and was used. `VVOpenSource` could not be cloned here (git asked for credentials, which is how GitHub answers for a missing or private repository); whether it exists is not proven.
 2. PRD 7.1, `ACCESS` 0 is described as "no access". SPEC: 0 means "there is no value associated with this OSC destination" (SPEC#L96).

@@ -1,6 +1,6 @@
 # Void OSCQ: Product Requirements Document
 
-Status: v1 spec, locked for implementation.
+Status: v1 spec, locked for implementation. Amended on 2026-10-09 with the human's rulings on the M0 protocol discrepancies, see `docs/protocol-notes.md` section 10.
 Audience: the engineer (human or agent) implementing the app from scratch.
 Name: `void-oscq`, final. Binary `void-oscq`, app display name "Void OSCQ", repository `gluon/void-oscq`, private. The crate name `void-oscq` was free on crates.io at the time of writing; verify again before any publication.
 
@@ -36,6 +36,7 @@ Do not build these. They are listed so that the temptation is answered once.
 - No session or preset persistence beyond the small set described in section 9.7.
 - No plugin system, no embedded scripting language, no automation or sequencing.
 - No code signing or notarisation in v1. The CI produces unsigned artifacts.
+- No OSC sending to a server whose `HOST_INFO` declares `OSC_TRANSPORT` `TCP`. The proposal defines no OSC over TCP framing. Its nodes are shown read only, with the reason displayed.
 
 Anything that smells like "while we are here, we could also" is out of scope until v1 ships and is used in anger.
 
@@ -44,9 +45,11 @@ Anything that smells like "while we are here, we could also" is out of scope unt
 - OSCQuery proposal and specification: https://github.com/Vidvox/OSCQueryProposal. This is the normative source. Fetch it in M0 and keep a copy of the relevant parts in `docs/protocol-notes.md`.
 - Vidvox OSCQuery Browser documentation, the app this replaces and must at least equal: https://docs.vidvox.net/oscquery-browser/
 - Vidvox OSCQuery Helper, used as a test server: https://docs.vidvox.net/oscquery-helper/
-- VVOSCQueryProtocol, the reference Objective C implementation, useful when the written spec is ambiguous: https://github.com/Vidvox/VVOpenSource
+- VVOSCQueryProtocol, the reference Objective C implementation, useful when the written spec is ambiguous: https://github.com/Vidvox/VVOSCQueryProtocol
 - ossia, a second independent implementation to test interoperability against: https://ossia.io
 - Open Stage Control, reference for control widget ergonomics only, explicitly not an architectural model: https://framagit.org/jean-emmanuel/open-stage-control
+
+Precedence on protocol questions: the proposal wins. Where the proposal contradicts itself, VVOSCQueryProtocol wins. The answers, with sources, live in `docs/protocol-notes.md`.
 
 ## 5. Stack, LOCKED
 
@@ -63,6 +66,8 @@ Anything that smells like "while we are here, we could also" is out of scope unt
 | Logging | `tracing` with `tracing-subscriber`, env filter | Needed to debug other people's servers |
 | Error type | `thiserror` in library crates, `anyhow` at the binary boundary | Library errors are matched on, application errors are reported |
 | Fuzzy matching | `nucleo-matcher` | Path search over thousands of nodes must stay interactive |
+| Network to UI channel | `crossbeam-channel` | Non blocking drain from the UI thread at the top of every frame, see 6.2 |
+| URLs | `url` | Typed HTTP and WebSocket addresses, the same crate `reqwest` re-exports |
 
 Do not add a dependency that is not in this table without recording the reason in `docs/decisions.md`. In particular: no `egui` widget mega crates, no ORM, no actor framework, no config framework. 
 
@@ -91,6 +96,8 @@ void-oscq/
 ```
 
 `oscq-core` and `oscq-discovery` must not depend on `egui` or `eframe`. If a UI concern leaks into them, the split has failed.
+
+`oscq-discovery` depends on `oscq-core` for shared types. Never the reverse. `void-oscq` depends on both.
 
 ### 6.2 Threading model
 
@@ -145,51 +152,72 @@ enum Event {
 
 ## 7. Protocol implementation
 
-VERIFY every attribute spelling, every query parameter and every WebSocket command name against the proposal repository in M0 before writing the deserialiser. The list below is the implementation target and is accurate enough to design against, but the repository wins on any disagreement, and any disagreement found must be written into `docs/protocol-notes.md`.
+VERIFY every attribute spelling, every query parameter and every WebSocket command name against the proposal repository in M0 before writing the deserialiser. The list below is the implementation target. It was amended after M0 to follow the proposal, and VVOSCQueryProtocol where the proposal contradicts itself. Any further disagreement found must be written into `docs/protocol-notes.md`.
 
 ### 7.1 Address space document
 
 A GET on a path returns a JSON object describing that node. Expected keys:
 
 - `FULL_PATH`: the OSC path of this node. Required.
-- `CONTENTS`: object mapping child name to child node object. Present on containers.
-- `TYPE`: OSC type tag string, for example `f`, `ff`, `ffff`, `s`, `T`. Present on methods.
-- `VALUE`: array of current values, one per type tag character.
-- `RANGE`: array, one entry per argument, each optionally carrying `MIN`, `MAX`, `VALS`.
-- `ACCESS`: 0 no access, 1 read only, 2 write only, 3 read and write.
+- `CONTENTS`: object mapping child name to child node object. Present on containers. A node without `CONTENTS` is a method.
+- `TYPE`: OSC type tag string, for example `f`, `ff`, `ffff`, `s`, `T`, `i[ff]i`. Present on methods that take or hold a value, may be omitted on a method that takes none.
+- `VALUE`: current values, one entry per argument, see per argument attributes below.
+- `RANGE`: one entry per argument, each optionally carrying `MIN`, `MAX`, `VALS`.
+- `ACCESS`: bit mask. 0 no value, 1 read only, 2 write only, 3 read and write.
 - `DESCRIPTION`, `TAGS`, `EXTENDED_TYPE`, `UNIT`, `CRITICAL`, `CLIPMODE`, `OVERLOADS`: optional, display or behaviour hints.
 
-Deserialise into a typed `Node` struct with `Option` fields. Unknown keys are preserved verbatim in a `serde_json::Map` so the raw JSON view stays faithful and so forward compatibility costs nothing. Never panic on a missing optional attribute: a server that omits `ACCESS` is common, and must be treated as read and write.
+Per argument attributes are `VALUE`, `RANGE`, `EXTENDED_TYPE`, `UNIT` and `CLIPMODE`. Each accepts every shape the proposal allows, and each shape is covered by a fixture:
+
+- a JSON array with one entry per top level argument of `TYPE`;
+- nested arrays, where `TYPE` groups arguments with `[` and `]`, for example `TYPE` `i[ff]i` with `VALUE` `[100, [1.0, 1.0], 100]`;
+- `null` in place of any entry that has no value for that attribute;
+- a single non array value standing for every entry, allowed when all entries are equal.
+
+Deserialise into a typed `Node` struct with `Option` fields. Unknown keys are preserved verbatim in a `serde_json::Map` so the raw JSON view stays faithful and so forward compatibility costs nothing. Never panic on a missing optional attribute. A server that omits `ACCESS` is common: write is then allowed, and read is allowed only if `VALUE` is listed as `true` in `HOST_INFO` `EXTENSIONS`.
 
 Implementation requirements:
 
-- Parse `TYPE` into a vector of argument types, including the OSC tags that carry no payload (`T`, `F`, `N`, `I`). A node whose `TYPE` is absent is a container, even if it has no `CONTENTS`.
+- Parse `TYPE` into a tree of argument types, including the OSC tags that carry no payload (`T`, `F`, `N`, `I`) and the `[` `]` array groups. A node without `CONTENTS` is a method, even if it has no `TYPE`.
+- `r` is a colour on its own, its `VALUE` is a `#RRGGBBAA` string. `EXTENDED_TYPE` colour names are accepted in both spellings found in the proposal, `color.rgb.*` and `color.rgba.*`.
+- `CLIPMODE` is descriptive: it says how the server clips. It is displayed, never acted upon.
 - `VALUE` length may disagree with `TYPE` length in the wild. Render what is there, log a warning once per path, do not drop the node.
 - Treat the document as untrusted input. A malformed or hostile JSON body must produce an error event, never a panic and never an unbounded allocation. Cap the response body at 64 MB.
 
 ### 7.2 Host info
 
-A GET on the root with the `HOST_INFO` query parameter returns the server's transport details: a display name, the OSC IP and port, the OSC transport (UDP or TCP), the WebSocket IP and port when supported, and an `EXTENSIONS` object advertising which optional features exist.
+A GET with the `HOST_INFO` query parameter returns the server's transport details: a display name, the OSC IP and port, the OSC transport (UDP or TCP), the WebSocket IP and port when supported, and an `EXTENSIONS` object advertising which optional features exist.
 
-The OSC destination for every message sent by this app comes from `HOST_INFO`, not from the HTTP host and port, and not from the mDNS record. Getting this wrong is the single most common bug in OSCQuery clients: the HTTP server and the OSC receiver are frequently on different ports.
+The path is irrelevant to the proposal, the app queries the root.
 
-If `HOST_INFO` fails or omits the OSC port, the server is browsable but not controllable. Say so in the UI, disable the editing widgets, do not guess a port.
+The OSC destination for every message sent by this app comes from `HOST_INFO`, not from the mDNS record. Getting this wrong is the single most common bug in OSCQuery clients: the HTTP server and the OSC receiver are frequently on different ports.
+
+Defaults defined by the proposal, applied when a key is absent:
+
+- `OSC_IP` absent: the HTTP host.
+- `OSC_PORT` absent: the HTTP port. The UI shows whether the OSC port was advertised in `HOST_INFO` or inferred from the HTTP port.
+- `OSC_TRANSPORT` absent: `UDP`. When it is `TCP`, nothing is sent in v1: the affected nodes are read only and the UI shows why.
+- `WS_IP` and `WS_PORT` absent: the HTTP host and port, see 7.4.
+
+If the `HOST_INFO` request itself fails, the server is browsable but not controllable. Say so in the UI and disable the editing widgets.
 
 ### 7.3 Partial queries
 
-A GET on a sub path with an attribute query parameter returns just that attribute, for example a request for `VALUE` on one path. Use this for single value refresh. Never re-fetch the whole tree to refresh one value.
+A GET on a sub path with an attribute query parameter returns just that attribute, for example `/layer1/opacity?VALUE` returns `{"VALUE": [0.82]}`. Use this for single value refresh. Never re-fetch the whole tree to refresh one value.
+
+HTTP 200 and 204 are both success. 200 with an empty object means the attribute is unsupported or absent for that node. 204 means the request is valid but no content is available, for example `VALUE` on a node that is not readable. Neither is an error.
 
 ### 7.4 WebSocket
 
-When `HOST_INFO` advertises WebSocket support, open one connection per server to the advertised address and port.
+The proposal has no flag advertising WebSocket support. When `HOST_INFO` gives `WS_IP` or `WS_PORT`, open one connection per server to that address and port. When it gives neither, attempt one connection on the HTTP host and port. If that single attempt fails, fall back silently to refresh only mode: no error is raised, and the status bar shows refresh only as required by 9.6.
 
-- Text frames carry JSON commands. Client to server: a `COMMAND` of `LISTEN` or `IGNORE` with `DATA` set to the path. Server to client: `PATH_CHANGED`, `PATH_ADDED`, `PATH_REMOVED`, `PATH_RENAMED`.
-- Binary frames carry raw OSC packets in both directions. Decode incoming ones with `rosc` and treat them as value updates for the matching path.
-- On `PATH_CHANGED`, re-fetch that path's `VALUE` rather than assuming the notification carries it.
+- Text frames carry JSON commands. Client to server: a `COMMAND` of `LISTEN` or `IGNORE` with `DATA` set to the path. Server to client: `PATH_CHANGED`, `PATH_ADDED`, `PATH_REMOVED` with `DATA` set to the path, and `PATH_RENAMED` with `DATA` set to an object `{"OLD": path, "NEW": path}`.
+- Binary frames carry raw OSC packets, one packet per frame. Decode incoming ones with `rosc` and treat them as value updates for the matching path. Value updates arrive this way, after `LISTEN`, and in no other way.
+- `PATH_CHANGED` signals a structure change, not a value change. Reload the subtree at the received path, including all its descendants. Servers may coalesce several changes into one `PATH_CHANGED` on a common ancestor.
 - On `PATH_ADDED` or `PATH_REMOVED`, re-fetch the parent container's subtree, not the whole tree.
+- On `PATH_RENAMED`, move local state, including active listens, from `OLD` to `NEW`.
 - Reconnect with exponential backoff starting at 500 ms, capped at 15 s, with jitter. Re-issue every active `LISTEN` after a reconnect. Show the transport state in the UI.
 
-LISTEN discipline matters: subscribe only to paths that are currently visible in the viewport or pinned, and send `IGNORE` when they leave. A client that listens to three thousand nodes is a client that nobody will run twice.
+LISTEN discipline matters. `LISTEN` is not recursive: listening to `/foo` does not deliver `/foo/bar`. Send one `LISTEN` per visible or pinned method, none for containers, and send `IGNORE` when the method leaves. A client that listens to three thousand nodes is a client that nobody will run twice.
 
 If the server has no WebSocket, the app still works: values are fetched on expand, on explicit refresh, and after each send. The difference must be visible in the UI, not silent.
 
@@ -197,7 +225,11 @@ If the server has no WebSocket, the app still works: values are fetched on expan
 
 Default transport UDP, destination taken from `HOST_INFO`. Encode with `rosc`, respecting the node's declared `TYPE`. Coerce the user's input to the declared types before sending, never send a float where the node declared an int.
 
-Apply `CLIPMODE` and `RANGE` when clamping is requested by the node, and show the clamped value. When the server supports OSC over WebSocket, prefer the WebSocket for sends on that server, because it gives ordering and delivery that UDP does not, and it keeps everything on one socket. Make the choice visible and overridable in the server panel.
+`T` and `F` are interchangeable on send, as the proposal allows.
+
+Widgets clamp on `RANGE` only, and show the clamped value. `CLIPMODE` is displayed, never acted upon.
+
+UDP is the default transport for sending. OSC over the WebSocket is opt in, per server, from the server panel, because the proposal does not require servers to accept OSC from clients over the socket. The active transport is always visible.
 
 Every sent and received message is appended to the traffic log, with a monotonic timestamp, direction, path and arguments.
 
@@ -205,7 +237,7 @@ Every sent and received message is appended to the traffic log, with a monotonic
 
 ### 8.1 Strategy, LOCKED
 
-Browse for `_oscjson._tcp.local.` with `mdns-sd`. VERIFY the service type string against the proposal in M0. Also browse `_osc._udp.local.` and show those as "OSC only, no query support", greyed out and not connectable, because knowing that a device is there but silent is useful information.
+Browse for `_oscjson._tcp.local.` with `mdns-sd`. VERIFY the service type string against the proposal in M0. `mdns-sd` requires the `.local.` suffix, the proposal writes `_oscjson._tcp.`. Also browse `_osc._udp.local.`, a product choice and not a requirement of the proposal, and show those as "OSC only, no query support", greyed out and not connectable, because knowing that a device is there but silent is useful information.
 
 Behind a trait:
 
@@ -275,12 +307,13 @@ Chosen from `TYPE`, `RANGE` and `EXTENDED_TYPE`:
 | `s` with `VALS` | dropdown |
 | `s` free | single line text field, commit on enter |
 | `T` and `F` | toggle |
-| `I` (impulse) | push button |
-| `r` or `ffff` named as a colour by `EXTENDED_TYPE` | colour picker |
+| `I` (impulse) or `N` (nil) | momentary button |
+| `r`, without any `EXTENDED_TYPE` | colour picker |
+| `ffff` named as a colour by `EXTENDED_TYPE`, `color.rgb.*` or `color.rgba.*` | colour picker |
 | `ff` or `fff` | grouped drag values on one row |
 | anything else | read only display of the value, plus a raw argument entry field |
 
-Write only nodes show the widget with no value readout. Read only nodes show the value with no widget. Never show an editable widget that cannot send.
+Write only nodes show the widget with no value readout. Read only nodes show the value with no widget. Never show an editable widget that cannot send. Widgets clamp on `RANGE` only, never on `CLIPMODE`.
 
 Sending policy: continuous widgets send while dragging, rate limited to one message per 8 ms per path, with the final value always sent on release. Text and numeric fields send on commit.
 
@@ -298,6 +331,8 @@ The UI must never imply state it has not observed. Specifically:
 
 - A value that was sent but not confirmed by the server is drawn differently from a value the server reported.
 - A server without WebSocket support shows "values on refresh only" in the status bar. No silent polling.
+- The OSC destination shows whether its port was advertised in `HOST_INFO` or inferred from the HTTP port.
+- Nodes made read only by `OSC_TRANSPORT` `TCP` say so.
 - Errors appear in a status line with the failing path and the reason, not as a generic toast.
 
 ### 9.7 Persistence
@@ -321,17 +356,23 @@ These are requirements, and M4 verifies them with a committed benchmark against 
 
 If a budget cannot be met, record the measured number and the reason in `docs/decisions.md`. Do not quietly relax the table.
 
+The `eframe` renderer stays `wgpu`. If the binary size budget fails at M5, switch to `glow` then, not before.
+
 ## 11. Error handling
 
 Every failure has a user facing message naming what failed and what the user can do. No `unwrap` outside tests. No panic path reachable from network input.
 
 Cases that must be handled explicitly, each with a test:
 
-- HTTP refused, timed out, or returned a non 200 status.
+- HTTP refused, timed out, or returned a status other than 200 and 204.
+- Attribute query answered with 204, or with 200 and an empty object: not an error, the attribute is shown as unavailable.
+- `HOST_INFO` with `OSC_TRANSPORT` `TCP`.
 - Response body that is not JSON, or is JSON but not an address space.
-- `HOST_INFO` missing or lacking an OSC port.
+- `HOST_INFO` missing, or lacking an OSC port (inferred from the HTTP port).
 - WebSocket advertised but refusing connections, or dropping mid session.
 - Node whose `TYPE` and `VALUE` disagree in length.
+- Per argument attributes as nested arrays, with `null` entries, or as a single scalar.
+- Node without `CONTENTS` and without `TYPE`.
 - Path containing characters that are legal in JSON but not in OSC.
 - Server disappearing from mDNS while connected.
 - Two servers advertising the same instance name.
