@@ -342,6 +342,11 @@ fn entry<T>(v: Value, conv: Convert<'_, T>, depth: usize) -> ArgEntry<T> {
     }
 }
 
+/// Parses a `VALUE` attribute, as received in a node or in the reply to a `?VALUE` query.
+pub fn parse_value(v: Value) -> PerArg<Value> {
+    per_arg(v, &value_entry)
+}
+
 fn value_entry(v: Value) -> Result<Value, Value> {
     match v {
         Value::Object(_) => Err(v),

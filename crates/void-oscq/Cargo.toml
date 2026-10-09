@@ -8,11 +8,17 @@ publish = false
 anyhow = "1.0.104"
 eframe = "0.36.2"
 egui = "0.36.2"
+flume.workspace = true
 nucleo-matcher = "0.3.1"
 oscq-core = { version = "0.1.0", path = "../oscq-core" }
 oscq-discovery = { version = "0.1.0", path = "../oscq-discovery" }
+rosc = "0.11.4"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["raw_value"] }
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "fs"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+url = "2.5.8"
 
 [lints]
 workspace = true

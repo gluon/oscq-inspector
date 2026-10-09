@@ -28,6 +28,16 @@ Linux build dependencies, as installed in CI:
 sudo apt-get install -y libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
 ```
 
+Linux run time, X11: `libxkbcommon-x11-0` and a Vulkan or OpenGL driver.
+
+## Run the application
+
+```
+cargo run -p void-oscq --release
+```
+
+Servers found by mDNS are listed on the left; `+ manual` connects to a `host:port`. Settings are saved in the OS config directory, `void-oscq/config.json`; JSON and traffic exports go to `void-oscq/exports/` beside it.
+
 ## Discover servers
 
 `oscq_discover` lists OSCQuery and OSC servers live, with each address and the interface it was seen on, and a summary two seconds after start:
@@ -51,10 +61,11 @@ Arguments are parsed against the node's `TYPE`, one per top level type tag.
 
 - M0, protocol groundwork: done, merged.
 - M1, core client: done, merged. `cargo test` covers the parser, `HOST_INFO`, attribute queries and UDP sending against a synthetic server and real OSCQuery Helper captures. Proven by the human on 2026-10-09: `oscq_probe` printed the Helper's 22 node tree and a value sent to `/test/my_float` reached the Helper's target.
-- M2, discovery: merged. `cargo test` covers deduplication, stale marking, address order, manual history, and real mDNS on the build machine, including a server killed without a goodbye. Not yet proven on the human's LAN.
+- M2, discovery: done, merged. Proven on the human's LAN on 2026-10-09: one entry in 0.18 s, lo0 and en0 merged, LAN IPv4 promoted.
+- M3, application: on branch `void/m3-app`. `cargo test` covers the network service, the widget table, the tree model, the JSON slicing, the traffic log, rate limiting, the config, and the UI headless (idle frames, keyboard, bounded event drain, a sent value kept on a write only node). Tested by the human on the Mac against OSCQuery Helper on 2026-10-09: sends correct byte for byte on `/test/my_longlong` (`,h`); the widget jumped back after release on write only nodes, fixed since, not yet proven on the Mac.
 
 Backlog:
 
 - Real captured documents from VDMX and ossia, PRD 12. OSCQuery Helper is captured.
-- M2 acceptance on the human's LAN: `oscq_discover` lists OSCQuery Helper as exactly one entry within two seconds.
-- M3 application, M4 WebSocket and performance, M5 release, as in PRD 14.
+- M3 acceptance on the human's Mac: browse OSCQuery Helper, change a value, JSON and traffic tabs correct.
+- M4 WebSocket and performance, M5 release, as in PRD 14.

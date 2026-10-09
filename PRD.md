@@ -134,7 +134,8 @@ enum Command {
 
 enum Event {
     ServerFound(DiscoveredServer),
-    ServerLost(ServerId),
+    ServerChanged(DiscoveredServer),
+    ServerStale(DiscoveredServer),
     HostInfo { server_id: ServerId, info: HostInfo },
     TreeLoaded { server_id: ServerId, root: Node },
     SubtreeLoaded { server_id: ServerId, path: OscPath, node: Node },
@@ -149,6 +150,8 @@ enum Event {
 ```
 
 `ServerId` is an opaque internal identifier, stable for the lifetime of a connection, never a user visible string and never the mDNS instance name.
+
+The three server events mirror what `oscq-discovery` emits, `Found`, `Changed` and `Stale`, each with a full snapshot of the server. Discovery never removes a server: when its advertisement goes away, or a liveness check fails, the entry is marked stale through the `stale` flag it carries, kept so the user can retry, and revived with the same `ServerId` if the server is seen again.
 
 ## 7. Protocol implementation
 
