@@ -3,8 +3,10 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use oscq_core::document::parse_value;
+use oscq_core::ws::{is_within, renamed};
 use oscq_core::{
     AttributeReply, Diagnostic, DiscoveredServer, Event, HostInfo, Node, Origin, OscDestination,
     SendBlocked, ServerId, TransportState, UserFacingError,
@@ -22,6 +24,20 @@ pub enum ConnState {
     Connected,
     Failed(String),
     Disconnected,
+}
+
+/// The WebSocket of a connected server.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum WsState {
+    /// None: values on refresh only.
+    #[default]
+    Absent,
+    Live,
+    /// Lost or refused, retried after `retry_in`.
+    Lost {
+        retry_in: Duration,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -42,6 +58,21 @@ pub struct TreeState {
     pub diagnostics: Vec<Diagnostic>,
     /// Bumped on every structural change, so derived views know to rebuild.
     pub version: u64,
+    /// Every node by full path, rebuilt on each structural change: a pushed value finds its node
+    /// without walking the tree.
+    pub paths: HashMap<String, tree::NodeIndex>,
+}
+
+impl TreeState {
+    fn reindex(&mut self) {
+        self.paths = tree::index_paths(&self.root);
+    }
+
+    pub fn node(&self, path: &str) -> Option<&Node> {
+        self.paths
+            .get(path)
+            .and_then(|i| tree::node_at(&self.root, i))
+    }
 }
 
 #[derive(Debug)]
@@ -54,6 +85,9 @@ pub struct ServerEntry {
     pub tree: Option<TreeState>,
     pub traffic: TrafficLog,
     pub last_error: Option<UserFacingError>,
+    pub ws: WsState,
+    /// Methods the network service has been asked to `LISTEN` to on this connection.
+    pub listening: HashSet<String>,
 }
 
 impl ServerEntry {
@@ -67,6 +101,8 @@ impl ServerEntry {
             tree: None,
             traffic: TrafficLog::default(),
             last_error: None,
+            ws: WsState::Absent,
+            listening: HashSet::new(),
         }
     }
 
@@ -181,7 +217,7 @@ impl AppState {
                         .map(|t| (t.expanded, t.pending))
                         .unwrap_or_default();
                     pending.retain(|p, _| !settled(&report.root, p, value_supported));
-                    e.tree = Some(TreeState {
+                    let mut t = TreeState {
                         root: report.root,
                         raw,
                         diagnostics: report.diagnostics,
@@ -189,7 +225,9 @@ impl AppState {
                         pending,
                         version,
                         ..TreeState::default()
-                    });
+                    };
+                    t.reindex();
+                    e.tree = Some(t);
                 }
             }
             Event::SubtreeLoaded {
@@ -220,6 +258,7 @@ impl AppState {
                     t.unavailable
                         .retain(|p| *p != path && !p.starts_with(&prefix));
                     t.version += 1;
+                    t.reindex();
                 }
             }
             Event::ValueChanged {
@@ -228,8 +267,10 @@ impl AppState {
                 value,
             } => {
                 if let Some(t) = self.entry_mut(server_id).and_then(|e| e.tree.as_mut()) {
-                    let node =
-                        tree::find(&t.root, &path).and_then(|i| tree::node_at_mut(&mut t.root, &i));
+                    let node = t
+                        .paths
+                        .get(&path)
+                        .and_then(|i| tree::node_at_mut(&mut t.root, i));
                     match (value, node) {
                         (AttributeReply::Value(v), Some(node)) => {
                             node.value = Some(parse_value(v));
@@ -246,12 +287,62 @@ impl AppState {
             }
             Event::TransportState { server_id, state } => {
                 if let Some(e) = self.entry_mut(server_id) {
-                    e.conn = match state {
-                        TransportState::Connecting => ConnState::Connecting,
-                        TransportState::HttpOnly => ConnState::Connected,
-                        TransportState::Disconnected => ConnState::Disconnected,
-                        TransportState::Failed(r) => ConnState::Failed(r),
+                    match state {
+                        TransportState::Connecting => e.conn = ConnState::Connecting,
+                        TransportState::HttpOnly => e.conn = ConnState::Connected,
+                        TransportState::WebSocketLive => e.ws = WsState::Live,
+                        TransportState::WebSocketLost { retry_in, reason } => {
+                            e.ws = WsState::Lost { retry_in, reason }
+                        }
+                        TransportState::Disconnected => e.conn = ConnState::Disconnected,
+                        TransportState::Failed(r) => e.conn = ConnState::Failed(r),
+                    }
+                    // A new or closed connection starts with no WebSocket and no listens.
+                    if !matches!(e.conn, ConnState::Connected) {
+                        e.ws = WsState::Absent;
+                        e.listening.clear();
+                    }
+                }
+            }
+            // The parent's subtree arrives on its own; nothing to keep for the new path.
+            Event::PathAdded { .. } => {}
+            Event::PathRemoved { server_id, path } => {
+                if let Some(e) = self.entry_mut(server_id) {
+                    e.listening.retain(|p| !is_within(p, &path));
+                    if let Some(t) = e.tree.as_mut() {
+                        t.pending.retain(|p, _| !is_within(p, &path));
+                        t.unavailable.retain(|p| !is_within(p, &path));
+                        t.expanded.retain(|p| !is_within(p, &path));
+                        t.fetched.retain(|p| !is_within(p, &path));
+                        t.raw_subtrees.retain(|p, _| !is_within(p, &path));
+                    }
+                }
+            }
+            Event::PathRenamed {
+                server_id,
+                old,
+                new,
+            } => {
+                if let Some(e) = self.entry_mut(server_id) {
+                    let set = |s: &mut HashSet<String>| {
+                        *s = s
+                            .drain()
+                            .map(|p| renamed(&p, &old, &new).unwrap_or(p))
+                            .collect();
                     };
+                    set(&mut e.listening);
+                    if let Some(t) = e.tree.as_mut() {
+                        set(&mut t.unavailable);
+                        set(&mut t.expanded);
+                        t.pending = t
+                            .pending
+                            .drain()
+                            .map(|(p, v)| (renamed(&p, &old, &new).unwrap_or(p), v))
+                            .collect();
+                        // Reloaded from the parents, whose bodies replace these.
+                        t.fetched.retain(|p| !is_within(p, &old));
+                        t.raw_subtrees.retain(|p, _| !is_within(p, &old));
+                    }
                 }
             }
             Event::TrafficLogged(r) => {
@@ -416,6 +507,58 @@ mod tests {
         let t = st.entry(id).unwrap().tree.as_ref().unwrap();
         assert!(t.pending.contains_key("/w"), "no value read, still shown");
         assert!(t.unavailable.contains("/w"));
+    }
+
+    #[test]
+    fn renames_and_removals_move_local_state() {
+        let mut st = AppState::default();
+        let s = server();
+        let id = s.id;
+        st.apply(Event::ServerFound(s));
+        loaded(&mut st, id);
+        st.apply(Event::TransportState {
+            server_id: id,
+            state: TransportState::HttpOnly,
+        });
+        let e = st.entry_mut(id).unwrap();
+        e.listening.extend(["/a/x".to_owned(), "/b".to_owned()]);
+        let t = e.tree.as_mut().unwrap();
+        t.expanded.insert("/a".into());
+        t.pending.insert("/a/x".into(), vec![OscType::Float(0.3)]);
+
+        st.apply(Event::PathRenamed {
+            server_id: id,
+            old: "/a".into(),
+            new: "/c".into(),
+        });
+        let e = st.entry(id).unwrap();
+        let t = e.tree.as_ref().unwrap();
+        assert!(e.listening.contains("/c/x") && !e.listening.contains("/a/x"));
+        assert!(e.listening.contains("/b"));
+        assert!(t.expanded.contains("/c") && !t.expanded.contains("/a"));
+        assert_eq!(t.pending.get("/c/x"), Some(&vec![OscType::Float(0.3)]));
+
+        st.apply(Event::PathRemoved {
+            server_id: id,
+            path: "/c".into(),
+        });
+        let e = st.entry(id).unwrap();
+        let t = e.tree.as_ref().unwrap();
+        assert_eq!(e.listening.iter().collect::<Vec<_>>(), [&"/b".to_owned()]);
+        assert!(t.pending.is_empty() && t.expanded.is_empty());
+
+        st.apply(Event::TransportState {
+            server_id: id,
+            state: TransportState::WebSocketLive,
+        });
+        assert_eq!(st.entry(id).unwrap().ws, WsState::Live);
+        st.apply(Event::TransportState {
+            server_id: id,
+            state: TransportState::Disconnected,
+        });
+        let e = st.entry(id).unwrap();
+        assert_eq!(e.ws, WsState::Absent);
+        assert!(e.listening.is_empty());
     }
 
     #[test]

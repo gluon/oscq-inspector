@@ -22,3 +22,9 @@ url = "2.5.8"
 
 [lints]
 workspace = true
+
+# The synthetic server of `oscq-core`'s tests, included by path for the budget measurements.
+[dev-dependencies]
+futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "io-util", "net", "time", "sync"] }
+tokio-tungstenite = "0.30.0"

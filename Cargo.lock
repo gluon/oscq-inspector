@@ -2690,6 +2690,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "flume",
+ "futures-util",
  "reqwest",
  "rosc",
  "serde",
@@ -4310,6 +4311,7 @@ dependencies = [
  "eframe",
  "egui",
  "flume",
+ "futures-util",
  "nucleo-matcher",
  "oscq-core",
  "oscq-discovery",
@@ -4317,6 +4319,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
  "url",

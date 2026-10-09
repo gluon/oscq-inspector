@@ -56,6 +56,8 @@ pub enum DiagnosticKind {
     InvalidChild(String),
     /// `CONTENTS` below [`MAX_NODE_DEPTH`] dropped.
     DepthLimit,
+    /// The `HOST_INFO` query was answered with an address space document.
+    HostInfoIgnored,
 }
 
 #[derive(Debug, Clone, PartialEq)]

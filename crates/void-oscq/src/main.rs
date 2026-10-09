@@ -9,9 +9,15 @@ mod traffic;
 mod tree;
 mod widget;
 
+/// The synthetic OSCQuery server of `oscq-core`'s tests, shared by the budget measurements.
+#[cfg(test)]
+#[path = "../../oscq-core/tests/common/mod.rs"]
+mod synthetic;
+
 use anyhow::{Context as _, anyhow};
 
 fn main() -> anyhow::Result<()> {
+    let launched = std::time::Instant::now();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
@@ -50,6 +56,7 @@ fn main() -> anyhow::Result<()> {
         options,
         Box::new(move |cc| {
             Ok(Box::new(app::VoidApp::start(
+                launched,
                 cc.egui_ctx.clone(),
                 runtime,
                 config,

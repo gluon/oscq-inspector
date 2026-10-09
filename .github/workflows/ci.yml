@@ -42,6 +42,38 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+  budgets:
+    name: budgets (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+
+      # PRD 10 budgets that need no window; the real binary test needs a display and is run by hand.
+      - name: Budgets in process, release build
+        run: cargo test --release --locked --workspace -- --ignored budget_ --skip budget_real_binary --nocapture --test-threads=1
+
+      - name: Release binary size
+        shell: bash
+        run: |
+          cargo build --release --locked -p void-oscq
+          ./ci/binary-size.sh target/release/void-oscq${{ runner.os == 'Windows' && '.exe' || '' }}
+
   guards:
     name: guards
     runs-on: ubuntu-22.04

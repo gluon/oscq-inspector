@@ -4,58 +4,16 @@
 
 mod common;
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use common::{OscReceiver, Reply, SyntheticServer, read_fixture};
+use common::{OscReceiver, Reply, SyntheticServer, harness, read_fixture};
 use oscq_core::{
     AttributeReply, Command, Direction, Event, OscPath, PortSource, ServerId, TransportState,
-    TypeSignature, service,
+    TypeSignature,
 };
 use rosc::{OscMessage, OscPacket, OscType};
 use serde_json::json;
-
-struct Harness {
-    commands: flume::Sender<Command>,
-    events: flume::Receiver<Event>,
-    notified: Arc<AtomicUsize>,
-}
-
-fn harness() -> Harness {
-    let (tx, rx) = flume::unbounded();
-    let notified = Arc::new(AtomicUsize::new(0));
-    let n = Arc::clone(&notified);
-    let commands = service::spawn(
-        &tokio::runtime::Handle::current(),
-        tx,
-        Arc::new(move || {
-            n.fetch_add(1, Ordering::SeqCst);
-        }),
-    );
-    Harness {
-        commands,
-        events: rx,
-        notified,
-    }
-}
-
-impl Harness {
-    async fn until(&self, mut pred: impl FnMut(&Event) -> bool) -> Vec<Event> {
-        let mut seen = Vec::new();
-        loop {
-            let e = tokio::time::timeout(Duration::from_secs(5), self.events.recv_async())
-                .await
-                .unwrap_or_else(|_| panic!("timed out, seen: {seen:?}"))
-                .unwrap();
-            let done = pred(&e);
-            seen.push(e);
-            if done {
-                return seen;
-            }
-        }
-    }
-}
 
 async fn helper_like(target_port: u16) -> SyntheticServer {
     let host_info =
@@ -331,4 +289,79 @@ async fn refused_connection_fails_and_disconnect_is_reported() {
         )
     })
     .await;
+}
+
+/// Max 9 answers `/?HOST_INFO` with its whole tree and announces no WebSocket. The connection
+/// still succeeds: `HOST_INFO` defaults, OSC on the HTTP port, the single WebSocket attempt on
+/// the HTTP address fails silently, and no error is raised at any point.
+#[tokio::test(flavor = "multi_thread")]
+async fn max_ignoring_host_info_connects_without_error() {
+    let tree = read_fixture("max-root.json");
+    let server = SyntheticServer::start(
+        "127.0.0.1:0",
+        vec![
+            ("/", Reply::json(tree.clone())),
+            (
+                "/?HOST_INFO",
+                Reply::json(read_fixture("max-hostinfo.json")),
+            ),
+        ],
+    )
+    .await
+    .unwrap();
+    let h = harness();
+    let id = ServerId::next();
+    h.commands
+        .send(Command::Connect {
+            server_id: id,
+            http_base: server.base_url(),
+        })
+        .unwrap();
+    let seen = h
+        .until(|e| {
+            matches!(
+                e,
+                Event::TransportState {
+                    state: TransportState::HttpOnly,
+                    ..
+                }
+            )
+        })
+        .await;
+    let (info, destination) = seen
+        .iter()
+        .find_map(|e| match e {
+            Event::HostInfo {
+                info, destination, ..
+            } => Some((info.clone(), destination.clone().unwrap())),
+            _ => None,
+        })
+        .unwrap();
+    assert!(info.query_ignored);
+    assert_eq!(
+        (destination.port, destination.port_source),
+        (server.addr.port(), PortSource::InferredFromHttp)
+    );
+    let loaded = seen
+        .iter()
+        .find_map(|e| match e {
+            Event::TreeLoaded { report, .. } => Some(report.root.count()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(loaded, 36);
+    // The WebSocket attempt on the HTTP address is refused by a plain HTTP server.
+    let later = h.quiet(Duration::from_millis(1500)).await;
+    assert!(
+        seen.iter()
+            .chain(&later)
+            .all(|e| !matches!(e, Event::Error { .. } | Event::HostInfoUnavailable { .. })),
+        "{seen:?} {later:?}"
+    );
+    assert!(
+        later
+            .iter()
+            .all(|e| !matches!(e, Event::TransportState { .. })),
+        "refresh only stays, silently: {later:?}"
+    );
 }

@@ -19,7 +19,7 @@ use rosc::{OscColor, OscType};
 use crate::config::{self, Config, Theme, WindowGeometry};
 use crate::json_view::{self, Line, Token};
 use crate::rate::{INTERVAL, RateLimiter};
-use crate::state::{AppState, ConnState, ServerEntry};
+use crate::state::{AppState, ConnState, ServerEntry, WsState};
 use crate::traffic;
 use crate::tree::{self, Hit, NodeIndex, Row};
 use crate::widget::{self, WidgetKind};
@@ -117,6 +117,8 @@ struct View {
     text_buffers: std::collections::HashMap<String, String>,
     /// Paths with a drag send not yet followed by its final send.
     drag_open: std::collections::HashSet<String>,
+    /// Methods on the rows drawn this frame, the visible part of the listen set (PRD 7.4).
+    visible_methods: Vec<String>,
     traffic_filter: String,
     manual_open: bool,
     manual_text: String,
@@ -143,11 +145,14 @@ pub struct VoidApp {
     io_tx: flume::Sender<String>,
     io_rx: flume::Receiver<String>,
     owned: Option<Owned>,
+    /// When `main` started, until the first frame reports the startup time.
+    launched: Option<Instant>,
 }
 
 impl VoidApp {
     /// The application as it runs: network service and discovery on `runtime`.
     pub fn start(
+        launched: Instant,
         ctx: egui::Context,
         runtime: tokio::runtime::Runtime,
         config: Config,
@@ -188,6 +193,7 @@ impl VoidApp {
         let mut app = Self::with_backend(&ctx, backend, config, config_dir);
         app.state.global_error = startup_error;
         app.owned = Some(Owned { runtime, discovery });
+        app.launched = Some(launched);
         app
     }
 
@@ -218,6 +224,7 @@ impl VoidApp {
             io_tx,
             io_rx,
             owned: None,
+            launched: None,
         };
         // Manual entries are known servers from the start.
         let entries: Vec<ManualEntry> = app.history.entries().cloned().collect();
@@ -242,6 +249,14 @@ impl VoidApp {
     /// One frame. Everything the window shows comes from here.
     pub fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        tracing::trace!(target: "void_oscq::frame", "frame");
+        if let Some(t) = self.launched.take() {
+            tracing::info!(
+                target: "void_oscq::startup",
+                "first frame {:.1} ms after launch",
+                t.elapsed().as_secs_f64() * 1000.0
+            );
+        }
         self.drain(&ctx);
         self.flush_limiter(&ctx);
         self.track_geometry(&ctx);
@@ -250,6 +265,7 @@ impl VoidApp {
         }
 
         let mut actions = Vec::new();
+        self.view.visible_methods.clear();
         egui::Panel::left("servers")
             .resizable(true)
             .default_size(230.0)
@@ -260,6 +276,54 @@ impl VoidApp {
         self.about_modal(&ctx);
         for a in actions {
             self.act(&ctx, a);
+        }
+        self.sync_listens();
+    }
+
+    /// Keeps each connection's listens equal to its visible and pinned methods: `LISTEN` when a
+    /// method appears, `IGNORE` when it leaves, none for containers (PRD 7.4). Commands go out
+    /// only on a difference, so an idle frame sends nothing.
+    fn sync_listens(&mut self) {
+        let selected = self.state.selected;
+        for e in &mut self.state.servers {
+            let Some(t) = e.tree.as_ref().filter(|_| e.conn == ConnState::Connected) else {
+                continue;
+            };
+            let mut wanted: std::collections::HashSet<&str> = self
+                .config
+                .pinned_paths
+                .get(&e.key())
+                .into_iter()
+                .flatten()
+                .filter(|p| t.node(p).is_some_and(|n| n.is_method()))
+                .map(String::as_str)
+                .collect();
+            if selected == Some(e.server.id) {
+                wanted.extend(self.view.visible_methods.iter().map(String::as_str));
+            }
+            let id = e.server.id;
+            let gone: Vec<String> = e
+                .listening
+                .iter()
+                .filter(|p| !wanted.contains(p.as_str()))
+                .cloned()
+                .collect();
+            for path in gone {
+                e.listening.remove(&path);
+                let _ = self.backend.commands.send(Command::Ignore {
+                    server_id: id,
+                    path,
+                });
+            }
+            for path in wanted {
+                if !e.listening.contains(path) {
+                    e.listening.insert(path.to_owned());
+                    let _ = self.backend.commands.send(Command::Listen {
+                        server_id: id,
+                        path: path.to_owned(),
+                    });
+                }
+            }
         }
     }
 
@@ -278,6 +342,16 @@ impl VoidApp {
                 }
                 _ => None,
             };
+            if let Event::PathRenamed { old, new, .. } = &event {
+                let moved = |p: &mut String| {
+                    if let Some(n) = oscq_core::ws::renamed(p, old, new) {
+                        *p = n;
+                    }
+                };
+                if let Some(p) = self.view.selected_path.as_mut() {
+                    moved(p);
+                }
+            }
             self.state.apply(event);
             if let Some(id) = restore {
                 self.act(ctx, Action::SelectServer(id));
@@ -355,6 +429,8 @@ impl VoidApp {
                 match e.server.http_base() {
                     Some(url) => {
                         e.conn = ConnState::Connecting;
+                        e.ws = WsState::Absent;
+                        e.listening.clear();
                         let _ = self.backend.commands.send(Command::Connect {
                             server_id: id,
                             http_base: url,
@@ -678,7 +754,30 @@ impl VoidApp {
                     );
                 }
                 if e.conn == ConnState::Connected {
-                    ui.label("values on refresh only");
+                    match &e.ws {
+                        WsState::Live => {
+                            ui.label("values live over the WebSocket");
+                        }
+                        WsState::Absent => {
+                            ui.label("values on refresh only");
+                        }
+                        WsState::Lost { retry_in, reason } => {
+                            ui.colored_label(
+                                ui.visuals().warn_fg_color,
+                                format!(
+                                    "values on refresh only: WebSocket lost ({reason}), retry in {:.1} s",
+                                    retry_in.as_secs_f64()
+                                ),
+                            );
+                        }
+                    }
+                }
+                if e.host_info.as_ref().is_some_and(|h| h.query_ignored) {
+                    ui.weak("HOST_INFO ignored by the server, defaults used")
+                        .on_hover_text(
+                            "The server answered the HOST_INFO query with its address space: \
+                             OSC and WebSocket are taken on the HTTP address and port.",
+                        );
                 }
                 if let Some(t) = &e.tree {
                     ui.label(format!("{} nodes", t.root.count().saturating_sub(1)));
@@ -820,6 +919,7 @@ fn dot_colour(e: &ServerEntry) -> Color32 {
     match e.conn {
         ConnState::Idle | ConnState::Disconnected => Color32::from_gray(150),
         ConnState::Connecting => Color32::from_rgb(220, 200, 60),
+        ConnState::Connected if e.ws == WsState::Live => Color32::from_rgb(60, 150, 230),
         ConnState::Connected => Color32::from_rgb(60, 180, 90),
         ConnState::Failed(_) => Color32::from_rgb(210, 60, 60),
     }
@@ -834,7 +934,11 @@ fn conn_text(e: &ServerEntry) -> String {
     let mut s = match &e.conn {
         ConnState::Idle => "discovered".to_owned(),
         ConnState::Connecting => "connecting".to_owned(),
-        ConnState::Connected => "connected over HTTP".to_owned(),
+        ConnState::Connected => match e.ws {
+            WsState::Live => "connected, WebSocket live".to_owned(),
+            WsState::Absent => "connected over HTTP".to_owned(),
+            WsState::Lost { .. } => "connected over HTTP, WebSocket lost".to_owned(),
+        },
         ConnState::Failed(r) => format!("error: {r}"),
         ConnState::Disconnected => "disconnected".to_owned(),
     };
@@ -935,6 +1039,9 @@ fn tree_tab(ui: &mut egui::Ui, entry: &ServerEntry, view: &mut View, actions: &m
             } else {
                 None
             };
+            if node.is_method() {
+                view.visible_methods.push(node.full_path.clone());
+            }
             ui.horizontal(|ui| {
                 ui.set_height(row_h);
                 tree_row(
@@ -1646,10 +1753,10 @@ fn traffic_tab(
         ));
     });
     ui.weak(
-        "time s  dir  path  type tags  arguments. Outgoing only: no WebSocket in this version.",
+        "time s  dir  path  type tags  arguments. Incoming values arrive over the WebSocket only.",
     );
     if entry.traffic.is_empty() {
-        ui.weak("Nothing sent yet. Every message this app sends is logged here.");
+        ui.weak("No traffic yet. Every message sent, and every value received, is logged here.");
     }
     let records = entry.traffic.view(&view.traffic_filter);
     let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
@@ -1679,6 +1786,10 @@ mod tests {
     }
 
     fn harness() -> Harness {
+        harness_with(Config::default())
+    }
+
+    fn harness_with(config: Config) -> Harness {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .build()
@@ -1693,7 +1804,7 @@ mod tests {
                 events: ev_rx,
                 io: rt.handle().clone(),
             },
-            Config::default(),
+            config,
             None,
         );
         app.started = Instant::now() - Duration::from_secs(10);
@@ -1710,6 +1821,10 @@ mod tests {
         fn frame(&mut self, events: Vec<egui::Event>) -> egui::FullOutput {
             let input = egui::RawInput {
                 events,
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1100.0, 700.0),
+                )),
                 ..egui::RawInput::default()
             };
             let app = &mut self.app;
@@ -1986,6 +2101,480 @@ mod tests {
             sent_long(&h.sent()) > first,
             "the next step starts from the sent value"
         );
+    }
+
+    /// A flat tree of `n` methods `/p000`... and one container `/g`.
+    fn flat_tree(n: usize) -> String {
+        let mut items: Vec<String> = (0..n)
+            .map(|i| {
+                format!(
+                    r#""p{i:03}":{{"FULL_PATH":"/p{i:03}","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}"#
+                )
+            })
+            .collect();
+        items.push(
+            r#""g":{"FULL_PATH":"/g","CONTENTS":{"x":{"FULL_PATH":"/g/x","TYPE":"f"}}}"#.into(),
+        );
+        format!(r#"{{"FULL_PATH":"/","CONTENTS":{{{}}}}}"#, items.join(","))
+    }
+
+    fn connected(h: &mut Harness, doc: &str) -> ServerId {
+        let s = server();
+        let id = s.id;
+        h.events.send(Event::ServerFound(s)).unwrap();
+        h.frame(Vec::new());
+        h.app.act(&h.ctx.clone(), Action::SelectServer(id));
+        h.events
+            .send(Event::TreeLoaded {
+                server_id: id,
+                raw: Arc::from(doc),
+                report: parse_document(doc.as_bytes()).unwrap(),
+            })
+            .unwrap();
+        h.events
+            .send(Event::TransportState {
+                server_id: id,
+                state: oscq_core::TransportState::HttpOnly,
+            })
+            .unwrap();
+        id
+    }
+
+    /// Splits commands into listened and ignored paths, in order.
+    fn listen_commands(cmds: &[Command]) -> (Vec<String>, Vec<String>) {
+        let mut listen = Vec::new();
+        let mut ignore = Vec::new();
+        for c in cmds {
+            match c {
+                Command::Listen { path, .. } => listen.push(path.clone()),
+                Command::Ignore { path, .. } => ignore.push(path.clone()),
+                _ => {}
+            }
+        }
+        (listen, ignore)
+    }
+
+    fn sorted(mut v: Vec<String>) -> Vec<String> {
+        v.sort();
+        v
+    }
+
+    /// PRD 7.4: one `LISTEN` per visible or pinned method, none for containers, `IGNORE` when a
+    /// method leaves, nothing sent while nothing changes, and all dropped with the connection.
+    #[test]
+    fn listens_follow_the_visible_and_pinned_methods() {
+        let mut config = Config::default();
+        config.pinned_paths.insert(
+            "127.0.0.1:2345".into(),
+            vec!["/p399".into(), "/nope".into(), "/g".into()],
+        );
+        let mut h = harness_with(config);
+        let id = connected(&mut h, &flat_tree(400));
+        h.frame(Vec::new());
+        h.frame(Vec::new());
+        let (listen, ignore) = listen_commands(&h.sent());
+        assert!(ignore.is_empty());
+        let visible = h.app.view.visible_methods.clone();
+        assert!(
+            (10..100).contains(&visible.len()),
+            "only the rows on screen: {}",
+            visible.len()
+        );
+        assert!(!visible.contains(&"/p399".to_owned()));
+        let mut expected = visible.clone();
+        expected.push("/p399".into());
+        assert_eq!(sorted(listen), sorted(expected.clone()));
+        assert!(h.sent().is_empty(), "no command while nothing changes");
+        h.frame(Vec::new());
+        assert!(h.sent().is_empty(), "no command while nothing changes");
+
+        h.app.view.selected_path = Some("/p300".into());
+        h.app.view.scroll_to_selected = true;
+        h.frame(Vec::new());
+        h.frame(Vec::new());
+        let (listen, ignore) = listen_commands(&h.sent());
+        let now = h.app.view.visible_methods.clone();
+        assert!(now.contains(&"/p300".to_owned()));
+        assert_eq!(
+            sorted(ignore),
+            sorted(
+                visible
+                    .iter()
+                    .filter(|p| !now.contains(p))
+                    .cloned()
+                    .collect()
+            ),
+            "every method that left"
+        );
+        assert_eq!(
+            sorted(listen),
+            sorted(
+                now.iter()
+                    .filter(|p| !visible.contains(p) && *p != "/p399")
+                    .cloned()
+                    .collect()
+            ),
+            "every method that came in, the pinned one already listened"
+        );
+        let entry = h.app.state.entry(id).unwrap();
+        let mut all = now.clone();
+        all.push("/p399".into());
+        all.dedup();
+        assert_eq!(
+            sorted(entry.listening.iter().cloned().collect()),
+            sorted(all)
+        );
+
+        h.events
+            .send(Event::TransportState {
+                server_id: id,
+                state: oscq_core::TransportState::Disconnected,
+            })
+            .unwrap();
+        h.frame(Vec::new());
+        assert!(
+            h.sent().is_empty(),
+            "the service drops them with the connection"
+        );
+        assert!(h.app.state.entry(id).unwrap().listening.is_empty());
+    }
+
+    /// A value the server pushes replaces what is shown, and the status says where values come
+    /// from.
+    #[test]
+    fn a_pushed_value_is_shown_as_read() {
+        let mut h = harness();
+        let id = connected(&mut h, &flat_tree(3));
+        h.frame(Vec::new());
+        for state in [
+            oscq_core::TransportState::WebSocketLive,
+            oscq_core::TransportState::WebSocketLost {
+                retry_in: Duration::from_millis(500),
+                reason: "closed by the server".into(),
+            },
+            oscq_core::TransportState::WebSocketLive,
+        ] {
+            h.events
+                .send(Event::TransportState {
+                    server_id: id,
+                    state,
+                })
+                .unwrap();
+        }
+        h.events
+            .send(Event::ValueChanged {
+                server_id: id,
+                path: "/p001".into(),
+                value: AttributeReply::Value(serde_json::json!([0.75])),
+            })
+            .unwrap();
+        h.frame(Vec::new());
+        let e = h.app.state.entry(id).unwrap();
+        assert_eq!(e.ws, WsState::Live);
+        assert_eq!(conn_text(e), "connected, WebSocket live");
+        let t = e.tree.as_ref().unwrap();
+        let node = t.node("/p001").unwrap();
+        assert_eq!(shown_value(t, node, true), Shown::Read("0.750".into()));
+    }
+
+    /// The window on the real network service, connected to a synthetic server publishing the
+    /// 5000 node document over HTTP and WebSocket, with OSC received on `osc`.
+    fn live_harness(
+        config: impl FnOnce(&str) -> Config,
+        extra: Vec<(String, crate::synthetic::Reply)>,
+    ) -> (
+        Harness,
+        crate::synthetic::SyntheticServer,
+        crate::synthetic::OscReceiver,
+    ) {
+        use crate::synthetic::{OscReceiver, SyntheticServer, borrowed, large_routes};
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let osc = rt.block_on(OscReceiver::bind("127.0.0.1:0")).unwrap();
+        let mut routes = large_routes(5000, osc.port());
+        routes.extend(extra);
+        let server = rt
+            .block_on(SyntheticServer::start_ws("127.0.0.1:0", borrowed(&routes)))
+            .unwrap();
+        let (ev_tx, ev_rx) = flume::unbounded();
+        let commands = oscq_core::service::spawn(rt.handle(), ev_tx, Arc::new(|| {}));
+        let ctx = egui::Context::default();
+        let app = VoidApp::with_backend(
+            &ctx,
+            Backend {
+                commands,
+                events: ev_rx,
+                io: rt.handle().clone(),
+            },
+            config(&format!("127.0.0.1:{}", server.addr.port())),
+            None,
+        );
+        let mut h = Harness {
+            ctx,
+            app,
+            commands: flume::unbounded().1,
+            events: flume::unbounded().0,
+            _rt: rt,
+        };
+        wait_for(&mut h, "connected and live", |a| {
+            a.state.selected_entry().is_some_and(|e| {
+                e.tree.is_some() && matches!(e.destination, Some(Ok(_))) && e.ws == WsState::Live
+            })
+        });
+        (h, server, osc)
+    }
+
+    fn wait_for(h: &mut Harness, what: &str, done: impl Fn(&VoidApp) -> bool) {
+        let end = Instant::now() + Duration::from_secs(10);
+        while !done(&h.app) {
+            assert!(Instant::now() < end, "timed out waiting for {what}");
+            h.frame(Vec::new());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// M4: a value changed inside the server reaches the window with no user action. Real
+    /// service and WebSocket, synthetic server: the visible method is listened to, the server
+    /// pushes a new value, and the row shows it as read.
+    #[test]
+    fn a_value_changed_on_the_server_appears_without_user_action() {
+        let (mut h, server, _osc) = live_harness(
+            |key| Config {
+                manual_entries: vec![key.to_owned()],
+                last_selected: Some(key.to_owned()),
+                ..Config::default()
+            },
+            Vec::new(),
+        );
+        h.app.act(&h.ctx.clone(), Action::Toggle("/g0".into()));
+        wait_for(&mut h, "/g0 visible and listened to", |a| {
+            a.view.visible_methods.contains(&"/g0/p0".to_owned())
+                && a.state
+                    .selected_entry()
+                    .is_some_and(|e| e.listening.contains("/g0/p0"))
+        });
+        h._rt.block_on(
+            server
+                .ws
+                .wait("LISTEN /g0/p0", |w| w.listens().contains("/g0/p0")),
+        );
+        server.ws.push(crate::synthetic::Push::Osc(
+            "/g0/p0".into(),
+            vec![OscType::Float(0.25)],
+        ));
+        wait_for(&mut h, "the pushed value", |a| {
+            a.state
+                .selected_entry()
+                .and_then(|e| e.tree.as_ref())
+                .and_then(|t| t.node("/g0/p0").map(|n| shown_value(t, n, true)))
+                == Some(Shown::Read("0.250".into()))
+        });
+        let e = h.app.state.selected_entry().unwrap();
+        assert!(
+            e.traffic
+                .view("")
+                .iter()
+                .any(|r| r.direction == oscq_core::Direction::In && r.path == "/g0/p0"),
+            "logged as received"
+        );
+    }
+
+    /// PRD 10, measured on the synthetic server's 5000 node document. Run on a release build:
+    /// `cargo test --release -p void-oscq -- --ignored budget_ --nocapture --test-threads=1`.
+    mod budgets {
+        use super::*;
+        use crate::synthetic::{Reply, large_document};
+
+        fn release_only() {
+            if cfg!(debug_assertions) {
+                panic!("budgets are measured on a release build: cargo test --release");
+            }
+        }
+
+        /// Median, 95th percentile and maximum, printed with the budget.
+        fn report(name: &str, budget: Duration, mut v: Vec<Duration>) -> Duration {
+            v.sort();
+            let at = |q: f64| v[((v.len() - 1) as f64 * q).round() as usize];
+            let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+            let p95 = at(0.95);
+            println!(
+                "BUDGET {name}: n {} median {:.3} ms, p95 {:.3} ms, max {:.3} ms, budget {:.0} ms",
+                v.len(),
+                ms(at(0.5)),
+                ms(p95),
+                ms(at(1.0)),
+                ms(budget)
+            );
+            p95
+        }
+
+        fn key_event(key: Key) -> egui::Event {
+            egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            }
+        }
+
+        /// Budget 2: parse the document, model it as the window does (state, path index, the
+        /// rows of the collapsed tree), under 150 ms.
+        #[test]
+        #[ignore = "budget, release build"]
+        fn budget_parse_and_model_5000_nodes() {
+            release_only();
+            let doc = large_document(5000);
+            let mut times = Vec::new();
+            for _ in 0..30 {
+                let t0 = Instant::now();
+                let report = parse_document(doc.as_bytes()).unwrap();
+                let mut st = AppState::default();
+                let s = server();
+                let id = s.id;
+                st.apply(Event::ServerFound(s));
+                st.apply(Event::TreeLoaded {
+                    server_id: id,
+                    raw: Arc::from(doc.as_str()),
+                    report,
+                });
+                let t = st.entry(id).unwrap().tree.as_ref().unwrap();
+                let rows = tree::visible_rows(&t.root, &[], &t.expanded);
+                times.push(t0.elapsed());
+                assert_eq!((t.paths.len(), rows.len()), (5051, 50));
+            }
+            let budget = Duration::from_millis(150);
+            assert!(report("parse and model 5000 nodes", budget, times) < budget);
+        }
+
+        /// Budget 3: frames while scrolling the fully expanded tree, 5050 rows, under 8 ms at
+        /// p95. Measured on the CPU: the whole frame plus tessellation; GPU time is not included.
+        #[test]
+        #[ignore = "budget, release build"]
+        fn budget_frame_time_scrolling_5000_nodes() {
+            release_only();
+            let mut h = harness();
+            let id = connected(&mut h, &large_document(5000));
+            h.frame(Vec::new());
+            let t = h.app.state.entry_mut(id).unwrap().tree.as_mut().unwrap();
+            t.expanded.extend((0..50).map(|g| format!("/g{g}")));
+            h.app.view.expanded_gen += 1;
+            h.ctx
+                .all_styles_mut(|s| s.scroll_animation = egui::style::ScrollAnimation::none());
+            h.frame(Vec::new());
+            let first = h.app.view.visible_methods.first().cloned();
+            let mut times = Vec::new();
+            for _ in 0..400 {
+                let events = vec![
+                    egui::Event::PointerMoved(egui::pos2(700.0, 350.0)),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0.0, -45.0),
+                        phase: egui::TouchPhase::Move,
+                        modifiers: Modifiers::NONE,
+                    },
+                ];
+                let t0 = Instant::now();
+                let out = h.frame(events);
+                let _ = h.ctx.tessellate(out.shapes, out.pixels_per_point);
+                times.push(t0.elapsed());
+                h.sent();
+            }
+            assert_ne!(
+                h.app.view.visible_methods.first().cloned(),
+                first,
+                "the tree scrolled"
+            );
+            let budget = Duration::from_millis(8);
+            assert!(report("frame while scrolling 5050 rows", budget, times) < budget);
+        }
+
+        /// Budget 5: connected, WebSocket live, 50 pinned listens: an idle frame asks for no
+        /// repaint and sends nothing.
+        #[test]
+        #[ignore = "budget, release build"]
+        fn budget_idle_repaints_with_50_listens() {
+            release_only();
+            let mut config = Config::default();
+            config.pinned_paths.insert(
+                "127.0.0.1:2345".into(),
+                (0..50).map(|i| format!("/g0/p{i}")).collect(),
+            );
+            let mut h = harness_with(config);
+            let id = connected(&mut h, &large_document(5000));
+            h.events
+                .send(Event::TransportState {
+                    server_id: id,
+                    state: oscq_core::TransportState::WebSocketLive,
+                })
+                .unwrap();
+            // A tree appearing starts egui's scroll bar fade in, a few frames long: let it end.
+            let mut settling = 0;
+            while idle_delay(&h.frame(Vec::new())) != Duration::MAX {
+                settling += 1;
+                assert!(settling < 60, "still animating after 60 frames");
+            }
+            println!("BUDGET settle: {settling} animation frames after the tree appeared");
+            assert_eq!(h.app.state.entry(id).unwrap().listening.len(), 50);
+            h.sent();
+            let mut repaints = 0;
+            for _ in 0..100 {
+                let out = h.frame(Vec::new());
+                repaints += usize::from(idle_delay(&out) != Duration::MAX);
+            }
+            println!("BUDGET idle repaints: {repaints} of 100 idle frames asked for one, budget 0");
+            assert_eq!(repaints, 0);
+            assert!(h.sent().is_empty());
+        }
+
+        /// Budget 6: a slider moved with the keyboard, from the frame that reads the key to the
+        /// UDP packet arriving on loopback, through the real network service, under 2 ms at p95.
+        /// Loopback delivery is included, so this is an upper bound of the packet leaving.
+        #[test]
+        #[ignore = "budget, release build"]
+        fn budget_slider_to_udp_packet() {
+            release_only();
+            let (mut h, _server, target) = live_harness(
+                |key| Config {
+                    manual_entries: vec![key.to_owned()],
+                    last_selected: Some(key.to_owned()),
+                    ..Config::default()
+                },
+                vec![("/g0/p0?VALUE".into(), Reply::json(r#"{"VALUE":[0.5]}"#))],
+            );
+            h.app.act(&h.ctx.clone(), Action::Toggle("/g0".into()));
+            wait_for(&mut h, "/g0 loaded", |a| {
+                a.state
+                    .selected_entry()
+                    .and_then(|e| e.tree.as_ref())
+                    .is_some_and(|t| t.fetched.contains("/g0"))
+            });
+            h.app.view.selected_path = Some("/g0/p0".into());
+            h.frame(Vec::new());
+            h.key(Key::Enter);
+            let mut times = Vec::new();
+            for i in 0..300 {
+                let k = if i % 2 == 0 {
+                    Key::ArrowRight
+                } else {
+                    Key::ArrowLeft
+                };
+                let t0 = Instant::now();
+                h.frame(vec![key_event(k)]);
+                let packet = h._rt.block_on(target.recv());
+                times.push(t0.elapsed());
+                let rosc::OscPacket::Message(m) = packet else {
+                    panic!("not a message")
+                };
+                assert_eq!(m.addr, "/g0/p0");
+                h.frame(Vec::new());
+            }
+            let budget = Duration::from_millis(2);
+            assert!(report("slider to UDP packet", budget, times) < budget);
+        }
     }
 
     #[test]
