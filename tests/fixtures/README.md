@@ -8,8 +8,13 @@ Inputs for the `oscq-core` tests. Provenance of every file is listed here. A fix
 | --- | --- |
 | `helper-root.json` | GET `/` on Vidvox OSCQuery Helper serving `SampleDocument`, HTTP port 2345, captured on 2026-10-09 |
 | `helper-hostinfo.json` | GET `/?HOST_INFO` on the same Helper, OSC target port 1240 |
+| `max-root.json` | GET `/` on Max 9, which serves OSCQuery natively on HTTP port 30339, running `max/test.maxpat`; added in commit `1bb8919` |
+| `max-hostinfo.json` | GET `/?HOST_INFO` on the same Max: the same bytes as `max-root.json` |
+| `max/test.maxpat` | the Max 9.2 patcher served for these captures |
 
 The Helper declares `ACCESS` 2, write only, on every node, by design: it forwards to an OSC target whose address space it cannot read (`OSCQueryHelper/OSCQueryHelperAppDelegate.m`, VVOSCQueryProtocol commit `cebb6f8`). Its `HOST_INFO` has no `OSC_IP`, `WS_IP` or `WS_PORT` and advertises no WebSocket extension, the nominal case.
+
+Max serves three parameters, each attribute of a parameter a node of its own (`longname`, `min`, `max`, `raw`, `normalized`...), 36 nodes on five levels. Methods are `ACCESS` 1 or 3 with real `VALUE`s, and no `EXTENSIONS` is listed. Max ignores the `HOST_INFO` query and answers with the whole tree: no `OSC_PORT`, no WebSocket key. It listens on 127.0.0.1 only and does not advertise over Bonjour, so it is reached by manual entry.
 
 Still missing: VDMX and ossia. They can only be captured on a machine running those servers. Procedure, for each server, with its HTTP host and port:
 

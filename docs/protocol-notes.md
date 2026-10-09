@@ -176,3 +176,16 @@ Listed for the human during M0. All items were ruled on 2026-10-09: the proposal
 19. PRD 11, error cases: "returned a non 200 status" as an error. SPEC defines 204 as a legitimate "inappropriate request" answer, and REF answers unsupported attributes with 200 and `{}`. A single value refresh must treat 204, 400 and `{}` as "value not available", not as a transport error. Also SPEC#L64 and SPEC#L71 contradict each other on 204 vs 400 (section 9).
 20. PRD 8.1, `_osc._udp.local.`: not part of the OSCQuery proposal. Its use is a product choice, not a spec requirement. Registration status not proven here (section 1).
 21. PRD header, crate name `void-oscq` free on crates.io: confirmed on 2026-10-09, `GET https://crates.io/api/v1/crates/void-oscq` returned 404, control request for `rosc` returned 200. All three crates are `publish = false` until a publication decision.
+
+## 11. Behaviour of real servers
+
+Observed on captures in `tests/fixtures`, not in the sources above.
+
+| Server | Observation | Client behaviour |
+| --- | --- | --- |
+| OSCQuery Helper | `ACCESS` 2 on every node, `?VALUE` answered `{}` | values sent stay shown as unconfirmed, no refresh after a send |
+| Max 9 | `/?HOST_INFO` answered with the address space document, byte for byte the plain GET | a reply carrying `FULL_PATH` is taken as "HOST_INFO ignored": every default of section 4 applies, OSC and WebSocket on the HTTP address and port, no error |
+| Max 9 | no `EXTENSIONS`, explicit `ACCESS` on every method | readability follows `ACCESS`, so values are read without `VALUE` being advertised |
+| Max 9 | listens on 127.0.0.1, no Bonjour advertisement | reached by manual entry only |
+
+Whether Max 9 accepts a WebSocket on its HTTP port is not known: it advertises none, and the client's single attempt there was not observed on the human's machine.
