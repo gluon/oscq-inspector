@@ -50,21 +50,11 @@ Arguments are parsed against the node's `TYPE`, one per top level type tag.
 ## Status
 
 - M0, protocol groundwork: done, merged.
-<<<<<<< HEAD
-- M1, core client: implemented on branch `void/m1-core`. `cargo test` covers the parser, `HOST_INFO`, attribute queries and UDP sending against a synthetic server. Not yet proven against a running OSCQuery Helper.
-- M2, discovery: implemented on branch `void/m2-discovery`. `cargo test` covers deduplication, stale marking, address order, manual history, and real mDNS on the build machine, including a server killed without a goodbye. Not yet proven on the human's LAN.
-
-Backlog:
-
-- M1 acceptance on the human's machine: `oscq_probe` against OSCQuery Helper, and the value received by the Helper's target.
-- Real captured documents from VDMX, OSCQuery Helper and ossia in `tests/fixtures/captured/`, PRD 12.
-- M2 acceptance on the human's LAN: `oscq_discover` lists OSCQuery Helper as exactly one entry within two seconds.
-- M3 application, M4 WebSocket and performance, M5 release, as in PRD 14.
-=======
-- M1, core client: on branch `void/m1-core`. `cargo test` covers the parser, `HOST_INFO`, attribute queries and UDP sending against a synthetic server and real OSCQuery Helper captures. Proven by the human on 2026-10-09: `oscq_probe` printed the Helper's 22 node tree and a value sent to `/test/my_float` reached the Helper's target.
+- M1, core client: done, merged. `cargo test` covers the parser, `HOST_INFO`, attribute queries and UDP sending against a synthetic server and real OSCQuery Helper captures. Proven by the human on 2026-10-09: `oscq_probe` printed the Helper's 22 node tree and a value sent to `/test/my_float` reached the Helper's target.
+- M2, discovery: merged. `cargo test` covers deduplication, stale marking, address order, manual history, and real mDNS on the build machine, including a server killed without a goodbye. Not yet proven on the human's LAN.
 
 Backlog:
 
 - Real captured documents from VDMX and ossia, PRD 12. OSCQuery Helper is captured.
-- M2 discovery, M3 application, M4 WebSocket and performance, M5 release, as in PRD 14.
->>>>>>> 7398e45
+- M2 acceptance on the human's LAN: `oscq_discover` lists OSCQuery Helper as exactly one entry within two seconds.
+- M3 application, M4 WebSocket and performance, M5 release, as in PRD 14.
