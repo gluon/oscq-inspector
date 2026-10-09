@@ -1,0 +1,10 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/oscq-core",
+    "crates/oscq-discovery",
+    "crates/void-oscq",
+]
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
