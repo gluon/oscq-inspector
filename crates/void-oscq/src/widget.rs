@@ -12,6 +12,8 @@ pub enum WidgetKind {
     FloatDrag,
     /// `i` or `h` with MIN and MAX.
     IntSlider { min: i64, max: i64 },
+    /// `i` or `h` without range: integer drag value bounded by the type, fine with shift held.
+    IntDrag { min: i64, max: i64 },
     /// `i` or `s` with VALS.
     Dropdown { vals: Vec<Value> },
     /// `s` free: single line, commit on enter.
@@ -104,7 +106,16 @@ pub fn choose(node: &Node) -> WidgetKind {
                 {
                     return WidgetKind::Dropdown { vals };
                 }
-                return WidgetKind::Raw;
+                return match tag {
+                    Int32 => WidgetKind::IntDrag {
+                        min: i32::MIN.into(),
+                        max: i32::MAX.into(),
+                    },
+                    _ => WidgetKind::IntDrag {
+                        min: i64::MIN,
+                        max: i64::MAX,
+                    },
+                };
             }
             String => {
                 return match vals(r) {
@@ -228,6 +239,14 @@ mod tests {
     #[test]
     fn the_table_of_prd_9_3() {
         let r01 = json!([{"MIN": 0.0, "MAX": 1.0}]);
+        let i32_drag = WidgetKind::IntDrag {
+            min: i32::MIN.into(),
+            max: i32::MAX.into(),
+        };
+        let i64_drag = WidgetKind::IntDrag {
+            min: i64::MIN,
+            max: i64::MAX,
+        };
         let cases = [
             (
                 json!({"TYPE":"f","RANGE":r01}),
@@ -289,8 +308,10 @@ mod tests {
                 },
             ),
             (json!({"TYPE":"ffff"}), WidgetKind::Raw),
-            (json!({"TYPE":"i"}), WidgetKind::Raw),
-            (json!({"TYPE":"h","RANGE":[{"VALS":[1]}]}), WidgetKind::Raw),
+            (json!({"TYPE":"i"}), i32_drag.clone()),
+            (json!({"TYPE":"i","RANGE":[{"MIN":0}]}), i32_drag),
+            (json!({"TYPE":"h"}), i64_drag.clone()),
+            (json!({"TYPE":"h","RANGE":[{"VALS":[1]}]}), i64_drag),
             (
                 json!({"TYPE":"r","EXTENDED_TYPE":["color.rgba"]}),
                 WidgetKind::Raw,

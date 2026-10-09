@@ -44,13 +44,15 @@ pub struct SendReq {
     pub path: OscPath,
     pub signature: TypeSignature,
     pub args: Vec<OscType>,
+    /// Whether the node can be read back: a refresh after the send is pointless otherwise.
+    pub readable: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SendMode {
     /// From a continuous widget being dragged: rate limited, no refresh.
     Drag,
-    /// Commit, click, release: always sent, value refreshed after.
+    /// Commit, click, release: always sent, value refreshed after when the node is readable.
     Final,
 }
 
@@ -113,6 +115,8 @@ struct View {
     hits: FilterCache,
     json: JsonCache,
     text_buffers: std::collections::HashMap<String, String>,
+    /// Paths with a drag send not yet followed by its final send.
+    drag_open: std::collections::HashSet<String>,
     traffic_filter: String,
     manual_open: bool,
     manual_text: String,
@@ -399,7 +403,8 @@ impl VoidApp {
                     }
                     SendMode::Final => {
                         let r = self.limiter.finish(now, &key, req);
-                        self.dispatch(r, true);
+                        let refresh = r.readable;
+                        self.dispatch(r, refresh);
                     }
                 }
                 if let Some(wait) = self.limiter.next_due(now) {
@@ -1004,7 +1009,17 @@ fn tree_row(
     let pending = t.pending.get(&node.full_path);
     if p.widget {
         let focus = selected && std::mem::take(&mut view.focus_widget);
-        if let Some((args, mode)) = edit_widget(ui, node, pending, view, focus)
+        let edit = edit_widget(ui, node, pending, view, focus);
+        match &edit {
+            Some((_, SendMode::Drag)) => {
+                view.drag_open.insert(node.full_path.clone());
+            }
+            Some((_, SendMode::Final)) => {
+                view.drag_open.remove(&node.full_path);
+            }
+            None => {}
+        }
+        if let Some((args, mode)) = edit
             && let (Some(path), Some(sig)) = (node.path.clone(), signature_of(node))
         {
             actions.push(Action::Send(
@@ -1013,24 +1028,28 @@ fn tree_row(
                     path,
                     signature: sig,
                     args,
+                    readable: access.readable(),
                 },
                 mode,
             ));
         }
     }
-    if p.value && node.is_method() {
-        if let Some(args) = pending {
-            ui.label(
-                RichText::new(format!("{} (sent)", traffic::args_text(args)))
-                    .italics()
-                    .weak(),
-            )
-            .on_hover_text("Sent, not yet confirmed by the server");
-        } else if t.unavailable.contains(&node.full_path) {
-            ui.weak("unavailable");
-        } else if let Some(v) = &node.value {
-            ui.label(widget::value_text(v));
+    match shown_value(t, node, p.value) {
+        Shown::Sent(text) => {
+            ui.label(RichText::new(format!("{text} (sent)")).italics().weak())
+                .on_hover_text(if p.value {
+                    "Sent, not yet confirmed by the server"
+                } else {
+                    "Sent, not confirmed: this node cannot be read"
+                });
         }
+        Shown::Unavailable => {
+            ui.weak("unavailable");
+        }
+        Shown::Read(text) => {
+            ui.label(text);
+        }
+        Shown::Nothing => {}
     }
     if let Some(reason) = &p.blocked {
         ui.weak("read only").on_hover_text(reason);
@@ -1046,6 +1065,35 @@ fn tree_row(
         );
         ui.weak(RichText::new(flags).monospace());
     }
+}
+
+/// What the value column of a row shows.
+#[derive(Debug, PartialEq)]
+enum Shown {
+    /// The last value sent, unconfirmed until a value is read from the server (PRD 9.6). Shown on
+    /// a node that cannot be read too, where nothing else ever replaces it.
+    Sent(String),
+    Unavailable,
+    Read(String),
+    Nothing,
+}
+
+fn shown_value(t: &crate::state::TreeState, node: &oscq_core::Node, readable: bool) -> Shown {
+    if !node.is_method() {
+        return Shown::Nothing;
+    }
+    if let Some(args) = t.pending.get(&node.full_path) {
+        return Shown::Sent(traffic::args_text(args));
+    }
+    if !readable {
+        return Shown::Nothing;
+    }
+    if t.unavailable.contains(&node.full_path) {
+        return Shown::Unavailable;
+    }
+    node.value
+        .as_ref()
+        .map_or(Shown::Nothing, |v| Shown::Read(widget::value_text(v)))
 }
 
 fn leaf_name(node: &oscq_core::Node) -> String {
@@ -1215,6 +1263,17 @@ fn current_colour(node: &oscq_core::Node, pending: Option<&Vec<OscType>>) -> Col
     from_bytes([f(0), f(1), f(2), f(3)])
 }
 
+/// Whether a widget interaction sends, and how. `drag_open`: this drag already sent.
+fn send_mode(dragged: bool, drag_stopped: bool, moved: bool, drag_open: bool) -> Option<SendMode> {
+    if dragged {
+        moved.then_some(SendMode::Drag)
+    } else if drag_stopped {
+        (moved || drag_open).then_some(SendMode::Final)
+    } else {
+        moved.then_some(SendMode::Final)
+    }
+}
+
 /// Draws the widget for a node and returns the arguments to send, if the user changed anything.
 fn edit_widget(
     ui: &mut egui::Ui,
@@ -1228,15 +1287,11 @@ fn edit_widget(
     let fine = ui.input(|i| i.modifiers.shift);
     // Decided on the value itself, not on `changed()`, which a text edit in progress also
     // reports. A click alone ends a drag too: on release, send only if the value moved, now or
-    // through a drag send still awaiting its refresh.
+    // through drag sends of this drag. The sent value is no evidence of a drag: on a node that
+    // cannot be read it stays, and every click would send it again.
+    let drag_open = view.drag_open.contains(&path);
     let decide = |r: &egui::Response, moved: bool| {
-        if r.dragged() {
-            moved.then_some(SendMode::Drag)
-        } else if r.drag_stopped() {
-            (moved || pending.is_some()).then_some(SendMode::Final)
-        } else {
-            moved.then_some(SendMode::Final)
-        }
+        send_mode(r.dragged(), r.drag_stopped(), moved, drag_open)
     };
     let focus_on = |r: &egui::Response| {
         if focus {
@@ -1286,6 +1341,20 @@ fn edit_widget(
             );
             focus_on(&s);
             decide(&s, v != before).map(|m| (vec![OscType::Long(v)], m))
+        }
+        WidgetKind::IntDrag { min, max } => {
+            let mut v = current_f64(node, pending, 0)
+                .map_or(0, |f| f.round() as i64)
+                .clamp(min, max);
+            let before = v;
+            let d = ui.add(
+                egui::DragValue::new(&mut v)
+                    .update_while_editing(false)
+                    .range(min..=max)
+                    .speed(if fine { 0.05 } else { 0.5 }),
+            );
+            focus_on(&d);
+            decide(&d, v != before).map(|m| (vec![OscType::Long(v)], m))
         }
         WidgetKind::Dropdown { vals } => {
             let current = match pending.and_then(|p| p.first()) {
@@ -1599,7 +1668,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
-    use oscq_core::{DiscoveredServer, Origin, parse_document};
+    use oscq_core::{AttributeReply, DiscoveredServer, Origin, parse_document};
 
     struct Harness {
         ctx: egui::Context,
@@ -1775,6 +1844,7 @@ mod tests {
             path: OscPath::parse("/test/my_float").unwrap(),
             signature: TypeSignature::parse("f").unwrap(),
             args: vec![OscType::Double(v)],
+            readable: true,
         };
         let ctx = h.ctx.clone();
         h.app.act(&ctx, Action::Send(req(0.1), SendMode::Drag));
@@ -1800,6 +1870,121 @@ mod tests {
         assert!(
             h.sent().is_empty(),
             "held drag value dropped after the final one"
+        );
+    }
+
+    #[test]
+    fn a_click_without_move_sends_nothing_a_release_after_drag_sends_final() {
+        assert_eq!(send_mode(false, true, false, false), None, "plain click");
+        assert_eq!(
+            send_mode(false, true, false, true),
+            Some(SendMode::Final),
+            "release after drag sends"
+        );
+        assert_eq!(send_mode(true, false, true, false), Some(SendMode::Drag));
+        assert_eq!(send_mode(true, false, false, true), None);
+        assert_eq!(send_mode(false, false, true, false), Some(SendMode::Final));
+    }
+
+    fn sent_long(cmds: &[Command]) -> i64 {
+        match cmds {
+            [
+                Command::SendOsc {
+                    refresh_after: false,
+                    args,
+                    ..
+                },
+            ] => match args.as_slice() {
+                [OscType::Long(v)] => *v,
+                other => panic!("unexpected arguments {other:?}"),
+            },
+            other => panic!("expected one send without refresh, got {other:?}"),
+        }
+    }
+
+    /// The real Helper: `/test/my_longlong` is `h`, ACCESS 2, RANGE 0 to 100, no VALUE, and a value
+    /// query answers `{}`.
+    #[test]
+    fn a_sent_value_stays_shown_on_a_write_only_node() {
+        let root = include_str!("../../../tests/fixtures/helper-root.json");
+        let host = include_str!("../../../tests/fixtures/helper-hostinfo.json");
+        let path = "/test/my_longlong";
+        let mut h = harness();
+        let s = server();
+        let id = s.id;
+        h.events.send(Event::ServerFound(s)).unwrap();
+        h.frame(Vec::new());
+        let ctx = h.ctx.clone();
+        h.app.act(&ctx, Action::SelectServer(id));
+        let (info, _) = oscq_core::HostInfo::parse(host.as_bytes()).unwrap();
+        let destination = info.osc_destination("127.0.0.1", 2345);
+        let tree_loaded = || Event::TreeLoaded {
+            server_id: id,
+            raw: Arc::from(root),
+            report: parse_document(root.as_bytes()).unwrap(),
+        };
+        h.events
+            .send(Event::HostInfo {
+                server_id: id,
+                info,
+                destination,
+            })
+            .unwrap();
+        h.events.send(tree_loaded()).unwrap();
+        h.frame(Vec::new());
+        h.app.act(&ctx, Action::Toggle("/test".into()));
+        h.app.view.selected_path = Some(path.into());
+        h.frame(Vec::new());
+        h.sent();
+
+        h.key(Key::Enter);
+        h.key(Key::ArrowRight);
+        let first = sent_long(&h.sent());
+        assert!(first > 0, "moved off the minimum");
+
+        let sub = r#"{"FULL_PATH":"/test","CONTENTS":{"my_longlong":{"FULL_PATH":"/test/my_longlong","TYPE":"h","ACCESS":2,"VALUE":[0],"RANGE":[{"MIN":0,"MAX":100}]}}}"#;
+        for event in [
+            Event::ValueChanged {
+                server_id: id,
+                path: path.into(),
+                value: AttributeReply::Unsupported,
+            },
+            Event::ValueChanged {
+                server_id: id,
+                path: path.into(),
+                value: AttributeReply::NoContent,
+            },
+            Event::SubtreeLoaded {
+                server_id: id,
+                path: "/test".into(),
+                raw: Arc::from(sub),
+                report: parse_document(sub.as_bytes()).unwrap(),
+            },
+            tree_loaded(),
+        ] {
+            h.events.send(event).unwrap();
+            h.frame(Vec::new());
+            h.frame(Vec::new());
+            let t = h.app.state.entry(id).unwrap().tree.as_ref().unwrap();
+            let node = t.root.find(path).unwrap();
+            assert_eq!(
+                shown_value(t, node, false),
+                Shown::Sent(first.to_string()),
+                "still the sent value, unconfirmed"
+            );
+            assert_eq!(
+                current_f64(node, t.pending.get(path), 0),
+                Some(first as f64),
+                "the widget stays where it was put"
+            );
+        }
+        assert!(h.sent().is_empty(), "no refresh, no send again");
+
+        h.key(Key::Enter);
+        h.key(Key::ArrowRight);
+        assert!(
+            sent_long(&h.sent()) > first,
+            "the next step starts from the sent value"
         );
     }
 

@@ -34,7 +34,8 @@ pub struct TreeState {
     pub expanded: HashSet<String>,
     /// Containers whose subtree has been fetched since the tree loaded.
     pub fetched: HashSet<String>,
-    /// Values sent and not yet confirmed by a refresh, drawn differently.
+    /// Values sent and not yet replaced by a value read from the server, drawn as unconfirmed.
+    /// On a node that cannot be read, they stay until the next send.
     pub pending: HashMap<String, Vec<OscType>>,
     /// Paths whose value query answered 204 or an empty object.
     pub unavailable: HashSet<String>,
@@ -88,6 +89,13 @@ impl ServerEntry {
             (None, None) => Some("HOST_INFO not received yet".to_owned()),
         }
     }
+}
+
+/// Whether a freshly loaded document settles the value sent to `path`: only a value actually
+/// read does, which a node that cannot be read never carries. A node gone from the tree drops it.
+fn settled(root: &Node, path: &str, value_supported: bool) -> bool {
+    root.find(path)
+        .is_none_or(|n| n.effective_access(value_supported).readable() && n.value.is_some())
 }
 
 pub fn host_port(s: &DiscoveredServer) -> String {
@@ -166,14 +174,19 @@ impl AppState {
                 report,
             } => {
                 if let Some(e) = self.entry_mut(server_id) {
+                    let value_supported = e.value_supported();
                     let previous = e.tree.take();
                     let version = previous.as_ref().map_or(0, |t| t.version + 1);
-                    let expanded = previous.map(|t| t.expanded).unwrap_or_default();
+                    let (expanded, mut pending) = previous
+                        .map(|t| (t.expanded, t.pending))
+                        .unwrap_or_default();
+                    pending.retain(|p, _| !settled(&report.root, p, value_supported));
                     e.tree = Some(TreeState {
                         root: report.root,
                         raw,
                         diagnostics: report.diagnostics,
                         expanded,
+                        pending,
                         version,
                         ..TreeState::default()
                     });
@@ -185,7 +198,9 @@ impl AppState {
                 raw,
                 report,
             } => {
-                if let Some(t) = self.entry_mut(server_id).and_then(|e| e.tree.as_mut())
+                if let Some(e) = self.entry_mut(server_id)
+                    && let value_supported = e.value_supported()
+                    && let Some(t) = e.tree.as_mut()
                     && let Some(index) = tree::find(&t.root, &path)
                     && let Some(node) = tree::node_at_mut(&mut t.root, &index)
                 {
@@ -197,8 +212,11 @@ impl AppState {
                     } else {
                         format!("{path}/")
                     };
-                    t.pending
-                        .retain(|p, _| *p != path && !p.starts_with(&prefix));
+                    let root = &t.root;
+                    t.pending.retain(|p, _| {
+                        (*p != path && !p.starts_with(&prefix))
+                            || !settled(root, p, value_supported)
+                    });
                     t.unavailable
                         .retain(|p| *p != path && !p.starts_with(&prefix));
                     t.version += 1;
@@ -210,14 +228,15 @@ impl AppState {
                 value,
             } => {
                 if let Some(t) = self.entry_mut(server_id).and_then(|e| e.tree.as_mut()) {
-                    t.pending.remove(&path);
                     let node =
                         tree::find(&t.root, &path).and_then(|i| tree::node_at_mut(&mut t.root, &i));
                     match (value, node) {
                         (AttributeReply::Value(v), Some(node)) => {
                             node.value = Some(parse_value(v));
+                            t.pending.remove(&path);
                             t.unavailable.remove(&path);
                         }
+                        // No value read: what the user sent stays shown, unconfirmed.
                         (AttributeReply::Unsupported | AttributeReply::NoContent, _) => {
                             t.unavailable.insert(path);
                         }
@@ -360,6 +379,43 @@ mod tests {
                 .contains("/a"),
             "expansion kept across reload"
         );
+    }
+
+    #[test]
+    fn a_reload_replaces_a_sent_value_only_with_a_value_read() {
+        let mut st = AppState::default();
+        let s = server();
+        let id = s.id;
+        st.apply(Event::ServerFound(s));
+        loaded(&mut st, id);
+        let t = st.entry_mut(id).unwrap().tree.as_mut().unwrap();
+        for p in ["/w", "/r", "/r_none", "/gone"] {
+            t.pending.insert(p.into(), vec![OscType::Int(7)]);
+        }
+        let raw = r#"{"FULL_PATH":"/","CONTENTS":{
+            "w":{"FULL_PATH":"/w","TYPE":"i","ACCESS":2,"VALUE":[1]},
+            "r":{"FULL_PATH":"/r","TYPE":"i","ACCESS":3,"VALUE":[1]},
+            "r_none":{"FULL_PATH":"/r_none","TYPE":"i","ACCESS":3}}}"#;
+        st.apply(Event::TreeLoaded {
+            server_id: id,
+            raw: Arc::from(raw),
+            report: parse_document(raw.as_bytes()).unwrap(),
+        });
+        let t = st.entry(id).unwrap().tree.as_ref().unwrap();
+        let mut kept: Vec<&str> = t.pending.keys().map(String::as_str).collect();
+        kept.sort_unstable();
+        assert_eq!(kept, ["/r_none", "/w"]);
+
+        for value in [AttributeReply::Unsupported, AttributeReply::NoContent] {
+            st.apply(Event::ValueChanged {
+                server_id: id,
+                path: "/w".into(),
+                value,
+            });
+        }
+        let t = st.entry(id).unwrap().tree.as_ref().unwrap();
+        assert!(t.pending.contains_key("/w"), "no value read, still shown");
+        assert!(t.unavailable.contains("/w"));
     }
 
     #[test]

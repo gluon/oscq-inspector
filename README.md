@@ -62,11 +62,10 @@ Arguments are parsed against the node's `TYPE`, one per top level type tag.
 - M0, protocol groundwork: done, merged.
 - M1, core client: done, merged. `cargo test` covers the parser, `HOST_INFO`, attribute queries and UDP sending against a synthetic server and real OSCQuery Helper captures. Proven by the human on 2026-10-09: `oscq_probe` printed the Helper's 22 node tree and a value sent to `/test/my_float` reached the Helper's target.
 - M2, discovery: done, merged. Proven on the human's LAN on 2026-10-09: one entry in 0.18 s, lo0 and en0 merged, LAN IPv4 promoted.
-- M3, application: on branch `void/m3-app`. `cargo test` covers the network service, the widget table, the tree model, the JSON slicing, the traffic log, rate limiting, the config, and the UI headless (idle frames, keyboard, bounded event drain). Not yet proven on the human's Mac against OSCQuery Helper.
+- M3, application: on branch `void/m3-app`. `cargo test` covers the network service, the widget table, the tree model, the JSON slicing, the traffic log, rate limiting, the config, and the UI headless (idle frames, keyboard, bounded event drain, a sent value kept on a write only node). Tested by the human on the Mac against OSCQuery Helper on 2026-10-09: sends correct byte for byte on `/test/my_longlong` (`,h`); the widget jumped back after release on write only nodes, fixed since, not yet proven on the Mac.
 
 Backlog:
 
 - Real captured documents from VDMX and ossia, PRD 12. OSCQuery Helper is captured.
 - M3 acceptance on the human's Mac: browse OSCQuery Helper, change a value, JSON and traffic tabs correct.
-- To confirm: the literal reading of the PRD 9.3 table (`i` without range gets the raw field), see docs/decisions.md.
 - M4 WebSocket and performance, M5 release, as in PRD 14.
