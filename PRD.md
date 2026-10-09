@@ -66,7 +66,7 @@ Precedence on protocol questions: the proposal wins. Where the proposal contradi
 | Logging | `tracing` with `tracing-subscriber`, env filter | Needed to debug other people's servers |
 | Error type | `thiserror` in library crates, `anyhow` at the binary boundary | Library errors are matched on, application errors are reported |
 | Fuzzy matching | `nucleo-matcher` | Path search over thousands of nodes must stay interactive |
-| Network to UI channel | `flume` | Non blocking drain from the UI thread at the top of every frame, see 6.2. The channel `mdns-sd` already returns, so discovery needs no bridge thread |
+| Channels, both directions | `flume` | One channel crate for the whole project, see 6.2: non blocking drain on the UI thread, `recv_async` on the network side. The channel `mdns-sd` already returns, so discovery needs no bridge thread |
 | URLs | `url` | Typed HTTP and WebSocket addresses, the same crate `reqwest` re-exports |
 
 Do not add a dependency that is not in this table without recording the reason in `docs/decisions.md`. In particular: no `egui` widget mega crates, no ORM, no actor framework, no config framework. 
@@ -109,7 +109,7 @@ Three kinds of thread, with explicit boundaries.
 
 Communication is message passing in both directions, no shared locks on application state:
 
-- UI to network: `tokio::sync::mpsc::UnboundedSender<Command>`.
+- UI to network: `flume::Sender<Command>`, from an unbounded channel. The network side receives with `recv_async` inside the `tokio` runtime.
 - Network to UI: `flume::Sender<Event>`, drained at the top of every frame in a non blocking loop with a bounded iteration count so a flood cannot starve rendering.
 - Any event that mutates visible state calls `egui::Context::request_repaint()`.
 
