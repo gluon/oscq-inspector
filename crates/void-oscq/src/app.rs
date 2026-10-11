@@ -753,24 +753,14 @@ impl VoidApp {
                         format!("not controllable: {reason}"),
                     );
                 }
-                if e.conn == ConnState::Connected {
-                    match &e.ws {
-                        WsState::Live => {
-                            ui.label("values live over the WebSocket");
-                        }
-                        WsState::Absent => {
-                            ui.label("values on refresh only");
-                        }
-                        WsState::Lost { retry_in, reason } => {
-                            ui.colored_label(
-                                ui.visuals().warn_fg_color,
-                                format!(
-                                    "values on refresh only: WebSocket lost ({reason}), retry in {:.1} s",
-                                    retry_in.as_secs_f64()
-                                ),
-                            );
-                        }
+                match values_text(e) {
+                    Some((text, true)) => {
+                        ui.colored_label(ui.visuals().warn_fg_color, text);
                     }
+                    Some((text, false)) => {
+                        ui.label(text);
+                    }
+                    None => {}
                 }
                 if e.host_info.as_ref().is_some_and(|h| h.query_ignored) {
                     ui.weak("HOST_INFO ignored by the server, defaults used")
@@ -920,9 +910,33 @@ fn dot_colour(e: &ServerEntry) -> Color32 {
         ConnState::Idle | ConnState::Disconnected => Color32::from_gray(150),
         ConnState::Connecting => Color32::from_rgb(220, 200, 60),
         ConnState::Connected if e.ws == WsState::Live => Color32::from_rgb(60, 150, 230),
+        ConnState::Connected if e.ws == WsState::Open => Color32::from_rgb(120, 170, 160),
         ConnState::Connected => Color32::from_rgb(60, 180, 90),
         ConnState::Failed(_) => Color32::from_rgb(210, 60, 60),
     }
+}
+
+/// Where the values shown come from, as observed (PRD 9.6), and whether it is a warning. An open
+/// WebSocket is not claimed live until the server has sent something on it.
+fn values_text(e: &ServerEntry) -> Option<(String, bool)> {
+    if e.conn != ConnState::Connected {
+        return None;
+    }
+    Some(match &e.ws {
+        WsState::Live => ("values live over the WebSocket".to_owned(), false),
+        WsState::Open => (
+            "WebSocket connected, no update received yet: values on refresh only".to_owned(),
+            false,
+        ),
+        WsState::Absent => ("values on refresh only".to_owned(), false),
+        WsState::Lost { retry_in, reason } => (
+            format!(
+                "values on refresh only: WebSocket lost ({reason}), retry in {:.1} s",
+                retry_in.as_secs_f64()
+            ),
+            true,
+        ),
+    })
 }
 
 fn status_dot(ui: &mut egui::Ui, colour: Color32) {
@@ -936,6 +950,7 @@ fn conn_text(e: &ServerEntry) -> String {
         ConnState::Connecting => "connecting".to_owned(),
         ConnState::Connected => match e.ws {
             WsState::Live => "connected, WebSocket live".to_owned(),
+            WsState::Open => "connected, WebSocket open, nothing received yet".to_owned(),
             WsState::Absent => "connected over HTTP".to_owned(),
             WsState::Lost { .. } => "connected over HTTP, WebSocket lost".to_owned(),
         },
@@ -2239,6 +2254,56 @@ mod tests {
         assert!(h.app.state.entry(id).unwrap().listening.is_empty());
     }
 
+    /// PRD 9.6: no WebSocket, a WebSocket accepted and silent, and a WebSocket that notifies are
+    /// three states the window tells apart, and only the last one is called live.
+    #[test]
+    fn no_websocket_silent_websocket_and_notifying_websocket_are_told_apart() {
+        let mut h = harness();
+        let id = connected(&mut h, &flat_tree(3));
+        let mut seen = Vec::new();
+        for state in [
+            None,
+            Some(oscq_core::TransportState::WebSocketOpen),
+            Some(oscq_core::TransportState::WebSocketLive),
+        ] {
+            if let Some(state) = state {
+                h.events
+                    .send(Event::TransportState {
+                        server_id: id,
+                        state,
+                    })
+                    .unwrap();
+            }
+            h.frame(Vec::new());
+            let e = h.app.state.entry(id).unwrap();
+            let (text, warning) = values_text(e).unwrap();
+            assert!(!warning);
+            seen.push((e.ws.clone(), text, conn_text(e), dot_colour(e)));
+        }
+        let [absent, open, live] = &seen[..] else {
+            panic!()
+        };
+        assert_eq!(absent.0, WsState::Absent);
+        assert_eq!(absent.1, "values on refresh only");
+        assert_eq!(absent.2, "connected over HTTP");
+        assert_eq!(open.0, WsState::Open);
+        assert_eq!(
+            open.1,
+            "WebSocket connected, no update received yet: values on refresh only"
+        );
+        assert_eq!(open.2, "connected, WebSocket open, nothing received yet");
+        assert_eq!(live.0, WsState::Live);
+        assert_eq!(live.1, "values live over the WebSocket");
+        assert_eq!(live.2, "connected, WebSocket live");
+        for (a, b) in [(absent, open), (open, live), (absent, live)] {
+            assert!(a.1 != b.1 && a.2 != b.2 && a.3 != b.3, "{a:?} {b:?}");
+        }
+        assert!(
+            !absent.1.contains("live") && !open.1.contains("live") && !open.2.contains("live"),
+            "only a notifying socket is called live"
+        );
+    }
+
     /// A value the server pushes replaces what is shown, and the status says where values come
     /// from.
     #[test]
@@ -2321,7 +2386,7 @@ mod tests {
         };
         wait_for(&mut h, "connected and live", |a| {
             a.state.selected_entry().is_some_and(|e| {
-                e.tree.is_some() && matches!(e.destination, Some(Ok(_))) && e.ws == WsState::Live
+                e.tree.is_some() && matches!(e.destination, Some(Ok(_))) && e.ws == WsState::Open
             })
         });
         (h, server, osc)
@@ -2361,6 +2426,13 @@ mod tests {
                 .ws
                 .wait("LISTEN /g0/p0", |w| w.listens().contains("/g0/p0")),
         );
+        for _ in 0..20 {
+            h.frame(Vec::new());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let e = h.app.state.selected_entry().unwrap();
+        assert_eq!(e.ws, WsState::Open, "listening, nothing received: not live");
+        assert!(!values_text(e).unwrap().0.contains("live"));
         server.ws.push(crate::synthetic::Push::Osc(
             "/g0/p0".into(),
             vec![OscType::Float(0.25)],
@@ -2373,6 +2445,8 @@ mod tests {
                 == Some(Shown::Read("0.250".into()))
         });
         let e = h.app.state.selected_entry().unwrap();
+        assert_eq!(e.ws, WsState::Live, "live once the server has sent a value");
+        assert_eq!(values_text(e).unwrap().0, "values live over the WebSocket");
         assert!(
             e.traffic
                 .view("")

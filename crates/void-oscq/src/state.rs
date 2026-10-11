@@ -32,12 +32,13 @@ pub enum WsState {
     /// None: values on refresh only.
     #[default]
     Absent,
+    /// Accepted by the server, nothing received on it yet. A server may accept and never
+    /// notify (Max 9): values are on refresh only as far as has been observed.
+    Open,
+    /// The server has sent at least one notification or value on this socket.
     Live,
     /// Lost or refused, retried after `retry_in`.
-    Lost {
-        retry_in: Duration,
-        reason: String,
-    },
+    Lost { retry_in: Duration, reason: String },
 }
 
 #[derive(Debug, Default)]
@@ -290,6 +291,7 @@ impl AppState {
                     match state {
                         TransportState::Connecting => e.conn = ConnState::Connecting,
                         TransportState::HttpOnly => e.conn = ConnState::Connected,
+                        TransportState::WebSocketOpen => e.ws = WsState::Open,
                         TransportState::WebSocketLive => e.ws = WsState::Live,
                         TransportState::WebSocketLost { retry_in, reason } => {
                             e.ws = WsState::Lost { retry_in, reason }

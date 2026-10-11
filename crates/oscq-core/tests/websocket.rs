@@ -40,8 +40,21 @@ fn is_state(e: &Event, want: fn(&TransportState) -> bool) -> bool {
     matches!(e, Event::TransportState { state, .. } if want(state))
 }
 
+fn open(s: &TransportState) -> bool {
+    *s == TransportState::WebSocketOpen
+}
+
 fn live(s: &TransportState) -> bool {
     *s == TransportState::WebSocketLive
+}
+
+fn states(seen: &[Event]) -> Vec<TransportState> {
+    seen.iter()
+        .filter_map(|e| match e {
+            Event::TransportState { state, .. } => Some(state.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn lost(s: &TransportState) -> bool {
@@ -56,7 +69,7 @@ async fn connect(h: &Harness, server: &SyntheticServer) -> (ServerId, Vec<Event>
             http_base: server.base_url(),
         })
         .unwrap();
-    let seen = h.until(|e| is_state(e, live)).await;
+    let seen = h.until(|e| is_state(e, open)).await;
     (id, seen)
 }
 
@@ -98,17 +111,14 @@ async fn same_port_websocket_goes_live_and_listens_follow_the_commands() {
     let server = same_port_server().await;
     let h = harness();
     let (id, seen) = connect(&h, &server).await;
-    let order: Vec<bool> = seen
-        .iter()
-        .filter_map(|e| match e {
-            Event::TransportState { state, .. } => Some(*state == TransportState::HttpOnly),
-            _ => None,
-        })
-        .collect();
     assert_eq!(
-        order,
-        [false, true, false],
-        "connecting, refresh only, live"
+        states(&seen),
+        [
+            TransportState::Connecting,
+            TransportState::HttpOnly,
+            TransportState::WebSocketOpen
+        ],
+        "open, not live: nothing has arrived yet"
     );
 
     listen(&h, id, "/a/x");
@@ -126,6 +136,11 @@ async fn same_port_websocket_goes_live_and_listens_follow_the_commands() {
         .push(Push::Osc("/a/x".into(), vec![OscType::Float(0.75)]));
     let seen = h.until(|e| value_of(e, "/a/x").is_some()).await;
     assert_eq!(value_of(seen.last().unwrap(), "/a/x"), Some(json!([0.75])));
+    assert_eq!(
+        states(&seen),
+        [TransportState::WebSocketLive],
+        "live with the first value, before it"
+    );
     assert!(
         seen.iter().all(|e| value_of(e, "/a/y").is_none()),
         "the server sends only what is listened to"
@@ -175,7 +190,7 @@ async fn drop_mid_session_reconnects_and_listens_again() {
         .await;
 
     server.ws.push(Push::Drop);
-    let seen = h.until(|e| is_state(e, live)).await;
+    let seen = h.until(|e| is_state(e, open)).await;
     let retry = seen
         .iter()
         .find_map(|e| match e {
@@ -205,7 +220,7 @@ async fn drop_mid_session_reconnects_and_listens_again() {
 }
 
 /// PRD 11: a WebSocket advertised but refusing connections. Retried with a growing delay, no
-/// error raised, and live as soon as the server accepts.
+/// error raised, and open as soon as the server accepts.
 #[tokio::test(flavor = "multi_thread")]
 async fn advertised_websocket_refusing_is_retried_until_it_accepts() {
     let ws_only = SyntheticServer::start("127.0.0.1:0", Vec::new())
@@ -250,10 +265,10 @@ async fn advertised_websocket_refusing_is_retried_until_it_accepts() {
 
     listen(&h, id, "/b");
     ws_only.ws.set_accept(true);
-    seen.extend(h.until(|e| is_state(e, live)).await);
+    seen.extend(h.until(|e| is_state(e, open)).await);
     ws_only
         .ws
-        .wait("listen sent once live", |w| w.listens() == set(&["/b"]))
+        .wait("listen sent once open", |w| w.listens() == set(&["/b"]))
         .await;
     assert!(
         seen.iter().all(|e| !matches!(e, Event::Error { .. })),
@@ -307,7 +322,7 @@ async fn structure_commands_reload_and_move_listens() {
         .await;
     server.ws.push(Push::Drop);
     server.ws.wait("third session", |w| w.sessions() == 3).await;
-    h.until(|e| is_state(e, live)).await;
+    h.until(|e| is_state(e, open)).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(server.ws.listens().is_empty(), "{:?}", server.ws.listens());
 }
@@ -370,4 +385,59 @@ async fn disconnect_closes_the_websocket_for_good() {
     let later = h.quiet(Duration::from_millis(1500)).await;
     assert!(later.is_empty(), "{later:?}");
     assert_eq!(server.ws.sessions(), 1, "no reconnection");
+}
+
+/// Max 9 accepts the socket and the LISTEN, and never sends anything. A socket that stays silent
+/// is open, never live; the first frame from the server makes it live, once per socket.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_silent_socket_is_open_and_becomes_live_only_when_the_server_sends() {
+    let server = same_port_server().await;
+    let h = harness();
+    let (id, _) = connect(&h, &server).await;
+    listen(&h, id, "/a/x");
+    server
+        .ws
+        .wait("listen", |w| w.listens() == set(&["/a/x"]))
+        .await;
+    let silent = h.quiet(Duration::from_millis(1000)).await;
+    assert!(
+        silent.iter().all(|e| !is_state(e, live)),
+        "a listen accepted is not a notification: {silent:?}"
+    );
+
+    // A frame that cannot be read proves nothing either.
+    server.ws.push(Push::Raw(b"\x00garbage".to_vec()));
+    let garbage = h.quiet(Duration::from_millis(300)).await;
+    assert!(garbage.iter().all(|e| !is_state(e, live)), "{garbage:?}");
+
+    server
+        .ws
+        .push(Push::Osc("/a/x".into(), vec![OscType::Float(0.5)]));
+    server
+        .ws
+        .push(Push::Osc("/a/x".into(), vec![OscType::Double(0.6)]));
+    let mut seen = h.until(|e| value_of(e, "/a/x") == Some(json!([0.6]))).await;
+    seen.extend(h.quiet(Duration::from_millis(200)).await);
+    assert_eq!(
+        states(&seen),
+        [TransportState::WebSocketLive],
+        "live once, at the first value"
+    );
+
+    // A new socket has proven nothing yet.
+    server.ws.push(Push::Drop);
+    let seen = h.until(|e| is_state(e, open)).await;
+    assert!(seen.iter().all(|e| !is_state(e, live)), "{seen:?}");
+    server
+        .ws
+        .wait("second session listens", |w| {
+            w.sessions() == 2 && w.listens() == set(&["/a/x"])
+        })
+        .await;
+    let silent = h.quiet(Duration::from_millis(500)).await;
+    assert!(silent.iter().all(|e| !is_state(e, live)), "{silent:?}");
+    server.ws.push(Push::Text(
+        r#"{"COMMAND":"PATH_CHANGED","DATA":"/a"}"#.into(),
+    ));
+    h.until(|e| is_state(e, live)).await;
 }

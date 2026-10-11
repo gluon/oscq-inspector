@@ -79,7 +79,11 @@ pub enum TransportState {
     Connecting,
     /// Tree loaded over HTTP, no WebSocket: values on refresh only.
     HttpOnly,
-    /// WebSocket open: listened values are pushed by the server.
+    /// WebSocket accepted, but nothing received on it yet: a server may accept the socket and
+    /// never notify, as Max 9 does. Values are still on refresh only as far as anyone can tell.
+    WebSocketOpen,
+    /// The server has sent at least one notification or value frame on this socket: values
+    /// it pushes are shown as they arrive.
     WebSocketLive,
     /// The WebSocket failed or dropped; the next attempt is in `retry_in`. Values are on refresh
     /// only meanwhile.
@@ -500,8 +504,9 @@ enum SessionEnd {
 
 /// The WebSocket of one connection, for as long as the connection lives. When the server did not
 /// advertise `WS_IP` or `WS_PORT`, a single attempt is made on the HTTP address and its failure
-/// is silent: values stay on refresh only. Once a session has been live, or when the address was
-/// advertised, every loss is retried with backoff and every listen is sent again.
+/// is silent: values stay on refresh only. Once a socket has opened, or when the address was
+/// advertised, every loss is retried with backoff and every listen is sent again. Each socket is
+/// reported open, then live only once the server has sent something on it.
 async fn websocket(shared: Shared, id: ServerId, generation: u64, url: String, advertised: bool) {
     let (wake_tx, wake) = flume::unbounded();
     match shared.conns.lock() {
@@ -513,7 +518,7 @@ async fn websocket(shared: Shared, id: ServerId, generation: u64, url: String, a
     }
     let seed = std::collections::hash_map::RandomState::new();
     let mut attempt = 0u32;
-    let mut live_before = false;
+    let mut opened_before = false;
     loop {
         let reason = match open_websocket(&url).await {
             Ok(stream) => {
@@ -523,19 +528,19 @@ async fn websocket(shared: Shared, id: ServerId, generation: u64, url: String, a
                 attempt = 0;
                 shared.emit(Event::TransportState {
                     server_id: id,
-                    state: TransportState::WebSocketLive,
+                    state: TransportState::WebSocketOpen,
                 });
                 // Changes made while the socket was down were never pushed: reload once.
-                if live_before {
+                if opened_before {
                     tokio::spawn(refresh_tree(shared.clone(), id, "/".to_owned()));
                 }
-                live_before = true;
+                opened_before = true;
                 match session(&shared, id, generation, stream, &wake).await {
                     SessionEnd::Stopped => return,
                     SessionEnd::Lost(r) => r,
                 }
             }
-            Err(e) if !advertised && !live_before => {
+            Err(e) if !advertised && !opened_before => {
                 tracing::debug!(%url, error = %e, "no WebSocket, values on refresh only");
                 return;
             }
@@ -596,6 +601,8 @@ async fn session(
     // What this server has been asked to send. Empty on a new socket: the server forgot.
     let mut sent: HashSet<String> = HashSet::new();
     let mut sync_needed = true;
+    // Whether this socket has carried anything from the server; live is claimed only then.
+    let mut heard = false;
     loop {
         if std::mem::take(&mut sync_needed) {
             let Some(wanted) = shared.listens(id, generation) else {
@@ -633,16 +640,35 @@ async fn session(
                     return SessionEnd::Lost("closed by the server".to_owned());
                 }
                 Some(Err(e)) => return SessionEnd::Lost(e.to_string()),
-                Some(Ok(Message::Text(t))) => on_text(shared, id, t.as_str(), &mut sent),
-                Some(Ok(Message::Binary(b))) => on_binary(shared, id, &b),
+                Some(Ok(Message::Text(t))) => {
+                    on_text(shared, id, t.as_str(), &mut sent, &mut heard)
+                }
+                Some(Ok(Message::Binary(b))) => on_binary(shared, id, &b, &mut heard),
                 Some(Ok(_)) => {}
             },
         }
     }
 }
 
+/// The first valid frame from the server on a socket proves it notifies: say so before the
+/// frame's own events.
+fn heard_from(shared: &Shared, id: ServerId, heard: &mut bool) {
+    if !std::mem::replace(heard, true) {
+        shared.emit(Event::TransportState {
+            server_id: id,
+            state: TransportState::WebSocketLive,
+        });
+    }
+}
+
 /// A structure command: reload what it names, and keep listens where the server keeps them.
-fn on_text(shared: &Shared, id: ServerId, text: &str, sent: &mut HashSet<String>) {
+fn on_text(
+    shared: &Shared,
+    id: ServerId,
+    text: &str,
+    sent: &mut HashSet<String>,
+    heard: &mut bool,
+) {
     let command = match ws::parse_server_text(text) {
         Ok(c) => c,
         Err(e) => {
@@ -650,6 +676,7 @@ fn on_text(shared: &Shared, id: ServerId, text: &str, sent: &mut HashSet<String>
             return;
         }
     };
+    heard_from(shared, id, heard);
     let reload = |path: String| {
         tokio::spawn(refresh_tree(shared.clone(), id, path));
     };
@@ -697,7 +724,7 @@ fn on_text(shared: &Shared, id: ServerId, text: &str, sent: &mut HashSet<String>
 }
 
 /// An OSC packet: each message is a value update for its path, and is logged.
-fn on_binary(shared: &Shared, id: ServerId, bytes: &[u8]) {
+fn on_binary(shared: &Shared, id: ServerId, bytes: &[u8], heard: &mut bool) {
     let messages = match ws::decode_osc(bytes) {
         Ok(m) => m,
         Err(e) => {
@@ -705,6 +732,7 @@ fn on_binary(shared: &Shared, id: ServerId, bytes: &[u8]) {
             return;
         }
     };
+    heard_from(shared, id, heard);
     for m in messages {
         shared.emit(Event::ValueChanged {
             server_id: id,
