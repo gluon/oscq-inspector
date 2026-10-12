@@ -4,11 +4,15 @@
 //! event the service calls a notify callback, which the UI uses to request a repaint. Nothing here
 //! knows about the UI toolkit.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::hash::BuildHasher;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use futures_util::{SinkExt, StreamExt};
 use rosc::OscType;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use url::Url;
 
 use crate::client::{AttributeReply, OscQueryClient};
@@ -18,6 +22,7 @@ use crate::osc::{OscUdpSender, coerce_args, encode_message};
 use crate::path::OscPath;
 use crate::server::{DiscoveredServer, ServerId};
 use crate::types::TypeSignature;
+use crate::ws::{self, ServerCommand};
 
 /// UI to network.
 #[derive(Debug, Clone, PartialEq)]
@@ -49,6 +54,16 @@ pub enum Command {
         args: Vec<OscType>,
         refresh_after: bool,
     },
+    /// Ask for value updates of one method over the WebSocket. Kept across reconnections.
+    Listen {
+        server_id: ServerId,
+        path: String,
+    },
+    /// Stop the value updates of one method.
+    Ignore {
+        server_id: ServerId,
+        path: String,
+    },
     Shutdown,
 }
 
@@ -62,8 +77,20 @@ pub struct UserFacingError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransportState {
     Connecting,
-    /// Tree loaded over HTTP. No WebSocket in this version: values on refresh only.
+    /// Tree loaded over HTTP, no WebSocket: values on refresh only.
     HttpOnly,
+    /// WebSocket accepted, but nothing received on it yet: a server may accept the socket and
+    /// never notify, as Max 9 does. Values are still on refresh only as far as anyone can tell.
+    WebSocketOpen,
+    /// The server has sent at least one notification or value frame on this socket: values
+    /// it pushes are shown as they arrive.
+    WebSocketLive,
+    /// The WebSocket failed or dropped; the next attempt is in `retry_in`. Values are on refresh
+    /// only meanwhile.
+    WebSocketLost {
+        retry_in: Duration,
+        reason: String,
+    },
     Disconnected,
     Failed(String),
 }
@@ -119,6 +146,22 @@ pub enum Event {
         path: String,
         value: AttributeReply,
     },
+    /// The server announced a new node; the parent's subtree is being reloaded.
+    PathAdded {
+        server_id: ServerId,
+        path: String,
+    },
+    /// The server announced a removed node; the parent's subtree is being reloaded.
+    PathRemoved {
+        server_id: ServerId,
+        path: String,
+    },
+    /// The server renamed a node; listens have moved, the parents are being reloaded.
+    PathRenamed {
+        server_id: ServerId,
+        old: String,
+        new: String,
+    },
     TransportState {
         server_id: ServerId,
         state: TransportState,
@@ -137,6 +180,11 @@ struct Conn {
     client: OscQueryClient,
     destination: Option<Result<OscDestination, SendBlocked>>,
     generation: u64,
+    /// Methods the UI wants values for. A live WebSocket session sends `LISTEN` for each.
+    listens: HashSet<String>,
+    /// Wakes the WebSocket task when `listens` changes. Dropped with the connection, which stops
+    /// the task.
+    ws_wake: Option<flume::Sender<()>>,
 }
 
 #[derive(Clone)]
@@ -169,6 +217,25 @@ impl Shared {
             return None;
         }
         Some((c.client.clone(), c.generation))
+    }
+
+    /// The wanted listens of a live connection, if `generation` is still current.
+    fn listens(&self, id: ServerId, generation: u64) -> Option<HashSet<String>> {
+        let conns = self.conns.lock().ok()?;
+        let c = conns.get(&id).filter(|c| c.generation == generation)?;
+        Some(c.listens.clone())
+    }
+
+    /// Changes the wanted listens of a connection and wakes its WebSocket task.
+    fn edit_listens(&self, id: ServerId, edit: impl FnOnce(&mut HashSet<String>)) {
+        if let Ok(mut conns) = self.conns.lock()
+            && let Some(c) = conns.get_mut(&id)
+        {
+            edit(&mut c.listens);
+            if let Some(w) = &c.ws_wake {
+                let _ = w.send(());
+            }
+        }
     }
 }
 
@@ -218,6 +285,8 @@ async fn run(rx: flume::Receiver<Command>, shared: Shared) {
                             client,
                             destination: None,
                             generation,
+                            listens: HashSet::new(),
+                            ws_wake: None,
                         },
                     );
                 }
@@ -261,6 +330,16 @@ async fn run(rx: flume::Receiver<Command>, shared: Shared) {
                     refresh_after,
                 ));
             }
+            Command::Listen { server_id, path } => {
+                shared.edit_listens(server_id, |l| {
+                    l.insert(path);
+                });
+            }
+            Command::Ignore { server_id, path } => {
+                shared.edit_listens(server_id, |l| {
+                    l.remove(&path);
+                });
+            }
         }
     }
 }
@@ -273,8 +352,10 @@ async fn connect(shared: Shared, id: ServerId, generation: u64) {
     let Some((client, _)) = shared.client(id, Some(generation)) else {
         return;
     };
+    let mut ws_address = (client.http_host().to_owned(), client.http_port(), false);
     match client.fetch_host_info().await {
         Ok((info, _)) => {
+            ws_address = info.websocket_address(client.http_host(), client.http_port());
             let destination = info.osc_destination(client.http_host(), client.http_port());
             if let Ok(mut conns) = shared.conns.lock() {
                 match conns.get_mut(&id) {
@@ -309,6 +390,8 @@ async fn connect(shared: Shared, id: ServerId, generation: u64) {
                 server_id: id,
                 state: TransportState::HttpOnly,
             });
+            let (host, port, advertised) = ws_address;
+            websocket(shared, id, generation, ws::ws_url(&host, port), advertised).await;
         }
         Err(e) => {
             shared.error(id, Some("/".to_owned()), e.to_string());
@@ -408,6 +491,262 @@ async fn send(
     }));
     if refresh_after {
         refresh_value(shared, id, p).await;
+    }
+}
+
+/// Why a WebSocket session ended.
+enum SessionEnd {
+    /// The connection was closed or replaced by the UI.
+    Stopped,
+    /// The socket failed or the server closed it.
+    Lost(String),
+}
+
+/// The WebSocket of one connection, for as long as the connection lives. When the server did not
+/// advertise `WS_IP` or `WS_PORT`, a single attempt is made on the HTTP address and its failure
+/// is silent: values stay on refresh only. Once a socket has opened, or when the address was
+/// advertised, every loss is retried with backoff and every listen is sent again. Each socket is
+/// reported open, then live only once the server has sent something on it.
+async fn websocket(shared: Shared, id: ServerId, generation: u64, url: String, advertised: bool) {
+    let (wake_tx, wake) = flume::unbounded();
+    match shared.conns.lock() {
+        Ok(mut conns) => match conns.get_mut(&id) {
+            Some(c) if c.generation == generation => c.ws_wake = Some(wake_tx),
+            _ => return,
+        },
+        Err(_) => return,
+    }
+    let seed = std::collections::hash_map::RandomState::new();
+    let mut attempt = 0u32;
+    let mut opened_before = false;
+    loop {
+        let reason = match open_websocket(&url).await {
+            Ok(stream) => {
+                if shared.client(id, Some(generation)).is_none() {
+                    return;
+                }
+                attempt = 0;
+                shared.emit(Event::TransportState {
+                    server_id: id,
+                    state: TransportState::WebSocketOpen,
+                });
+                // Changes made while the socket was down were never pushed: reload once.
+                if opened_before {
+                    tokio::spawn(refresh_tree(shared.clone(), id, "/".to_owned()));
+                }
+                opened_before = true;
+                match session(&shared, id, generation, stream, &wake).await {
+                    SessionEnd::Stopped => return,
+                    SessionEnd::Lost(r) => r,
+                }
+            }
+            Err(e) if !advertised && !opened_before => {
+                tracing::debug!(%url, error = %e, "no WebSocket, values on refresh only");
+                return;
+            }
+            Err(e) => e,
+        };
+        if shared.client(id, Some(generation)).is_none() {
+            return;
+        }
+        let jitter = (seed.hash_one((id, attempt)) >> 11) as f64 / (1u64 << 53) as f64;
+        let retry_in = ws::backoff(attempt, jitter);
+        attempt = attempt.saturating_add(1);
+        shared.emit(Event::TransportState {
+            server_id: id,
+            state: TransportState::WebSocketLost { retry_in, reason },
+        });
+        let deadline = tokio::time::Instant::now() + retry_in;
+        loop {
+            match tokio::time::timeout_at(deadline, wake.recv_async()).await {
+                Err(_) => break,
+                Ok(Err(_)) => return,
+                Ok(Ok(())) => {}
+            }
+        }
+    }
+}
+
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+async fn open_websocket(url: &str) -> Result<WsStream, String> {
+    let config = WebSocketConfig::default()
+        .max_message_size(Some(ws::MAX_MESSAGE))
+        .max_frame_size(Some(ws::MAX_MESSAGE));
+    let connect = tokio_tungstenite::connect_async_with_config(url, Some(config), true);
+    match tokio::time::timeout(WS_CONNECT_TIMEOUT, connect).await {
+        Ok(Ok((stream, _))) => Ok(stream),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err(format!(
+            "no answer within {} s",
+            WS_CONNECT_TIMEOUT.as_secs()
+        )),
+    }
+}
+
+/// Same as the HTTP connect timeout.
+const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// One open WebSocket: keeps the server's listens equal to the wanted set, and turns what the
+/// server sends into events.
+async fn session(
+    shared: &Shared,
+    id: ServerId,
+    generation: u64,
+    stream: WsStream,
+    wake: &flume::Receiver<()>,
+) -> SessionEnd {
+    let (mut sink, mut incoming) = stream.split();
+    // What this server has been asked to send. Empty on a new socket: the server forgot.
+    let mut sent: HashSet<String> = HashSet::new();
+    let mut sync_needed = true;
+    // Whether this socket has carried anything from the server; live is claimed only then.
+    let mut heard = false;
+    loop {
+        if std::mem::take(&mut sync_needed) {
+            let Some(wanted) = shared.listens(id, generation) else {
+                let _ = sink.close().await;
+                return SessionEnd::Stopped;
+            };
+            let mut frames: Vec<String> = wanted
+                .difference(&sent)
+                .map(|p| ws::listen_text(p))
+                .collect();
+            frames.extend(sent.difference(&wanted).map(|p| ws::ignore_text(p)));
+            for f in frames {
+                if let Err(e) = sink.feed(Message::text(f)).await {
+                    return SessionEnd::Lost(e.to_string());
+                }
+            }
+            if let Err(e) = sink.flush().await {
+                return SessionEnd::Lost(e.to_string());
+            }
+            sent = wanted;
+        }
+        tokio::select! {
+            w = wake.recv_async() => match w {
+                Ok(()) => {
+                    while wake.try_recv().is_ok() {}
+                    sync_needed = true;
+                }
+                Err(_) => {
+                    let _ = sink.close().await;
+                    return SessionEnd::Stopped;
+                }
+            },
+            m = incoming.next() => match m {
+                None | Some(Ok(Message::Close(_))) => {
+                    return SessionEnd::Lost("closed by the server".to_owned());
+                }
+                Some(Err(e)) => return SessionEnd::Lost(e.to_string()),
+                Some(Ok(Message::Text(t))) => {
+                    on_text(shared, id, t.as_str(), &mut sent, &mut heard)
+                }
+                Some(Ok(Message::Binary(b))) => on_binary(shared, id, &b, &mut heard),
+                Some(Ok(_)) => {}
+            },
+        }
+    }
+}
+
+/// The first valid frame from the server on a socket proves it notifies: say so before the
+/// frame's own events.
+fn heard_from(shared: &Shared, id: ServerId, heard: &mut bool) {
+    if !std::mem::replace(heard, true) {
+        shared.emit(Event::TransportState {
+            server_id: id,
+            state: TransportState::WebSocketLive,
+        });
+    }
+}
+
+/// A structure command: reload what it names, and keep listens where the server keeps them.
+fn on_text(
+    shared: &Shared,
+    id: ServerId,
+    text: &str,
+    sent: &mut HashSet<String>,
+    heard: &mut bool,
+) {
+    let command = match ws::parse_server_text(text) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "WebSocket text frame ignored");
+            return;
+        }
+    };
+    heard_from(shared, id, heard);
+    let reload = |path: String| {
+        tokio::spawn(refresh_tree(shared.clone(), id, path));
+    };
+    match command {
+        ServerCommand::PathChanged(path) => reload(path),
+        ServerCommand::PathAdded(path) => {
+            reload(ws::parent_path(&path));
+            shared.emit(Event::PathAdded {
+                server_id: id,
+                path,
+            });
+        }
+        ServerCommand::PathRemoved(path) => {
+            // The server forgets listens on removed methods.
+            sent.retain(|p| !ws::is_within(p, &path));
+            shared.edit_listens(id, |l| l.retain(|p| !ws::is_within(p, &path)));
+            reload(ws::parent_path(&path));
+            shared.emit(Event::PathRemoved {
+                server_id: id,
+                path,
+            });
+        }
+        ServerCommand::PathRenamed { old, new } => {
+            // Listens follow the rename on both sides (proposal, PATH_RENAMED).
+            let rename = |set: &mut HashSet<String>| {
+                *set = set
+                    .drain()
+                    .map(|p| ws::renamed(&p, &old, &new).unwrap_or(p))
+                    .collect();
+            };
+            rename(sent);
+            shared.edit_listens(id, rename);
+            let (from, to) = (ws::parent_path(&old), ws::parent_path(&new));
+            if from != to {
+                reload(from);
+            }
+            reload(to);
+            shared.emit(Event::PathRenamed {
+                server_id: id,
+                old,
+                new,
+            });
+        }
+    }
+}
+
+/// An OSC packet: each message is a value update for its path, and is logged.
+fn on_binary(shared: &Shared, id: ServerId, bytes: &[u8], heard: &mut bool) {
+    let messages = match ws::decode_osc(bytes) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(error = %e, "WebSocket binary frame ignored");
+            return;
+        }
+    };
+    heard_from(shared, id, heard);
+    for m in messages {
+        shared.emit(Event::ValueChanged {
+            server_id: id,
+            path: m.addr.clone(),
+            value: AttributeReply::Value(ws::args_to_json(&m.args)),
+        });
+        shared.emit(Event::TrafficLogged(TrafficRecord {
+            at: Instant::now(),
+            server_id: id,
+            direction: Direction::In,
+            path: m.addr,
+            type_tags: type_tags(&m.args),
+            args: m.args,
+        }));
     }
 }
 

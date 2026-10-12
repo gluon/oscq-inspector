@@ -101,6 +101,9 @@ async fn run(base: &str, send: Option<(String, Vec<String>)>) -> Result<()> {
 
 fn print_host_info(info: &HostInfo, client: &OscQueryClient) {
     println!("server  {}", info.name.as_deref().unwrap_or("(no NAME)"));
+    if info.query_ignored {
+        println!("note    HOST_INFO answered with the address space: every default applies");
+    }
     match info.osc_destination(client.http_host(), client.http_port()) {
         Ok(d) => {
             let source = match d.port_source {

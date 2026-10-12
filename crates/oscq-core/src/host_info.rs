@@ -29,6 +29,9 @@ pub struct HostInfo {
     pub ws_port: Option<u16>,
     /// Unknown keys, and known keys whose value had the wrong JSON type, kept verbatim.
     pub extra: Map<String, Value>,
+    /// The server ignored the `HOST_INFO` query and answered with its address space document,
+    /// as Max 9 does. Every key then takes its default: OSC and WebSocket on the HTTP address.
+    pub query_ignored: bool,
 }
 
 /// Where the OSC port of an [`OscDestination`] came from. Shown in the UI.
@@ -75,6 +78,20 @@ impl HostInfo {
         let Value::Object(mut obj) = parse_json(bytes)? else {
             return Err(DocumentError::NotAnObject);
         };
+        // `FULL_PATH` is required on every node and is never a `HOST_INFO` key: the server
+        // answered the plain GET. Not an error, the proposal's defaults apply.
+        if obj.contains_key("FULL_PATH") {
+            return Ok((
+                HostInfo {
+                    query_ignored: true,
+                    ..HostInfo::default()
+                },
+                vec![Diagnostic {
+                    path: "/".to_owned(),
+                    kind: DiagnosticKind::HostInfoIgnored,
+                }],
+            ));
+        }
         let mut info = HostInfo::default();
         let mut diags = Vec::new();
 

@@ -11,6 +11,7 @@ pub mod path;
 pub mod server;
 pub mod service;
 pub mod types;
+pub mod ws;
 
 pub use client::{AttributeReply, ClientConfig, ClientError, Document, OscQueryClient};
 pub use document::{Diagnostic, DiagnosticKind, DocumentError, ParseReport, parse_document};

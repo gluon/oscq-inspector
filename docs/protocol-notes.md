@@ -176,3 +176,29 @@ Listed for the human during M0. All items were ruled on 2026-10-09: the proposal
 19. PRD 11, error cases: "returned a non 200 status" as an error. SPEC defines 204 as a legitimate "inappropriate request" answer, and REF answers unsupported attributes with 200 and `{}`. A single value refresh must treat 204, 400 and `{}` as "value not available", not as a transport error. Also SPEC#L64 and SPEC#L71 contradict each other on 204 vs 400 (section 9).
 20. PRD 8.1, `_osc._udp.local.`: not part of the OSCQuery proposal. Its use is a product choice, not a spec requirement. Registration status not proven here (section 1).
 21. PRD header, crate name `void-oscq` free on crates.io: confirmed on 2026-10-09, `GET https://crates.io/api/v1/crates/void-oscq` returned 404, control request for `rosc` returned 200. All three crates are `publish = false` until a publication decision.
+
+## 11. Behaviour of real servers
+
+Observed on captures in `tests/fixtures`, not in the sources above.
+
+| Server | Observation | Client behaviour |
+| --- | --- | --- |
+| OSCQuery Helper | `ACCESS` 2 on every node, `?VALUE` answered `{}` | values sent stay shown as unconfirmed, no refresh after a send |
+| Max 9 | see section 12 | |
+
+## 12. Max 9
+
+Max 9 serves OSCQuery natively, a further implementation next to VVOSCQueryProtocol and ossia. Observed by the human on 2026-10-09 and 2026-10-11 with Max 9.2 serving `tests/fixtures/max/test.maxpat`; the WebSocket behaviour was checked outside this app with `websocat`.
+
+| Observation | Client behaviour |
+| --- | --- |
+| Serves OSCQuery over HTTP on port 30339 | reached at `localhost:30339` |
+| Listens on 127.0.0.1 only | reachable from the same machine only |
+| No Bonjour advertisement, neither `_oscjson._tcp` nor `_osc._udp` | added by manual entry |
+| Ignores the `HOST_INFO` query and answers `/?HOST_INFO` with the whole address space, byte for byte the plain GET (`max-hostinfo.json`, `max-root.json`) | a reply carrying `FULL_PATH` is taken as "HOST_INFO ignored": every default of section 4 applies, OSC on the HTTP port, no error |
+| No `EXTENSIONS`, so no `OSC_PORT`, `WS_IP` or `WS_PORT`; an explicit `ACCESS` on every method, 1 or 3, with real `VALUE`s | readability follows `ACCESS`, so values are read without `VALUE` being advertised |
+| Each attribute of a parameter is a node of its own: `longname`, `min`, `max`, `raw`, `normalized`... | shown as methods under the parameter's container |
+| Accepts a WebSocket on its HTTP port without advertising one | the single attempt on the HTTP address, section 4 and PRD 7.4, succeeds |
+| Accepts `LISTEN` (`/test/param/fader/raw` tried) and never sends anything: no binary value frame when the fader moves, no `PATH_*` command | an accepted socket is shown as open with no update received, never as live; values stay on refresh only |
+
+Max 9 therefore implements the HTTP part of the proposal and accepts its WebSocket, but not the notification part.

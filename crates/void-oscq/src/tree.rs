@@ -1,6 +1,6 @@
 //! Tree model for the virtualised view: visible rows, rerooting by path prefix, fuzzy filter.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
@@ -57,6 +57,21 @@ pub fn find(root: &Node, full_path: &str) -> Option<NodeIndex> {
         }
     }
     None
+}
+
+/// Every node's index by full path, without recursion.
+pub fn index_paths(root: &Node) -> HashMap<String, NodeIndex> {
+    let mut out = HashMap::new();
+    let mut stack: Vec<(&Node, NodeIndex)> = vec![(root, Vec::new())];
+    while let Some((node, index)) = stack.pop() {
+        for (i, (_, child)) in node.contents.iter().flatten().enumerate() {
+            let mut ci = index.clone();
+            ci.push(i as u32);
+            stack.push((child, ci));
+        }
+        out.insert(node.full_path.clone(), index);
+    }
+    out
 }
 
 /// Rows shown under `base`, children first level at depth 0, descending only into expanded
