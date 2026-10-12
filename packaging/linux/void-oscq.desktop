@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Void OSCQ
+GenericName=OSCQuery client
+Comment=Browse OSCQuery servers, watch their values and send OSC
+Exec=void-oscq
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=OSC;OSCQuery;

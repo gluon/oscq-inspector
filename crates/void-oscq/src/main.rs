@@ -1,5 +1,8 @@
 //! Void OSCQ desktop application. UI only, all protocol work lives in `oscq-core` and `oscq-discovery`.
 
+// A window application: no console window on Windows. Debug builds keep it for the logs.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod app;
 mod config;
 mod json_view;

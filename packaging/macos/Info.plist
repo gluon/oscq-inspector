@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Void OSCQ</string>
+	<key>CFBundleDisplayName</key>
+	<string>Void OSCQ</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.structure-void.void-oscq</string>
+	<key>CFBundleExecutable</key>
+	<string>void-oscq</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>__VERSION__</string>
+	<key>CFBundleVersion</key>
+	<string>__VERSION__</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>12.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Void OSCQ finds OSCQuery servers on your local network, reads their address space and sends them OSC.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_oscjson._tcp</string>
+		<string>_osc._udp</string>
+	</array>
+</dict>
+</plist>

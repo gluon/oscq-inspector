@@ -1,0 +1,183 @@
+name: Release
+
+# On a tag v*, builds the three release artifacts (PRD 13): a macOS universal .app in a zip, a
+# Windows .exe, a Linux binary with its .desktop file in a tarball, all unsigned. A push that
+# changes the packaging runs the same jobs without a tag, so packaging is tested before tagging.
+# Path filters are not evaluated for tag pushes: every tag runs.
+on:
+  push:
+    tags: ["v*"]
+    branches: ["**"]
+    paths:
+      - ".github/workflows/release.yml"
+      - "packaging/**"
+      - "ci/release-version.sh"
+      - "ci/smoke-start.sh"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    name: macOS universal .app
+    runs-on: macos-latest
+    env:
+      # PRD 5: macOS 12 at least, on both architectures.
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-universal
+
+      - name: Version
+        id: version
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then v=$(./ci/release-version.sh "$GITHUB_REF_NAME"); else v=$(./ci/release-version.sh); fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Build aarch64 and x86_64
+        run: |
+          cargo build --release --locked -p void-oscq --target aarch64-apple-darwin
+          cargo build --release --locked -p void-oscq --target x86_64-apple-darwin
+
+      - name: Bundle, universal binary, ad hoc signature
+        run: ./packaging/macos/bundle.sh "${{ steps.version.outputs.version }}" dist
+
+      # Signing and notarisation, disabled in v1 (PRD 13: no signing, no notarisation). Enabling it
+      # is configuration: change `if: false` to `if: true` and add these repository secrets:
+      #   MACOS_CERTIFICATE           Developer ID Application certificate and key, .p12, base64
+      #   MACOS_CERTIFICATE_PASSWORD  password of that .p12
+      #   MACOS_SIGNING_IDENTITY      "Developer ID Application: Name (TEAMID)"
+      #   MACOS_KEYCHAIN_PASSWORD     any value, protects the temporary keychain on the runner
+      #   APPLE_ID                    Apple ID of the developer account, for notarytool
+      #   APPLE_TEAM_ID               the 10 character team ID
+      #   APPLE_APP_PASSWORD          an app specific password of that Apple ID
+      - name: Sign with Developer ID and notarise (disabled)
+        if: false
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security list-keychain -d user -s "$keychain"
+          codesign --force --deep --options runtime --timestamp --sign "$MACOS_SIGNING_IDENTITY" "dist/Void OSCQ.app"
+          ditto -c -k --keepParent "dist/Void OSCQ.app" "$RUNNER_TEMP/notarise.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarise.zip" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "dist/Void OSCQ.app"
+
+      - name: The bundled binary starts
+        run: ./ci/smoke-start.sh "dist/Void OSCQ.app/Contents/MacOS/void-oscq"
+
+      - name: Zip
+        id: zip
+        run: |
+          zip="dist/void-oscq-${{ steps.version.outputs.version }}-macos-universal.zip"
+          ditto -c -k --keepParent "dist/Void OSCQ.app" "$zip"
+          echo "path=$zip" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: void-oscq-${{ steps.version.outputs.version }}-macos-universal
+          path: ${{ steps.zip.outputs.path }}
+          if-no-files-found: error
+
+  windows:
+    name: Windows .exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+
+      - name: Version
+        id: version
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then v=$(./ci/release-version.sh "$GITHUB_REF_NAME"); else v=$(./ci/release-version.sh); fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: cargo build --release --locked -p void-oscq
+
+      - name: Name the executable
+        id: exe
+        shell: bash
+        run: |
+          mkdir -p dist
+          exe="dist/void-oscq-${{ steps.version.outputs.version }}-windows-x86_64.exe"
+          cp target/release/void-oscq.exe "$exe"
+          echo "path=$exe" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: void-oscq-${{ steps.version.outputs.version }}-windows-x86_64
+          path: ${{ steps.exe.outputs.path }}
+          if-no-files-found: error
+
+  linux:
+    name: Linux tarball
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      # Build dependencies as in README; the rest runs the binary under Xvfb and checks the
+      # .desktop file. No desktop environment is assumed.
+      - name: Install Linux build, check and display dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev desktop-file-utils libxkbcommon-x11-0 xvfb mesa-vulkan-drivers
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+
+      - name: Version
+        id: version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then v=$(./ci/release-version.sh "$GITHUB_REF_NAME"); else v=$(./ci/release-version.sh); fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: cargo build --release --locked -p void-oscq
+
+      - name: Tarball with the .desktop file
+        id: tarball
+        run: echo "path=$(./packaging/linux/package.sh "${{ steps.version.outputs.version }}" dist)" >> "$GITHUB_OUTPUT"
+
+      - name: The packed binary starts
+        run: |
+          mkdir -p unpacked
+          tar -C unpacked -xzf "${{ steps.tarball.outputs.path }}"
+          xvfb-run -a ./ci/smoke-start.sh "unpacked/void-oscq-${{ steps.version.outputs.version }}-linux-x86_64/void-oscq"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: void-oscq-${{ steps.version.outputs.version }}-linux-x86_64
+          path: ${{ steps.tarball.outputs.path }}
+          if-no-files-found: error
