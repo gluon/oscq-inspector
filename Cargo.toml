@@ -8,7 +8,7 @@ members = [
 
 # One version for every crate and for the release tag, checked by ci/check-release-version.sh.
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 
 [workspace.dependencies]
 flume = { version = "0.12.0", default-features = false, features = ["async", "select"] }

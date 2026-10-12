@@ -1,6 +1,6 @@
 # Void OSCQ: Product Requirements Document
 
-Status: v1 spec, locked for implementation. Amended on 2026-10-09 with the human's rulings on the M0 protocol discrepancies, see `docs/protocol-notes.md` section 10.
+Status: v1 spec, locked for implementation. Amended on 2026-10-09 with the human's rulings on the M0 protocol discrepancies, see `docs/protocol-notes.md` section 10. Amended on 2026-10-12 with the human's rulings after M5: "cannot send" in place of "read only" (sections 3, 7.2, 9.6), the user's OSC port (7.2, 9.6, 9.7).
 Audience: the engineer (human or agent) implementing the app from scratch.
 Name: `void-oscq`, final. Binary `void-oscq`, app display name "Void OSCQ", repository `gluon/void-oscq`, private. The crate name `void-oscq` was free on crates.io at the time of writing; verify again before any publication.
 
@@ -36,7 +36,7 @@ Do not build these. They are listed so that the temptation is answered once.
 - No session or preset persistence beyond the small set described in section 9.7.
 - No plugin system, no embedded scripting language, no automation or sequencing.
 - No code signing or notarisation in v1. The CI produces unsigned artifacts.
-- No OSC sending to a server whose `HOST_INFO` declares `OSC_TRANSPORT` `TCP`. The proposal defines no OSC over TCP framing. Its nodes are shown read only, with the reason displayed.
+- No OSC sending to a server whose `HOST_INFO` declares `OSC_TRANSPORT` `TCP`. The proposal defines no OSC over TCP framing. Its nodes keep the access the server declares; the writable ones say "cannot send", with the reason displayed. They are never shown as read only.
 
 Anything that smells like "while we are here, we could also" is out of scope until v1 ships and is used in anger.
 
@@ -197,8 +197,8 @@ The OSC destination for every message sent by this app comes from `HOST_INFO`, n
 Defaults defined by the proposal, applied when a key is absent:
 
 - `OSC_IP` absent: the HTTP host.
-- `OSC_PORT` absent: the HTTP port. The UI shows whether the OSC port was advertised in `HOST_INFO` or inferred from the HTTP port.
-- `OSC_TRANSPORT` absent: `UDP`. When it is `TCP`, nothing is sent in v1: the affected nodes are read only and the UI shows why.
+- `OSC_PORT` absent: the HTTP port. The inference can be wrong, the server having no way to say so: Max 9 serves OSCQuery on 30339 and receives OSC on 30338 (`docs/protocol-notes.md` section 12). The user can then set the OSC port for that server; it is kept in the config (9.7), and no later inference replaces it. A port advertised in `HOST_INFO` always wins over a port the user set earlier: the user's port fills a silence of the server, it does not contradict a declaration. The UI shows whether the OSC port was advertised in `HOST_INFO`, inferred from the HTTP port, or set by the user.
+- `OSC_TRANSPORT` absent: `UDP`. When it is `TCP`, nothing is sent in v1: the affected nodes keep their declared access, and the writable ones say "cannot send" and why.
 - `WS_IP` and `WS_PORT` absent: the HTTP host and port, see 7.4.
 
 If the `HOST_INFO` request itself fails, the server is browsable but not controllable. Say so in the UI and disable the editing widgets.
@@ -334,13 +334,13 @@ The UI must never imply state it has not observed. Specifically:
 
 - A value that was sent but not confirmed by the server is drawn differently from a value the server reported.
 - A server without WebSocket support shows "values on refresh only" in the status bar. No silent polling.
-- The OSC destination shows whether its port was advertised in `HOST_INFO` or inferred from the HTTP port.
-- Nodes made read only by `OSC_TRANSPORT` `TCP` say so.
+- The OSC destination shows whether its port was advertised in `HOST_INFO`, inferred from the HTTP port, or set by the user.
+- A node keeps the access its server declares, whatever the connection. A writable node nothing can be sent to, because of `OSC_TRANSPORT` `TCP`, a connection that is not up or any other reason, says "cannot send", with the reason. "read only" on a writable node misstates its access and is never shown.
 - Errors appear in a status line with the failing path and the reason, not as a generic toast.
 
 ### 9.7 Persistence
 
-A single config file in the OS standard config directory, written atomically on change. It contains: window size and position, manual server entries, last selected server, theme preference, and pinned paths. Nothing else. No database.
+A single config file in the OS standard config directory, written atomically on change. It contains: window size and position, manual server entries, last selected server, theme preference, pinned paths, and the OSC ports set by the user per server (`osc_ports`, 7.2). Nothing else. No database.
 
 ## 10. Performance budgets
 

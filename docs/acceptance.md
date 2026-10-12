@@ -38,7 +38,7 @@ Setup: OSCQuery Helper running with its `SampleDocument`, its OSC target port se
 1. Open Void OSCQ. If macOS asks whether it may find devices on the local network, click **Allow**.
    Expected: OSCQuery Helper listed on the left within two seconds, once, even if the Mac has several interfaces.
 2. Select it.
-   Expected: the tree loads, 22 nodes in the status bar. The status bar shows the OSC destination with the Helper's target port and "port advertised", and "values on refresh only".
+   Expected: the tree loads, 22 nodes in the status bar. The status bar shows the OSC destination with the Helper's target port and "port advertised", no OSC port field (an advertised port is not editable, and wins over any port set earlier for this server), and "values on refresh only".
 3. Expand `/test`.
    Expected: every method has a widget and no value readout, flags `w`: the Helper declares every node write only. `/test/my_true` and `/test/my_false` show a toggle.
 4. Drag the slider of `/test/my_float` and release it.

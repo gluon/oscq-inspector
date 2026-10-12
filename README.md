@@ -11,7 +11,7 @@ The product specification is [PRD.md](PRD.md).
 - **Finds servers.** OSCQuery servers advertised on the network (Bonjour, `_oscjson._tcp`) appear on the left. Devices that only speak OSC, with no OSCQuery (`_osc._udp`), are listed greyed out, so you know they are there. A server that does not advertise, or sits behind a VPN or a router, is added by hand with `+ manual` and its `host:port`; the last ten are remembered.
 - **Shows the address space.** A tree of every container and method, fast with thousands of nodes. A filter box finds paths by fuzzy matching, a prefix box roots the tree at any container.
 - **Shows the values, and says where they come from.** Each method shows its value as the server reported it. A value you sent but the server has not confirmed is drawn differently. The status bar says whether values are live, pushed by the server over its WebSocket, or on refresh only.
-- **Edits values with a widget that fits the type.** Sliders for numbers with a range, drag values without one, toggles, buttons for impulses, dropdowns for lists of values, text fields, colour pickers. The OSC goes to the address and port the server gives in its `HOST_INFO`, coerced to the types it declares.
+- **Edits values with a widget that fits the type.** Sliders for numbers with a range, drag values without one, toggles, buttons for impulses, dropdowns for lists of values, text fields, colour pickers. The OSC goes to the address and port the server gives in its `HOST_INFO`, coerced to the types it declares. When the server does not give its OSC port, the app infers it from the HTTP port, as the protocol says; when that is wrong, as with Max 9, you set the right port for that server and it is kept.
 - **Shows what arrived.** The JSON tab shows the document of the selected node exactly as the server sent it. The Traffic tab logs every OSC message sent and every value received, with times, and exports it as text.
 
 ## What it does not do
@@ -56,8 +56,8 @@ If Windows Defender Firewall asks whether to allow Void OSCQ on networks, allow 
 The artifact holds `void-oscq-VERSION-linux-x86_64.tar.gz`. Unpack it and run the binary:
 
 ```
-tar -xzf void-oscq-0.1.0-linux-x86_64.tar.gz
-cd void-oscq-0.1.0-linux-x86_64
+tar -xzf void-oscq-0.1.1-linux-x86_64.tar.gz
+cd void-oscq-0.1.1-linux-x86_64
 ./void-oscq
 ```
 
@@ -70,7 +70,8 @@ What the system needs to run it: X11 or Wayland, `libxkbcommon-x11-0` on X11, an
 - Select a server on the left: the app connects, reads its `HOST_INFO` and its whole tree.
 - **Max 9** serves OSCQuery on its own machine only and does not advertise it: use `+ manual` with `localhost:30339`. It receives OSC on another port, 30338 by default, which it does not tell: set it in the status bar's OSC port field, see below.
 - Keyboard: arrows to move, right and left to expand and collapse, Enter to focus the widget of the selected row, Escape to leave it, `/` for the filter, F5 to refresh the selection, Cmd or Ctrl and C to copy the selected path.
-- The status bar tells, for the selected server: the OSC destination and whether its port was advertised, inferred from the HTTP port, or set by you; when the server does not advertise its port, the OSC port field next to it sets the right one, kept for that server; whether values are live, open but silent (the WebSocket is connected and the server has sent nothing yet), or on refresh only; and the last error with the path it concerns.
+- The status bar tells, for the selected server: the OSC destination and whether its port was advertised, inferred from the HTTP port, or set by you; whether values are live, open but silent (the WebSocket is connected and the server has sent nothing yet), or on refresh only; and the last error with the path it concerns.
+- **Setting the OSC port.** When the server does not advertise its OSC port, the status bar shows "port inferred from the HTTP port" and an OSC port field. Type the port the server receives OSC on, then **Set OSC port** or Enter: the status bar says "port set by the user", sends go there, and the port is kept for that server in the config, used again at every connection and after a restart. **Infer OSC port** goes back to the HTTP port and forgets the setting. A port the server advertises is not editable and always wins, even over a port set earlier: the setting fills a silence of the server, it never contradicts what the server declares.
 - Settings are saved in your system's configuration folder, in `void-oscq/config.json`: window size and place, manual entries, the last selected server, the theme, pinned paths, the OSC ports you set. JSON and traffic exports go to `void-oscq/exports/` beside it.
 
 ## Build from source
@@ -155,9 +156,19 @@ cargo test --release -p void-oscq --test budgets_binary -- --ignored --nocapture
 The workflow `.github/workflows/release.yml` builds the three artifacts on a tag `v*`, and on any push that changes the packaging. The scripts are in `packaging/`. A tag must equal the workspace version:
 
 ```
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
+
+## Changes since v0.1.0
+
+- **Application icon** on the three systems: the macOS `.icns` in the bundle, the Windows executable's icon, the Linux `.png` named by the `.desktop` file, and the window and the Dock while the app runs.
+- **Version in the macOS bundle**: both version keys of `Info.plist` carry the release version, checked against the tag by the release workflow.
+- **OSC port you can set** per server when the server does not advertise one; the status bar tells advertised, inferred from the HTTP port, or set by the user. Needed for Max 9, which receives OSC on 30338 and serves OSCQuery on 30339.
+- **Errors say why**: a failed connection shows the system's reason, such as "Connection refused", not only "error sending request".
+- **Errors that no longer hold are cleared**: an error disappears once the same operation succeeds, and a failed connection is said once.
+- **Access is the server's**: when the connection fails, nodes keep the access the server declared; writable nodes say "cannot send", with the reason, never "read only". The same for a server declaring OSC over TCP.
+- **Release workflow**: `actions/upload-artifact` v7, no Node 20 deprecation warning.
 
 ## Status
 
@@ -167,7 +178,8 @@ git push origin v0.1.0
 - M3, application: done, merged. Tested by the human on the Mac against OSCQuery Helper.
 - M4, WebSocket and performance: done, merged. Every PRD 10 budget met on the human's Mac or the macOS CI machine, see docs/decisions.md. Values pushed by the synthetic server seen live on the Mac; Max 9 accepts the WebSocket and sends nothing, shown as open and silent.
 - M5, release: done, merged, tag `v0.1.0`. The tagged run built the three artifacts; the macOS app was installed, opened and connected to Max 9 by the human.
-- M5 polish: on branch `void/m5-polish`. The application icon on the three systems, the bundle's version keys wired to the workspace version and checked against the tag, `actions/upload-artifact` v7, and a failed operation's error cleared once the same operation succeeds. The icon and the Finder version are for the human to check, docs/acceptance.md section 0.
+- M5 polish: done, merged. The OSC port setting checked by the human on the Mac against Max 9: sends reach 30338 once set, kept across a restart. The loss and return of a server, the system's cause in the error and the declared access kept were checked there too.
+- v0.1.1: on branch `void/v0-1-1`. Version 0.1.1, the PRD amended with the human's rulings, this README and docs/acceptance.md. Tagging is the human's.
 
 Backlog:
 
