@@ -68,6 +68,10 @@ Setup: Max 9 running `tests/fixtures/max/test.maxpat`, which serves OSCQuery on 
    Expected: the value read from Max, in plain text, no longer marked "(sent)".
 5. Move the fader in Max, and do not touch Void OSCQ.
    Expected: the value shown does not change by itself, since Max sends no notification; F5 shows the new value.
+6. Close the patch in Max, then click the server on the left to reconnect.
+   Expected: the status bar says the connection failed once, with the system's reason (for example "Connection refused"). The tree stays; its read write nodes still show `rw`, have no widget and say "cannot send", the reason on hover. Never "read only".
+7. Open the patch again and click the server.
+   Expected: connected, the widgets back, no error left in the status bar.
 
 Proves: a server that ignores the `HOST_INFO` query is used with the proposal's defaults and no error, reading values from a real server, sending to a real server on the inferred port, the honest display of a WebSocket that accepts and stays silent. Cannot prove: live values (Max does not notify), discovery (Max does not advertise and listens on 127.0.0.1 only).
 

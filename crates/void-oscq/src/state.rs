@@ -117,8 +117,15 @@ impl ServerEntry {
         self.host_info.as_ref().is_some_and(|h| h.supports("VALUE"))
     }
 
-    /// Why nothing can be sent to this server, if anything prevents it.
+    /// Why nothing can be sent to this server, if anything prevents it. A connection that is not
+    /// up blocks every send, whatever the nodes declare: their access stays the server's.
     pub fn send_blocked(&self) -> Option<String> {
+        match &self.conn {
+            ConnState::Connected => {}
+            ConnState::Failed(reason) => return Some(format!("not connected: {reason}")),
+            ConnState::Connecting => return Some("connecting".to_owned()),
+            ConnState::Idle | ConnState::Disconnected => return Some("not connected".to_owned()),
+        }
         match (&self.destination, &self.host_info_error) {
             (Some(Ok(d)), _) => d.check_sendable().err().map(|e| e.to_string()),
             (Some(Err(e)), _) => Some(e.to_string()),
@@ -641,6 +648,14 @@ mod tests {
         let s = server();
         let id = s.id;
         st.apply(Event::ServerFound(s));
+        assert_eq!(
+            st.entry(id).unwrap().send_blocked().unwrap(),
+            "not connected"
+        );
+        st.apply(Event::TransportState {
+            server_id: id,
+            state: TransportState::HttpOnly,
+        });
         assert!(
             st.entry(id)
                 .unwrap()
@@ -672,6 +687,14 @@ mod tests {
                 .send_blocked()
                 .unwrap()
                 .contains("TCP")
+        );
+        st.apply(Event::TransportState {
+            server_id: id,
+            state: TransportState::Failed("refused".into()),
+        });
+        assert_eq!(
+            st.entry(id).unwrap().send_blocked().unwrap(),
+            "not connected: refused"
         );
     }
 

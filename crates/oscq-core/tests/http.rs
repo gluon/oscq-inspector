@@ -23,6 +23,7 @@ fn quick(server: &SyntheticServer) -> OscQueryClient {
         connect_timeout: Duration::from_millis(500),
         request_timeout: Duration::from_millis(500),
         max_body: 1024,
+        ..ClientConfig::default()
     };
     OscQueryClient::with_config(server.base_url(), config).unwrap()
 }
@@ -228,10 +229,46 @@ async fn connection_refused() {
     let addr = listener.local_addr().unwrap();
     drop(listener);
     let c = OscQueryClient::new(url::Url::parse(&format!("http://{addr}")).unwrap()).unwrap();
-    assert!(matches!(
-        c.fetch_tree("/").await,
-        Err(ClientError::Connect { .. })
-    ));
+    let err = c.fetch_tree("/").await.unwrap_err();
+    assert!(matches!(err, ClientError::Connect { .. }), "{err:?}");
+    assert!(err.is_unreachable());
+    // The message gives the system's reason, the one a plain connect gets, not only reqwest's
+    // "error sending request".
+    let reason = std::net::TcpStream::connect(addr).unwrap_err().to_string();
+    let text = err.to_string();
+    assert!(text.contains(&reason), "{text:?} does not say {reason:?}");
+}
+
+/// A name that resolves to an IPv6 address first, where nothing listens, then to the IPv4
+/// address the server listens on, as `localhost` does on macOS with Max 9 on 127.0.0.1 only.
+/// Every address is tried before an error is returned.
+#[tokio::test]
+async fn a_name_resolving_ipv6_first_reaches_an_ipv4_only_server() {
+    let server = SyntheticServer::start(
+        "127.0.0.1:0",
+        vec![
+            ("/", Reply::json(read_fixture("documents/basic_tree.json"))),
+            ("/?HOST_INFO", Reply::json(r#"{"NAME":"v4 only"}"#)),
+        ],
+    )
+    .await
+    .unwrap();
+    let port = server.addr.port();
+    let config = ClientConfig {
+        resolve: vec![(
+            "dual-stack.test".to_owned(),
+            vec![
+                format!("[::1]:{port}").parse().unwrap(),
+                format!("127.0.0.1:{port}").parse().unwrap(),
+            ],
+        )],
+        ..ClientConfig::default()
+    };
+    let base = url::Url::parse(&format!("http://dual-stack.test:{port}")).unwrap();
+    let c = OscQueryClient::with_config(base, config).unwrap();
+    let (info, _) = c.fetch_host_info().await.unwrap();
+    assert_eq!(info.name.as_deref(), Some("v4 only"));
+    assert!(c.fetch_tree("/").await.is_ok());
 }
 
 #[tokio::test]

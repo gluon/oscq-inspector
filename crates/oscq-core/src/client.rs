@@ -1,5 +1,6 @@
 //! HTTP client for OSCQuery servers: tree, `HOST_INFO` and per attribute queries.
 
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use reqwest::StatusCode;
@@ -18,6 +19,9 @@ pub struct ClientConfig {
     /// Whole request, body included.
     pub request_timeout: Duration,
     pub max_body: usize,
+    /// Names resolved to these addresses, tried in this order, instead of by the system resolver.
+    /// Empty in use; a test sets it to stand for a resolver that answers IPv6 first.
+    pub resolve: Vec<(String, Vec<SocketAddr>)>,
 }
 
 impl Default for ClientConfig {
@@ -26,6 +30,7 @@ impl Default for ClientConfig {
             connect_timeout: Duration::from_secs(3),
             request_timeout: Duration::from_secs(10),
             max_body: DEFAULT_MAX_BODY,
+            resolve: Vec::new(),
         }
     }
 }
@@ -36,7 +41,7 @@ pub enum ClientError {
     InvalidBaseUrl(String),
     #[error("OSC path {0:?} cannot be put in a URL")]
     InvalidPath(String),
-    #[error("could not connect to {url}: {source}")]
+    #[error("could not connect to {url}: {}", with_causes(.source))]
     Connect { url: String, source: reqwest::Error },
     #[error("no answer from {url} within the timeout")]
     Timeout { url: String },
@@ -46,12 +51,40 @@ pub enum ClientError {
     NoDocument { url: String },
     #[error("response from {url} is larger than {limit} bytes")]
     BodyTooLarge { url: String, limit: usize },
-    #[error("request to {url} failed: {source}")]
+    #[error("request to {url} failed: {}", with_causes(.source))]
     Transport { url: String, source: reqwest::Error },
     #[error("invalid response from {url}: {source}")]
     Document { url: String, source: DocumentError },
     #[error("could not build the HTTP client: {0}")]
     Build(reqwest::Error),
+}
+
+impl ClientError {
+    /// The server was not reached, or stopped answering: nothing it declared has changed.
+    pub fn is_unreachable(&self) -> bool {
+        matches!(
+            self,
+            ClientError::Connect { .. }
+                | ClientError::Timeout { .. }
+                | ClientError::Transport { .. }
+        )
+    }
+}
+
+/// An error followed by its causes. reqwest names only the step that failed, "error sending
+/// request"; the reason, a refused connection or a missing route, is in its sources.
+fn with_causes(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut text = e.to_string();
+    let mut cause = e.source();
+    while let Some(c) = cause {
+        let c_text = c.to_string();
+        if !text.ends_with(&c_text) {
+            text.push_str(": ");
+            text.push_str(&c_text);
+        }
+        cause = c.source();
+    }
+    text
 }
 
 /// A fetched address space document: the body exactly as received, and its parsed model.
@@ -100,12 +133,14 @@ impl OscQueryClient {
             .port_or_known_default()
             .ok_or_else(|| ClientError::InvalidBaseUrl(base.to_string()))?;
         // OSCQuery servers are on the LAN: a system proxy would only misroute requests.
-        let http = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .no_proxy()
             .connect_timeout(config.connect_timeout)
-            .timeout(config.request_timeout)
-            .build()
-            .map_err(ClientError::Build)?;
+            .timeout(config.request_timeout);
+        for (name, addrs) in &config.resolve {
+            builder = builder.resolve_to_addrs(name, addrs);
+        }
+        let http = builder.build().map_err(ClientError::Build)?;
         Ok(Self {
             http,
             base,
@@ -211,6 +246,8 @@ impl OscQueryClient {
     async fn get(&self, url: &Url) -> Result<(StatusCode, Vec<u8>), ClientError> {
         let u = url.to_string();
         let classify = |e: reqwest::Error| {
+            // The URL is said once, by this error.
+            let e = e.without_url();
             if e.is_timeout() {
                 ClientError::Timeout { url: u.clone() }
             } else if e.is_connect() {

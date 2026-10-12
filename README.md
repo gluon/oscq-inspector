@@ -18,7 +18,7 @@ The product specification is [PRD.md](PRD.md).
 
 - It is a client only: it does not publish an address space of its own.
 - No layout editor, no custom control surfaces, no scripting, no automation, no MIDI.
-- No OSC over TCP: a server declaring TCP is shown read only, with the reason.
+- No OSC over TCP: nothing is sent to a server declaring TCP, and its writable nodes say so, with the reason.
 - No sending OSC over the WebSocket in this version; OSC goes over UDP.
 - No code signing: the downloads are unsigned, so your system warns you on first launch (see below).
 

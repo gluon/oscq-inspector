@@ -395,6 +395,9 @@ async fn connect(shared: Shared, id: ServerId, generation: u64) {
         return;
     };
     let mut ws_address = (client.http_host().to_owned(), client.http_port(), false);
+    // A server not reached says nothing about its HOST_INFO: what it declared before stands,
+    // and the failure is the connection's. Reported only if the tree is then loaded.
+    let mut unreached_host_info = None;
     match client.fetch_host_info().await {
         Ok((info, _)) => {
             ws_address = info.websocket_address(client.http_host(), client.http_port());
@@ -413,6 +416,7 @@ async fn connect(shared: Shared, id: ServerId, generation: u64) {
                 destination,
             });
         }
+        Err(e) if e.is_unreachable() => unreached_host_info = Some(e.to_string()),
         Err(e) => shared.emit(Event::HostInfoUnavailable {
             server_id: id,
             reason: e.to_string(),
@@ -422,6 +426,12 @@ async fn connect(shared: Shared, id: ServerId, generation: u64) {
         Ok(doc) => {
             if shared.client(id, Some(generation)).is_none() {
                 return;
+            }
+            if let Some(reason) = unreached_host_info {
+                shared.emit(Event::HostInfoUnavailable {
+                    server_id: id,
+                    reason,
+                });
             }
             shared.emit(Event::TreeLoaded {
                 server_id: id,

@@ -39,6 +39,12 @@ Case: `load_default_egui_icon` in `eframe/src/native/epi_integration.rs`, read w
 An error kept until another error replaces it outlives what it described. The status bar showed a failed connection under the tree the next connection had loaded. Clear an error when the operation it comes from succeeds, and drop the errors of an attempt that a newer one replaced.
 Case: "could not connect to http://localhost:30339/" next to 35 nodes and an open WebSocket, Max 9 on the human's Mac, 2026-10-12.
 
+A reqwest error displays only the step that failed, "error sending request"; the reason, refused, no route, DNS, is in its sources. A message built from `to_string()` alone tells the user nothing they can act on. Walk the sources.
+Case: "could not connect to http://localhost:30339/: error sending request" on the human's Mac, with Max answering curl, 2026-10-12.
+
+A failure to reach a server is not something the server declared. Clearing its `HOST_INFO` on an unreachable attempt turned its read write nodes into write only or blocked rows, labelled "read only".
+Case: the reconnection to Max 9 failing under a loaded tree, 2026-10-12.
+
 ## Linux runtime
 
 winit loads `libxkbcommon-x11.so.0` at run time on X11. A machine without `libxkbcommon-x11-0` panics at window creation; the build does not need it. A software Vulkan driver (Mesa lavapipe) is enough to run the window under Xvfb.

@@ -759,7 +759,7 @@ impl VoidApp {
                     Some(Err(blocked)) => {
                         ui.colored_label(
                             ui.visuals().warn_fg_color,
-                            format!("read only: {blocked}"),
+                            format!("{CANNOT_SEND}: {blocked}"),
                         );
                     }
                     None => {}
@@ -942,9 +942,17 @@ fn event_kind(e: &Event) -> &'static str {
     }
 }
 
-/// The error the status bar shows for a server, with the path it concerns.
+/// What a row or the status bar says of a writable node nothing can be sent to.
+const CANNOT_SEND: &str = "cannot send";
+
+/// The error the status bar shows for a server, with the path it concerns. A failed connection
+/// is already told by the connection state, and is not said twice.
 fn error_text(e: &ServerEntry) -> Option<String> {
-    e.last_error.as_ref().map(|err| match &err.path {
+    let err = e.last_error.as_ref()?;
+    if err.operation == oscq_core::Operation::Connect && matches!(e.conn, ConnState::Failed(_)) {
+        return None;
+    }
+    Some(match &err.path {
         Some(p) => format!("{p}: {}", err.message),
         None => err.message.clone(),
     })
@@ -1244,8 +1252,9 @@ fn tree_row(
         }
         Shown::Nothing => {}
     }
+    // The node keeps the access its server declares; what is said is that nothing can be sent.
     if let Some(reason) = &p.blocked {
-        ui.weak("read only").on_hover_text(reason);
+        ui.weak(CANNOT_SEND).on_hover_text(reason);
     }
     if let Some(tags) = &node.type_raw {
         ui.weak(RichText::new(tags).monospace());
@@ -1861,7 +1870,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
-    use oscq_core::{AttributeReply, DiscoveredServer, Origin, parse_document};
+    use oscq_core::{Access, AttributeReply, DiscoveredServer, Origin, parse_document};
 
     struct Harness {
         ctx: egui::Context,
@@ -2180,6 +2189,13 @@ mod tests {
             })
             .unwrap();
         h.events.send(tree_loaded()).unwrap();
+        // The service's order: the tree, then the connection is up.
+        h.events
+            .send(Event::TransportState {
+                server_id: id,
+                state: oscq_core::TransportState::HttpOnly,
+            })
+            .unwrap();
         h.frame(Vec::new());
         h.app.act(&ctx, Action::Toggle("/test".into()));
         h.app.view.selected_path = Some(path.into());
@@ -2227,7 +2243,13 @@ mod tests {
                 "the widget stays where it was put"
             );
         }
-        assert!(h.sent().is_empty(), "no refresh, no send again");
+        // Listens follow the rows on screen; what matters is that nothing is sent or read again.
+        let sent: Vec<Command> = h
+            .sent()
+            .into_iter()
+            .filter(|c| !matches!(c, Command::Listen { .. } | Command::Ignore { .. }))
+            .collect();
+        assert!(sent.is_empty(), "no refresh, no send again: {sent:?}");
 
         h.key(Key::Enter);
         h.key(Key::ArrowRight);
@@ -2630,8 +2652,14 @@ mod tests {
                 .is_some_and(|e| matches!(e.conn, ConnState::Failed(_)))
         });
         let e = h.app.state.selected_entry().unwrap();
-        let text = error_text(e).unwrap();
-        assert!(text.starts_with("/: could not connect to "), "{text}");
+        let text = conn_text(e);
+        assert!(text.starts_with("error: could not connect to "), "{text}");
+        assert_eq!(
+            error_text(e),
+            None,
+            "the failure is said once, by the connection"
+        );
+        assert!(e.last_error.is_some());
 
         let routes = large_routes(10, 9);
         let _server = h
@@ -2649,6 +2677,127 @@ mod tests {
         let e = h.app.state.selected_entry().unwrap();
         assert_eq!(error_text(e), None, "the superseded failure is gone");
         assert_eq!(e.last_error, None);
+    }
+
+    /// Every text the frame drew.
+    fn drawn_texts(out: &egui::FullOutput) -> Vec<String> {
+        fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, texts)),
+                egui::Shape::Text(t) => texts.push(t.galley.text().to_owned()),
+                _ => {}
+            }
+        }
+        let mut texts = Vec::new();
+        for clipped in &out.shapes {
+            walk(&clipped.shape, &mut texts);
+        }
+        texts
+    }
+
+    /// A node's access is what its server declares, whatever the connection: when a reconnection
+    /// fails, a read write node stays read write, explicit or inferred from `HOST_INFO`, and the
+    /// row says nothing can be sent, with the reason, never "read only". The failure is said once.
+    /// Real service, synthetic server stopped between the two connections.
+    #[test]
+    fn a_failed_connection_keeps_the_declared_access_and_says_nothing_can_be_sent() {
+        use crate::synthetic::{Reply, SyntheticServer};
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{
+            "declared":{"FULL_PATH":"/declared","TYPE":"f","ACCESS":3,"VALUE":[0.5]},
+            "inferred":{"FULL_PATH":"/inferred","TYPE":"f","VALUE":[0.25]}}}"#;
+        let routes = vec![
+            ("/", Reply::json(doc)),
+            (
+                "/?HOST_INFO",
+                Reply::json(r#"{"NAME":"rw","OSC_PORT":9,"EXTENSIONS":{"VALUE":true}}"#),
+            ),
+        ];
+        let server = rt
+            .block_on(SyntheticServer::start("127.0.0.1:0", routes))
+            .unwrap();
+        let key = format!("127.0.0.1:{}", server.addr.port());
+        let (ev_tx, ev_rx) = flume::unbounded();
+        let commands = oscq_core::service::spawn(rt.handle(), ev_tx, Arc::new(|| {}));
+        let ctx = egui::Context::default();
+        let app = VoidApp::with_backend(
+            &ctx,
+            Backend {
+                commands,
+                events: ev_rx,
+                io: rt.handle().clone(),
+            },
+            Config {
+                manual_entries: vec![key.clone()],
+                last_selected: Some(key),
+                ..Config::default()
+            },
+            None,
+        );
+        let mut h = Harness {
+            ctx,
+            app,
+            commands: flume::unbounded().1,
+            events: flume::unbounded().0,
+            _rt: rt,
+        };
+        wait_for(&mut h, "connected", |a| {
+            a.state
+                .selected_entry()
+                .is_some_and(|e| e.conn == ConnState::Connected && e.tree.is_some())
+        });
+        let rows = |a: &VoidApp| {
+            let e = a.state.selected_entry().unwrap();
+            let t = e.tree.as_ref().unwrap();
+            ["/declared", "/inferred"].map(|p| {
+                let node = t.node(p).unwrap();
+                let access = node.effective_access(e.value_supported());
+                let shown = widget::present(node, access, e.send_blocked().as_deref());
+                (access, shown.widget, shown.blocked)
+            })
+        };
+        for (access, widget, blocked) in rows(&h.app) {
+            assert_eq!(access, Access::READ_WRITE);
+            assert!(widget && blocked.is_none(), "{blocked:?}");
+        }
+
+        drop(server);
+        let id = h.app.state.selected.unwrap();
+        h.app.act(&h.ctx.clone(), Action::Connect(id));
+        wait_for(&mut h, "the reconnection to fail", |a| {
+            a.state
+                .selected_entry()
+                .is_some_and(|e| matches!(e.conn, ConnState::Failed(_)))
+        });
+        for (access, widget, blocked) in rows(&h.app) {
+            assert_eq!(
+                access,
+                Access::READ_WRITE,
+                "the server's declaration stands"
+            );
+            assert!(!widget);
+            let reason = blocked.unwrap();
+            assert!(
+                reason.starts_with("not connected: could not connect to "),
+                "{reason}"
+            );
+        }
+        let texts = drawn_texts(&h.frame(Vec::new()));
+        assert!(!texts.iter().any(|t| t == "read only"), "{texts:?}");
+        assert_eq!(texts.iter().filter(|t| *t == CANNOT_SEND).count(), 2);
+        assert_eq!(texts.iter().filter(|t| *t == "rw").count(), 2);
+        assert_eq!(
+            texts
+                .iter()
+                .filter(|t| t.contains("could not connect"))
+                .count(),
+            1,
+            "said once: {texts:?}"
+        );
     }
 
     /// M4: a value changed inside the server reaches the window with no user action. Real
