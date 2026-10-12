@@ -63,7 +63,7 @@ cd void-oscq-0.1.0-linux-x86_64
 
 To have it in your application menu, copy the binary to `~/.local/bin` and the `.desktop` file to `~/.local/share/applications`.
 
-What the system needs to run it: X11 or Wayland, `libxkbcommon-x11-0` on X11, and a Vulkan or OpenGL driver (Mesa is enough). The binary needs a recent C library, the version is printed by the release build; it was built on Ubuntu 22.04.
+What the system needs to run it: X11 or Wayland, `libxkbcommon-x11-0` on X11, and a Vulkan or OpenGL driver (Mesa is enough). It needs glibc 2.35 or newer, as on Ubuntu 22.04 or later. The release build prints this requirement, measured on the binary.
 
 ## Using it
 
