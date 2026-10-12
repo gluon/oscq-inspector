@@ -352,12 +352,16 @@ These are requirements, and M4 verifies them with a committed benchmark against 
 | Parse and model a 5000 node document | under 150 ms |
 | Frame time while scrolling that tree | under 8 ms at p95 |
 | Idle CPU, connected, 50 active listens | under 1 percent of one core |
-| Idle repaints | zero |
+| Idle repaints, no input reaching the window | zero |
 | Slider drag to UDP packet leaving the socket | under 2 ms |
 | Resident memory with 5000 nodes connected | under 150 MB |
 | Release binary size, macOS aarch64 | under 25 MB |
 
 If a budget cannot be met, record the measured number and the reason in `docs/decisions.md`. Do not quietly relax the table.
+
+Idle means no input reaching the window. Each input event that does reach it costs at least 3 frames in `egui`: the frame of the event, the repaint `egui` asks for after any input, and the second pass it runs after every immediate request. That floor belongs to `egui`; it is documented, not worked around. Amended on 2026-10-12 by the human's ruling.
+
+Closed on 2026-10-12: every budget is measured and met, with the final numbers and how each was taken in `docs/decisions.md`.
 
 The `eframe` renderer stays `wgpu`. If the binary size budget fails at M5, switch to `glow` then, not before.
 

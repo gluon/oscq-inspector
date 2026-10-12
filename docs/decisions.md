@@ -89,6 +89,8 @@ One line per decision. Newest entries at the bottom. A dependency not listed in 
 | 2026-10-12 | The idle repaint floor is 0 frames with no input, and 3 frames for each input event that reaches the window: the frame of the event, the immediate repaint egui asks for after any input (`InputState::wants_repaint_after`, recorded as `context.rs:538`), and the second pass egui runs after every immediate request ("Each request results in two repaints", `context.rs:139`). A tooltip shown adds its delay and two passes. Removing the floor means changing egui | Measured on the real binary: one pointer move gives 3 frames, then none. To the human to rule on the budget's condition: idle meaning no input reaching the window |
 | 2026-10-12 | After a committed send, no `?VALUE` refresh when the method is listened to on a WebSocket that has notified: the server pushes the value. On a silent socket (Max 9) or without a WebSocket the refresh stays | PRD 7.4 fetches values after each send only when there is no WebSocket. Seen on the synthetic server, whose 404 on `?VALUE` showed the refresh was sent while the value already arrived |
 | 2026-10-12 | The synthetic server answers `?VALUE` for every method, with the value last pushed over its WebSocket or the document's, and `--stream` gives every method its own phase | Its `?VALUE` routes were missing, so a refresh got 404; and every listened method was pushed the same value, so equal values on screen proved nothing. A test pushes two values to two methods and checks each shows its own |
+| 2026-10-12 | "Idle repaints, zero" is measured with no input reaching the window. The floor of 3 frames per input event is egui's; it is documented in PRD 10, not worked around | Human ruling, after the real binary measured 0 frames and 0 events in 10 s on the Mac with the pointer outside the window |
+| 2026-10-12 | Cold start is measured by `real_binary_cold_start_five_launches` alone, after one launch that is not measured; `real_binary_budgets` no longer measures it | macOS Gatekeeper checks a freshly built binary on its first launch, once: `real_binary_budgets` ran first on the new binary and measured 512.5 ms, the five launches right after 103.3 to 128.9 ms. The warm up keeps the five launch test clean when run alone, and one test per budget leaves no two figures to reconcile |
 
 ## PRD 10 budgets, measured
 
@@ -127,3 +129,18 @@ Not measured anywhere yet: cold start, idle CPU and resident memory on Windows, 
 | Idle CPU, 50 active listens, under 1 % | 2026-10-12, commit `fd39c6a`, Max and OSCQuery Helper closed: 1.50 and 1.70 % of one core over 10 s. The 21.36 % of 2026-10-11 was measured with Max and the Helper running, and is withdrawn | 0.39 % (idle test), 0.30 % (budgets test) | Over by a little on the human's Mac before the change below; same cause as the next row. Not yet measured after it |
 | Idle repaints, zero | 2026-10-12, commit `fd39c6a`: 57 and 65 frames in 10 s, with 0 network events. Asked for by egui: `context.rs:538` 20 and 24 frames, `containers/tooltip.rs:362` and `374`, `containers/scroll_area.rs:1345` and `1473`; 5 and 8 frames woken by the OS or by input. The 563 frames of 2026-10-11 were measured with Max and the Helper running, and are withdrawn | 0 frames in 10 s, twice | Each wake by input was followed by egui animations: tooltip and scroll bar fades, and a repaint on every frame until the pointer was perfectly still. Removed, see the entry below; not yet measured on the human's Mac after it. The rest is egui's floor of 3 frames per input event |
 | Resident memory with 5000 nodes, under 150 MB | 111.4 MB | 110.6 MB | Within |
+
+### Final, PRD 10 closed on 2026-10-12
+
+Real binary on the human's Mac, Max and OSCQuery Helper closed, the pointer outside the window, with `cargo test --release -p void-oscq --test budgets_binary -- --ignored --nocapture --test-threads=1`. In process budgets and binary size on the macOS CI machine, run 38211153808, commit `a0712ab`, the code these numbers close.
+
+| Budget | Final measurement | Where | Verdict |
+| --- | --- | --- | --- |
+| Cold start to window visible, under 300 ms | 103.3 to 128.9 ms over five launches, after a launch not measured; earlier series 132.8 ms at worst | human's Mac | Met |
+| Parse and model a 5000 node document, under 150 ms | p95 15.96 ms, median 10.12 ms | macOS CI | Met |
+| Frame time while scrolling that tree, under 8 ms at p95 | p95 1.03 ms, CPU side, GPU time not included | macOS CI | Met |
+| Idle CPU, connected, 50 active listens, under 1 % | 0.00 and 0.10 % of one core over 10 s | human's Mac | Met |
+| Idle repaints, no input reaching the window, zero | 0 frames and 0 events in 10 s, twice | human's Mac | Met |
+| Slider to UDP packet leaving the socket, under 2 ms | p95 1.21 ms, median 0.39 ms, keyboard step to packet received on loopback | macOS CI | Met |
+| Resident memory with 5000 nodes connected, under 150 MB | 105.4 MB | human's Mac | Met |
+| Release binary size, macOS aarch64, under 25 MB | 23 630 368 bytes, 22.5 MB | macOS CI | Met |

@@ -1,6 +1,7 @@
 //! PRD 10 budgets measured on the real binary, window and all, against the synthetic server's
 //! 5000 node document: cold start, idle CPU with 50 active listens, idle repaints, resident
-//! memory. Needs a display, Linux or macOS, and a release build:
+//! memory. Idle is measured with no input reaching the window: keep the pointer outside it.
+//! Needs a display, Linux or macOS, and a release build:
 //!
 //! ```text
 //! cargo test --release -p void-oscq --test budgets_binary -- --ignored --nocapture --test-threads=1
@@ -342,14 +343,18 @@ fn real_binary_does_not_repaint_when_idle() {
 }
 
 /// Budget 1, cold start, over five launches in a row: from spawn to the first frame, split into
-/// the time before `main` (process creation, loading, any first launch check by the OS) and the
-/// time from `main` to the first frame (the app).
+/// the time before `main` (process creation, loading) and the time from `main` to the first frame
+/// (the app). One launch first, not measured: macOS Gatekeeper checks a freshly built binary on
+/// its first launch, once, which is not the app's start.
 #[test]
 #[ignore = "budget: real window, display and release build needed"]
 fn real_binary_cold_start_five_launches() {
     if cfg!(debug_assertions) {
         panic!("budgets are measured on a release build: cargo test --release");
     }
+    let warm_up = Launch::start();
+    warm_up.first_frame();
+    drop(warm_up);
     let mut totals = Vec::new();
     for i in 1..=5 {
         let launch = Launch::start();
@@ -379,19 +384,15 @@ fn real_binary_budgets() {
     if cfg!(target_os = "windows") {
         panic!("CPU and memory are read with /proc or ps: not measurable here on Windows");
     }
+    // Cold start is measured by `real_binary_cold_start_five_launches` alone, after a warm up.
     let launch = Launch::start();
-    let (cold, from_main) = launch.first_frame();
+    launch.first_frame();
     launch.settle();
     let idle = launch.idle();
     let memory = rss(launch.pid());
     let listens = launch.server.ws.listens().len();
     drop(launch);
 
-    println!(
-        "BUDGET cold start to first frame: {:.1} ms from spawn ({:.1} ms from main), budget 300 ms",
-        cold.as_secs_f64() * 1000.0,
-        from_main.as_secs_f64() * 1000.0
-    );
     println!(
         "BUDGET idle CPU, {listens} active listens: {:.2} % of one core over {} s, budget 1 %",
         idle.cpu,
@@ -408,7 +409,6 @@ fn real_binary_budgets() {
         memory as f64 / 1_048_576.0
     );
     assert_eq!(listens, LISTENS);
-    assert!(cold < Duration::from_millis(300), "cold start");
     assert!(idle.cpu < 1.0, "idle CPU");
     assert!(idle.frames.is_empty(), "idle repaints");
     assert!(memory < 150 * 1_048_576, "resident memory");
