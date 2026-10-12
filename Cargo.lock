@@ -2686,7 +2686,7 @@ dependencies = [
 
 [[package]]
 name = "oscq-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "flume",
@@ -2704,7 +2704,7 @@ dependencies = [
 
 [[package]]
 name = "oscq-discovery"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "flume",
  "mdns-sd",
@@ -4305,7 +4305,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "void-oscq"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "eframe",
