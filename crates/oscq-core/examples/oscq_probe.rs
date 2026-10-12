@@ -109,6 +109,7 @@ fn print_host_info(info: &HostInfo, client: &OscQueryClient) {
             let source = match d.port_source {
                 PortSource::Advertised => "advertised",
                 PortSource::InferredFromHttp => "inferred from the HTTP port",
+                PortSource::User => "set by the user",
             };
             let sendable = match d.check_sendable() {
                 Ok(()) => "sendable".to_owned(),

@@ -202,3 +202,13 @@ Max 9 serves OSCQuery natively, a further implementation next to VVOSCQueryProto
 | Accepts `LISTEN` (`/test/param/fader/raw` tried) and never sends anything: no binary value frame when the fader moves, no `PATH_*` command | an accepted socket is shown as open with no update received, never as live; values stay on refresh only |
 
 Max 9 therefore implements the HTTP part of the proposal and accepts its WebSocket, but not the notification part.
+
+### OSC port: 30338, not the HTTP port
+
+Observed by the human on 2026-10-12 in Max's OSC preferences: Max receives OSC on UDP port 30338 and serves OSCQuery on 30339. Max links the two ports nowhere a client can read: it ignores `HOST_INFO`, so there is no `OSC_PORT`, and the proposal's default, OSC on the HTTP port, sends every value to 30339, where nothing receives OSC. Sends from the app never reached Max until the port was corrected.
+
+The default stays: inferring the HTTP port is what the proposal says when nothing is declared. What Max shows is that the inference can be wrong with no way for a client to know. Hence the user's OSC port: when the port is inferred, the status bar takes a port for that server, kept in the config with the manual entries; the status bar then says "port set by the user" instead of "port inferred from the HTTP port", and no later inference replaces it. A port the server advertises is not editable and stands.
+
+| Observation | Client behaviour |
+| --- | --- |
+| Receives OSC on UDP 30338, serves OSCQuery on HTTP 30339, links them nowhere | the inferred port, 30339, is wrong; the user sets 30338 for `localhost:30339`, and sends reach Max |

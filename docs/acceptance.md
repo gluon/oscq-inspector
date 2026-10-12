@@ -62,18 +62,24 @@ Setup: Max 9 running `tests/fixtures/max/test.maxpat`, which serves OSCQuery on 
    Expected: the tree loads with `/test/param/gain`, `/test/param/freq` and `/test/param/fader`, each holding ten nodes (`longname`, `min`, `max`, `raw`, `normalized`...), with their values. The status bar shows "port inferred from the HTTP port" and "HOST_INFO ignored by the server, defaults used", and no error.
 2. Wait a few seconds after the tree loads.
    Expected: "WebSocket connected, no update received yet: values on refresh only". Never "values live".
-3. Change `/test/param/fader/normalized`, a read write node, with its widget.
+3. Change `/test/param/fader/normalized`, a read write node, with its widget, with nothing else set.
+   Expected: the status bar says "port inferred from the HTTP port", 30339, and the fader in Max does not move: Max receives OSC on 30338, see docs/protocol-notes.md section 12.
+4. In the status bar, type 30338 in the OSC port field and click **Set OSC port**. Send again.
+   Expected: "OSC localhost:30338 UDP, port set by the user", and the fader moves in Max.
+5. Change `/test/param/fader/normalized` with its widget again.
    Expected: the fader moves in Max. The row shows the value sent until a value is read.
-4. Select `/test/param/fader/normalized` and press F5.
+6. Select `/test/param/fader/normalized` and press F5.
    Expected: the value read from Max, in plain text, no longer marked "(sent)".
-5. Move the fader in Max, and do not touch Void OSCQ.
+7. Move the fader in Max, and do not touch Void OSCQ.
    Expected: the value shown does not change by itself, since Max sends no notification; F5 shows the new value.
-6. Close the patch in Max, then click the server on the left to reconnect.
+8. Quit Void OSCQ and open it again.
+   Expected: the server reconnects with "OSC localhost:30338 UDP, port set by the user"; sends reach Max. **Infer OSC port** goes back to 30339, "port inferred from the HTTP port"; set 30338 again before going on.
+9. Close the patch in Max, then click the server on the left to reconnect.
    Expected: the status bar says the connection failed once, with the system's reason (for example "Connection refused"). The tree stays; its read write nodes still show `rw`, have no widget and say "cannot send", the reason on hover. Never "read only".
-7. Open the patch again and click the server.
+10. Open the patch again and click the server.
    Expected: connected, the widgets back, no error left in the status bar.
 
-Proves: a server that ignores the `HOST_INFO` query is used with the proposal's defaults and no error, reading values from a real server, sending to a real server on the inferred port, the honest display of a WebSocket that accepts and stays silent. Cannot prove: live values (Max does not notify), discovery (Max does not advertise and listens on 127.0.0.1 only).
+Proves: a server that ignores the `HOST_INFO` query is used with the proposal's defaults and no error, reading values from a real server, sending to a real server on the port set by the user where the inferred one is wrong, that port kept across a restart, the honest display of a WebSocket that accepts and stays silent. Cannot prove: live values (Max does not notify), discovery (Max does not advertise and listens on 127.0.0.1 only).
 
 ## 3. Synthetic server, on the same Mac
 

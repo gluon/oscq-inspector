@@ -68,6 +68,8 @@ enum Action {
     SelectServer(ServerId),
     Connect(ServerId),
     Disconnect(ServerId),
+    /// The OSC port the user sets for a server whose port is inferred; `None` infers it again.
+    SetOscPort(ServerId, Option<u16>),
     Toggle(String),
     SelectPath(String),
     Send(SendReq, SendMode),
@@ -123,6 +125,9 @@ struct View {
     manual_open: bool,
     manual_text: String,
     manual_error: Option<String>,
+    /// The OSC port field of the status bar, and the server and port it was last filled from.
+    osc_port_text: String,
+    osc_port_shown: Option<(ServerId, u16)>,
     about_open: bool,
     note: Option<String>,
     geometry_dirty_since: Option<Instant>,
@@ -277,7 +282,7 @@ impl VoidApp {
             .resizable(true)
             .default_size(230.0)
             .show(ui, |ui| self.server_pane(ui, &mut actions));
-        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui, &mut actions));
         egui::CentralPanel::default().show(ui, |ui| self.main_pane(ui, &mut actions));
         self.manual_modal(&ctx, &mut actions);
         self.about_modal(&ctx);
@@ -439,6 +444,13 @@ impl VoidApp {
                         e.conn = ConnState::Connecting;
                         e.ws = WsState::Absent;
                         e.listening.clear();
+                        // The port the user set, before the connection derives its destination.
+                        if let Some(&port) = self.config.osc_ports.get(&e.key()) {
+                            let _ = self.backend.commands.send(Command::SetOscPort {
+                                server_id: id,
+                                port: Some(port),
+                            });
+                        }
                         let _ = self.backend.commands.send(Command::Connect {
                             server_id: id,
                             http_base: url,
@@ -446,6 +458,20 @@ impl VoidApp {
                     }
                     None => e.conn = ConnState::Failed("no usable address".to_owned()),
                 }
+            }
+            Action::SetOscPort(id, port) => {
+                let Some(key) = self.state.entry(id).map(|e| e.key()) else {
+                    return;
+                };
+                match port {
+                    Some(p) => self.config.osc_ports.insert(key, p),
+                    None => self.config.osc_ports.remove(&key),
+                };
+                self.save_config(ctx);
+                let _ = self.backend.commands.send(Command::SetOscPort {
+                    server_id: id,
+                    port,
+                });
             }
             Action::Disconnect(id) => {
                 let _ = self
@@ -739,22 +765,27 @@ impl VoidApp {
 
     // ---------------------------------------------------------------- status bar
 
-    fn status_bar(&self, ui: &mut egui::Ui) {
+    fn status_bar(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let view = &mut self.view;
         ui.horizontal_wrapped(|ui| {
             if let Some(e) = self.state.selected_entry() {
                 ui.strong(&e.server.name);
                 ui.label(conn_text(e));
                 match &e.destination {
                     Some(Ok(d)) => {
-                        let source = match d.port_source {
-                            PortSource::Advertised => "port advertised",
-                            PortSource::InferredFromHttp => "port inferred from the HTTP port",
-                        };
                         let transport = match d.transport {
                             oscq_core::OscTransport::Udp => "UDP",
                             oscq_core::OscTransport::Tcp => "TCP",
                         };
-                        ui.label(format!("OSC {}:{} {transport}, {source}", d.host, d.port));
+                        ui.label(format!(
+                            "OSC {}:{} {transport}, {}",
+                            d.host,
+                            d.port,
+                            port_source_text(d.port_source)
+                        ));
+                        if d.port_source != PortSource::Advertised {
+                            osc_port_editor(ui, e.server.id, d, view, actions);
+                        }
                     }
                     Some(Err(blocked)) => {
                         ui.colored_label(
@@ -801,7 +832,7 @@ impl VoidApp {
             if let Some(g) = &self.state.global_error {
                 ui.colored_label(ui.visuals().error_fg_color, g);
             }
-            if let Some(n) = &self.view.note {
+            if let Some(n) = &view.note {
                 ui.weak(n);
             }
         });
@@ -939,6 +970,46 @@ fn event_kind(e: &Event) -> &'static str {
         Event::TrafficLogged(_) => "TrafficLogged",
         Event::Error { .. } => "Error",
         Event::Succeeded { .. } => "Succeeded",
+    }
+}
+
+/// Where the OSC port comes from, as the status bar says it.
+fn port_source_text(source: PortSource) -> &'static str {
+    match source {
+        PortSource::Advertised => "port advertised",
+        PortSource::InferredFromHttp => "port inferred from the HTTP port",
+        PortSource::User => "port set by the user",
+    }
+}
+
+/// The field to set the OSC port of a server that does not advertise one, and the button that
+/// infers it again once set.
+fn osc_port_editor(
+    ui: &mut egui::Ui,
+    id: ServerId,
+    d: &oscq_core::OscDestination,
+    view: &mut View,
+    actions: &mut Vec<Action>,
+) {
+    if view.osc_port_shown != Some((id, d.port)) {
+        view.osc_port_shown = Some((id, d.port));
+        view.osc_port_text = d.port.to_string();
+    }
+    let field = ui
+        .add(egui::TextEdit::singleline(&mut view.osc_port_text).desired_width(48.0))
+        .on_hover_text(
+            "The server does not advertise its OSC port. Set the port it receives OSC on; \
+             it is kept for this server.",
+        );
+    let enter = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+    if ui.small_button("Set OSC port").clicked() || enter {
+        match view.osc_port_text.trim().parse::<u16>() {
+            Ok(p) if p > 0 => actions.push(Action::SetOscPort(id, Some(p))),
+            _ => view.note = Some(format!("not a port: {}", view.osc_port_text.trim())),
+        }
+    }
+    if d.port_source == PortSource::User && ui.small_button("Infer OSC port").clicked() {
+        actions.push(Action::SetOscPort(id, None));
     }
 }
 
@@ -2798,6 +2869,149 @@ mod tests {
             1,
             "said once: {texts:?}"
         );
+    }
+
+    /// The window on the real network service, with `config`, on its own runtime.
+    fn service_harness(config: Config) -> Harness {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (ev_tx, ev_rx) = flume::unbounded();
+        let commands = oscq_core::service::spawn(rt.handle(), ev_tx, Arc::new(|| {}));
+        let ctx = egui::Context::default();
+        let app = VoidApp::with_backend(
+            &ctx,
+            Backend {
+                commands,
+                events: ev_rx,
+                io: rt.handle().clone(),
+            },
+            config,
+            None,
+        );
+        Harness {
+            ctx,
+            app,
+            commands: flume::unbounded().1,
+            events: flume::unbounded().0,
+            _rt: rt,
+        }
+    }
+
+    /// Max 9 serves OSCQuery on one port and receives OSC on another, and ignores `HOST_INFO`: the
+    /// inferred port is wrong. The user sets the port in the status bar; the status bar tells the
+    /// three origins apart, sends reach the user's port, the port is kept in the config, and after
+    /// a restart the connection takes it again instead of inferring.
+    #[test]
+    fn a_user_osc_port_replaces_the_inferred_one_and_is_kept() {
+        use crate::synthetic::{OscReceiver, Reply, SyntheticServer};
+        assert_eq!(
+            [
+                PortSource::Advertised,
+                PortSource::InferredFromHttp,
+                PortSource::User
+            ]
+            .map(port_source_text),
+            [
+                "port advertised",
+                "port inferred from the HTTP port",
+                "port set by the user"
+            ]
+        );
+        let root = include_str!("../../../tests/fixtures/max-root.json");
+        let host = include_str!("../../../tests/fixtures/max-hostinfo.json");
+        // The server and the OSC receiver outlive both windows below.
+        let srv = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let osc = srv.block_on(OscReceiver::bind("127.0.0.1:0")).unwrap();
+        let server = srv
+            .block_on(SyntheticServer::start(
+                "127.0.0.1:0",
+                vec![("/", Reply::json(root)), ("/?HOST_INFO", Reply::json(host))],
+            ))
+            .unwrap();
+        let key = format!("127.0.0.1:{}", server.addr.port());
+        let mut h = service_harness(Config {
+            manual_entries: vec![key.clone()],
+            last_selected: Some(key.clone()),
+            ..Config::default()
+        });
+        let port_of =
+            |a: &VoidApp| match a.state.selected_entry().and_then(|e| e.destination.clone()) {
+                Some(Ok(d)) => Some((d.port, d.port_source)),
+                _ => None,
+            };
+        wait_for(&mut h, "connected", |a| {
+            a.state
+                .selected_entry()
+                .is_some_and(|e| e.conn == ConnState::Connected)
+        });
+        assert_eq!(
+            port_of(&h.app),
+            Some((server.addr.port(), PortSource::InferredFromHttp))
+        );
+        let texts = drawn_texts(&h.frame(Vec::new()));
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.ends_with("port inferred from the HTTP port")),
+            "{texts:?}"
+        );
+
+        let id = h.app.state.selected.unwrap();
+        h.app
+            .act(&h.ctx.clone(), Action::SetOscPort(id, Some(osc.port())));
+        assert_eq!(h.app.config.osc_ports.get(&key), Some(&osc.port()));
+        wait_for(&mut h, "the user's port", |a| {
+            port_of(a) == Some((osc.port(), PortSource::User))
+        });
+        let texts = drawn_texts(&h.frame(Vec::new()));
+        assert!(
+            texts.iter().any(|t| t.ends_with("port set by the user")),
+            "{texts:?}"
+        );
+        let send = |h: &mut Harness| {
+            let req = SendReq {
+                server_id: h.app.state.selected.unwrap(),
+                path: OscPath::parse("/test/param/fader/normalized").unwrap(),
+                signature: TypeSignature::parse("f").unwrap(),
+                args: vec![OscType::Double(0.5)],
+                readable: false,
+            };
+            h.app
+                .act(&h.ctx.clone(), Action::Send(req, SendMode::Final));
+            srv.block_on(osc.recv())
+        };
+        assert!(matches!(
+            send(&mut h),
+            rosc::OscPacket::Message(m) if m.addr == "/test/param/fader/normalized"
+        ));
+
+        // The config as saved, read back: a restart connects with the user's port.
+        let dir = std::env::temp_dir().join(format!("void-oscq-port-{}", std::process::id()));
+        let path = config::config_path(&dir);
+        config::write_atomic(&path, &h.app.config.to_bytes()).unwrap();
+        let (saved, warning) = Config::load(&path);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(warning, None);
+        assert_eq!(saved.osc_ports.get(&key), Some(&osc.port()));
+        let mut restarted = service_harness(saved);
+        wait_for(&mut restarted, "reconnected with the user's port", |a| {
+            a.state
+                .selected_entry()
+                .is_some_and(|e| e.conn == ConnState::Connected)
+        });
+        assert_eq!(
+            port_of(&restarted.app),
+            Some((osc.port(), PortSource::User)),
+            "never replaced by the inference"
+        );
+        assert!(matches!(send(&mut restarted), rosc::OscPacket::Message(_)));
     }
 
     /// M4: a value changed inside the server reaches the window with no user action. Real

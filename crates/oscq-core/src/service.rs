@@ -35,6 +35,12 @@ pub enum Command {
     Disconnect {
         server_id: ServerId,
     },
+    /// The OSC port the user sets for a server whose port is inferred, `None` to infer it again.
+    /// Kept across connections of that server; an advertised port stands.
+    SetOscPort {
+        server_id: ServerId,
+        port: Option<u16>,
+    },
     /// Fetch the subtree at a full path, its values included.
     RefreshTree {
         server_id: ServerId,
@@ -202,6 +208,9 @@ pub type Notify = Arc<dyn Fn() + Send + Sync>;
 
 struct Conn {
     client: OscQueryClient,
+    /// The last `HOST_INFO` of this connection, from which the destination is derived again when
+    /// the user's port changes.
+    host_info: Option<HostInfo>,
     destination: Option<Result<OscDestination, SendBlocked>>,
     generation: u64,
     /// Methods the UI wants values for. A live WebSocket session sends `LISTEN` for each.
@@ -214,6 +223,8 @@ struct Conn {
 #[derive(Clone)]
 struct Shared {
     conns: Arc<Mutex<HashMap<ServerId, Conn>>>,
+    /// OSC ports set by the user, per server, outliving its connections.
+    user_ports: Arc<Mutex<HashMap<ServerId, u16>>>,
     sender: Arc<tokio::sync::Mutex<OscUdpSender>>,
     events: flume::Sender<Event>,
     notify: Notify,
@@ -240,6 +251,51 @@ impl Shared {
                 path,
                 message,
             },
+        });
+    }
+
+    /// Where OSC goes for a server: its `HOST_INFO`, then the user's port if the port is inferred.
+    fn destination(
+        &self,
+        id: ServerId,
+        info: &HostInfo,
+        client: &OscQueryClient,
+    ) -> Result<OscDestination, SendBlocked> {
+        let user = self
+            .user_ports
+            .lock()
+            .ok()
+            .and_then(|p| p.get(&id).copied());
+        info.osc_destination(client.http_host(), client.http_port())
+            .map(|d| d.with_user_port(user))
+    }
+
+    /// Records the user's port and, on a live connection with its `HOST_INFO`, derives the
+    /// destination again and reports it.
+    fn set_user_port(&self, id: ServerId, port: Option<u16>) {
+        if let Ok(mut ports) = self.user_ports.lock() {
+            match port {
+                Some(p) => ports.insert(id, p),
+                None => ports.remove(&id),
+            };
+        }
+        let current = self.conns.lock().ok().and_then(|c| {
+            c.get(&id)
+                .and_then(|c| c.host_info.clone().map(|i| (i, c.client.clone())))
+        });
+        let Some((info, client)) = current else {
+            return;
+        };
+        let destination = self.destination(id, &info, &client);
+        if let Ok(mut conns) = self.conns.lock()
+            && let Some(c) = conns.get_mut(&id)
+        {
+            c.destination = Some(destination.clone());
+        }
+        self.emit(Event::HostInfo {
+            server_id: id,
+            info,
+            destination,
         });
     }
 
@@ -291,6 +347,7 @@ pub fn spawn(
     let (tx, rx) = flume::unbounded();
     let shared = Shared {
         conns: Arc::new(Mutex::new(HashMap::new())),
+        user_ports: Arc::new(Mutex::new(HashMap::new())),
         sender: Arc::new(tokio::sync::Mutex::new(OscUdpSender::new())),
         events,
         notify,
@@ -325,6 +382,7 @@ async fn run(rx: flume::Receiver<Command>, shared: Shared) {
                         server_id,
                         Conn {
                             client,
+                            host_info: None,
                             destination: None,
                             generation,
                             listens: HashSet::new(),
@@ -347,6 +405,7 @@ async fn run(rx: flume::Receiver<Command>, shared: Shared) {
                     });
                 }
             }
+            Command::SetOscPort { server_id, port } => shared.set_user_port(server_id, port),
             Command::RefreshTree {
                 server_id,
                 from_path,
@@ -401,10 +460,11 @@ async fn connect(shared: Shared, id: ServerId, generation: u64) {
     match client.fetch_host_info().await {
         Ok((info, _)) => {
             ws_address = info.websocket_address(client.http_host(), client.http_port());
-            let destination = info.osc_destination(client.http_host(), client.http_port());
+            let destination = shared.destination(id, &info, &client);
             if let Ok(mut conns) = shared.conns.lock() {
                 match conns.get_mut(&id) {
                     Some(c) if c.generation == generation => {
+                        c.host_info = Some(info.clone());
                         c.destination = Some(destination.clone())
                     }
                     _ => return,

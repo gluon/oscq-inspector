@@ -365,3 +365,110 @@ async fn max_ignoring_host_info_connects_without_error() {
         "refresh only stays, silently: {later:?}"
     );
 }
+
+/// Max 9: OSCQuery on one port, OSC received on another, `HOST_INFO` ignored, so the OSC port is
+/// inferred from the HTTP port and wrong. The user's port replaces it, is what sends go to, and
+/// stays across a reconnection; cleared, the port is inferred again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_user_port_replaces_the_inferred_one_and_survives_a_reconnection() {
+    let osc = OscReceiver::bind("127.0.0.1:0").await.unwrap();
+    let tree = read_fixture("max-root.json");
+    let server = SyntheticServer::start(
+        "127.0.0.1:0",
+        vec![
+            ("/", Reply::json(tree)),
+            (
+                "/?HOST_INFO",
+                Reply::json(read_fixture("max-hostinfo.json")),
+            ),
+        ],
+    )
+    .await
+    .unwrap();
+    let http_port = server.addr.port();
+    let h = harness();
+    let id = ServerId::next();
+    let destination_of = |events: &[Event]| {
+        events
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                Event::HostInfo { destination, .. } => destination.clone().ok(),
+                _ => None,
+            })
+            .map(|d| (d.port, d.port_source))
+    };
+    let connect = || {
+        h.commands
+            .send(Command::Connect {
+                server_id: id,
+                http_base: server.base_url(),
+            })
+            .unwrap();
+    };
+    let connected = |e: &Event| {
+        matches!(
+            e,
+            Event::TransportState {
+                state: TransportState::HttpOnly,
+                ..
+            }
+        )
+    };
+    connect();
+    let seen = h.until(connected).await;
+    assert_eq!(
+        destination_of(&seen),
+        Some((http_port, PortSource::InferredFromHttp))
+    );
+
+    h.commands
+        .send(Command::SetOscPort {
+            server_id: id,
+            port: Some(osc.port()),
+        })
+        .unwrap();
+    let seen = h.until(|e| matches!(e, Event::HostInfo { .. })).await;
+    assert_eq!(destination_of(&seen), Some((osc.port(), PortSource::User)));
+    let send = || {
+        h.commands
+            .send(Command::SendOsc {
+                server_id: id,
+                path: OscPath::parse("/test/param/fader/normalized").unwrap(),
+                signature: TypeSignature::parse("f").unwrap(),
+                args: vec![OscType::Double(0.5)],
+                refresh_after: false,
+            })
+            .unwrap();
+    };
+    send();
+    assert_eq!(
+        osc.recv().await,
+        OscPacket::Message(OscMessage {
+            addr: "/test/param/fader/normalized".into(),
+            args: vec![OscType::Float(0.5)]
+        })
+    );
+
+    connect();
+    let seen = h.until(connected).await;
+    assert_eq!(
+        destination_of(&seen),
+        Some((osc.port(), PortSource::User)),
+        "the inference of the new connection does not replace the user's port"
+    );
+    send();
+    assert!(matches!(osc.recv().await, OscPacket::Message(_)));
+
+    h.commands
+        .send(Command::SetOscPort {
+            server_id: id,
+            port: None,
+        })
+        .unwrap();
+    let seen = h.until(|e| matches!(e, Event::HostInfo { .. })).await;
+    assert_eq!(
+        destination_of(&seen),
+        Some((http_port, PortSource::InferredFromHttp))
+    );
+}

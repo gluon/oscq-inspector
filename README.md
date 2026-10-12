@@ -68,10 +68,10 @@ What the system needs to run it: X11 or Wayland, `libxkbcommon-x11-0` on X11, an
 ## Using it
 
 - Select a server on the left: the app connects, reads its `HOST_INFO` and its whole tree.
-- **Max 9** serves OSCQuery on its own machine only and does not advertise it: use `+ manual` with `localhost:30339`.
+- **Max 9** serves OSCQuery on its own machine only and does not advertise it: use `+ manual` with `localhost:30339`. It receives OSC on another port, 30338 by default, which it does not tell: set it in the status bar's OSC port field, see below.
 - Keyboard: arrows to move, right and left to expand and collapse, Enter to focus the widget of the selected row, Escape to leave it, `/` for the filter, F5 to refresh the selection, Cmd or Ctrl and C to copy the selected path.
-- The status bar tells, for the selected server: the OSC destination and whether its port was advertised or inferred from the HTTP port; whether values are live, open but silent (the WebSocket is connected and the server has sent nothing yet), or on refresh only; and the last error with the path it concerns.
-- Settings are saved in your system's configuration folder, in `void-oscq/config.json`: window size and place, manual entries, the last selected server, the theme, pinned paths. JSON and traffic exports go to `void-oscq/exports/` beside it.
+- The status bar tells, for the selected server: the OSC destination and whether its port was advertised, inferred from the HTTP port, or set by you; when the server does not advertise its port, the OSC port field next to it sets the right one, kept for that server; whether values are live, open but silent (the WebSocket is connected and the server has sent nothing yet), or on refresh only; and the last error with the path it concerns.
+- Settings are saved in your system's configuration folder, in `void-oscq/config.json`: window size and place, manual entries, the last selected server, the theme, pinned paths, the OSC ports you set. JSON and traffic exports go to `void-oscq/exports/` beside it.
 
 ## Build from source
 
