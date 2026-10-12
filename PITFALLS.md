@@ -31,6 +31,14 @@ Case: 563 frames and 21.36 % CPU with Max and the Helper running, 57 frames and 
 
 A headless frame through `Context::run_ui` must consume `FullOutput::textures_delta`, as a renderer would, or the test panics in debug when the delta is dropped.
 
+eframe gives the window its own egui logo as icon when the application gives none: window, taskbar, and on macOS the Dock while the app runs, over the bundle's `.icns`. Give the icon in the `ViewportBuilder`.
+Case: `load_default_egui_icon` in `eframe/src/native/epi_integration.rs`, read while adding the icon, 2026-10-12.
+
+## Status display
+
+An error kept until another error replaces it outlives what it described. The status bar showed a failed connection under the tree the next connection had loaded. Clear an error when the operation it comes from succeeds, and drop the errors of an attempt that a newer one replaced.
+Case: "could not connect to http://localhost:30339/" next to 35 nodes and an open WebSocket, Max 9 on the human's Mac, 2026-10-12.
+
 ## Linux runtime
 
 winit loads `libxkbcommon-x11.so.0` at run time on X11. A machine without `libxkbcommon-x11-0` panics at window creation; the build does not need it. A software Vulkan driver (Mesa lavapipe) is enough to run the window under Xvfb.

@@ -792,11 +792,7 @@ impl VoidApp {
                         ui.weak(format!("{} document warnings", t.diagnostics.len()));
                     }
                 }
-                if let Some(err) = &e.last_error {
-                    let text = match &err.path {
-                        Some(p) => format!("{p}: {}", err.message),
-                        None => err.message.clone(),
-                    };
+                if let Some(text) = error_text(e) {
                     ui.colored_label(ui.visuals().error_fg_color, text);
                 }
             } else {
@@ -942,7 +938,16 @@ fn event_kind(e: &Event) -> &'static str {
         Event::TransportState { .. } => "TransportState",
         Event::TrafficLogged(_) => "TrafficLogged",
         Event::Error { .. } => "Error",
+        Event::Succeeded { .. } => "Succeeded",
     }
+}
+
+/// The error the status bar shows for a server, with the path it concerns.
+fn error_text(e: &ServerEntry) -> Option<String> {
+    e.last_error.as_ref().map(|err| match &err.path {
+        Some(p) => format!("{p}: {}", err.message),
+        None => err.message.clone(),
+    })
 }
 
 /// PRD 6.2, no frame unless something changed. egui fades tooltips and scroll bars in over
@@ -2576,6 +2581,74 @@ mod tests {
             h.frame(Vec::new());
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    /// PRD 9.6, as met with Max 9: the restored server is connected at launch before it serves,
+    /// the attempt fails, a later one succeeds. The status bar then shows the connection, not the
+    /// superseded failure. Real service, synthetic server started on the refused port.
+    #[test]
+    fn a_failed_connection_is_not_shown_once_a_new_one_succeeds() {
+        use crate::synthetic::{SyntheticServer, borrowed, large_routes};
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let key = format!("127.0.0.1:{port}");
+        let (ev_tx, ev_rx) = flume::unbounded();
+        let commands = oscq_core::service::spawn(rt.handle(), ev_tx, Arc::new(|| {}));
+        let ctx = egui::Context::default();
+        let app = VoidApp::with_backend(
+            &ctx,
+            Backend {
+                commands,
+                events: ev_rx,
+                io: rt.handle().clone(),
+            },
+            Config {
+                manual_entries: vec![key.clone()],
+                last_selected: Some(key.clone()),
+                ..Config::default()
+            },
+            None,
+        );
+        let mut h = Harness {
+            ctx,
+            app,
+            commands: flume::unbounded().1,
+            events: flume::unbounded().0,
+            _rt: rt,
+        };
+        wait_for(&mut h, "the launch attempt to fail", |a| {
+            a.state
+                .selected_entry()
+                .is_some_and(|e| matches!(e.conn, ConnState::Failed(_)))
+        });
+        let e = h.app.state.selected_entry().unwrap();
+        let text = error_text(e).unwrap();
+        assert!(text.starts_with("/: could not connect to "), "{text}");
+
+        let routes = large_routes(10, 9);
+        let _server = h
+            ._rt
+            .block_on(SyntheticServer::start_ws(&key, borrowed(&routes)))
+            .unwrap();
+        let id = h.app.state.selected.unwrap();
+        h.app.act(&h.ctx.clone(), Action::SelectServer(id));
+        wait_for(&mut h, "connected with its WebSocket open", |a| {
+            a.state.selected_entry().is_some_and(|e| {
+                e.conn == ConnState::Connected && e.tree.is_some() && e.ws == WsState::Open
+            })
+        });
+        h.frame(Vec::new());
+        let e = h.app.state.selected_entry().unwrap();
+        assert_eq!(error_text(e), None, "the superseded failure is gone");
+        assert_eq!(e.last_error, None);
     }
 
     /// M4: a value changed inside the server reaches the window with no user action. Real

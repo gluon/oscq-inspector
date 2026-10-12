@@ -5,12 +5,15 @@
 
 mod app;
 mod config;
+mod icon;
 mod json_view;
 mod rate;
 mod state;
 mod traffic;
 mod tree;
 mod widget;
+#[cfg(test)]
+mod winres;
 
 /// The synthetic OSCQuery server of `oscq-core`'s tests, shared by the budget measurements.
 #[cfg(test)]
@@ -44,7 +47,8 @@ fn main() -> anyhow::Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Void OSCQ")
         .with_min_inner_size([640.0, 400.0])
-        .with_inner_size([1100.0, 700.0]);
+        .with_inner_size([1100.0, 700.0])
+        .with_icon(window_icon());
     if let Some(w) = config.window {
         viewport = viewport
             .with_inner_size([w.width, w.height])
@@ -69,4 +73,20 @@ fn main() -> anyhow::Result<()> {
         }),
     )
     .map_err(|e| anyhow!("window: {e}"))
+}
+
+/// The icon of the window, of the taskbar, and of the Dock while running: given, or eframe shows
+/// its own. On macOS it matches the bundle's, drawn on the macOS grid.
+fn window_icon() -> egui::IconData {
+    const SIZE: u32 = 256;
+    let layout = if cfg!(target_os = "macos") {
+        icon::Layout::MacOs
+    } else {
+        icon::Layout::Full
+    };
+    egui::IconData {
+        rgba: icon::rgba(SIZE, layout),
+        width: SIZE,
+        height: SIZE,
+    }
 }

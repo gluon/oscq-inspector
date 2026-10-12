@@ -11,15 +11,25 @@ Record for the release: the tag, the CI run, the macOS version, the date, and th
 1. In GitHub, Actions, workflow **Release**, open the run of the tag. Under **Artifacts**, download `void-oscq-VERSION-macos-universal`.
    Expected: one artifact per system, macOS, Windows, Linux, each named with the tag's version.
 2. Unzip the download, then the zip inside it. Move **Void OSCQ.app** to Applications.
-   Expected: an application named Void OSCQ.
+   Expected: an application named Void OSCQ, with its own icon in the Finder: a dark blue rounded square holding a white tree, a root and two leaves, one leaf amber. Not the generic application icon.
 3. Double click it, and follow the README's macOS first launch procedure: **Privacy & Security**, **Open Anyway**.
    Expected: macOS reports an app it cannot verify, never an app that is damaged; after **Open Anyway** the window opens.
 4. Quit and open it again by a double click.
    Expected: it opens with no warning.
 5. Click **About**, at the bottom of the server list.
    Expected: version equal to the tag, without the `v`.
+6. While it runs, look at the Dock.
+   Expected: the same icon as in the Finder, not the generic one and not another application's.
+7. Quit it. In the Finder, select **Void OSCQ.app**, **File**, **Get Info**.
+   Expected: Version equal to the tag, without the `v`.
+8. In Terminal, read what the bundle and Spotlight hold:
+   ```
+   defaults read "/Applications/Void OSCQ.app/Contents/Info" CFBundleShortVersionString
+   mdls -name kMDItemVersion "/Applications/Void OSCQ.app"
+   ```
+   Expected: both give the tag's version. If the first does and the second gives `(null)`, the bundle carries the version and the Finder's Version column waits for Spotlight to index the app.
 
-Proves: the tagged CI run gives a macOS app that opens on this Mac, unsigned, through the documented procedure. Cannot prove: the first launch on other macOS versions, or on Intel if this Mac is Apple Silicon; the Windows and Linux artifacts, which need their own systems (section 4).
+Proves: the tagged CI run gives a macOS app that opens on this Mac, unsigned, through the documented procedure, with its icon and its version. Cannot prove: the first launch on other macOS versions, or on Intel if this Mac is Apple Silicon; the Windows and Linux artifacts, which need their own systems (section 4).
 
 ## 1. Vidvox OSCQuery Helper, on the local network
 
@@ -89,7 +99,7 @@ Proves: the nominal WebSocket path end to end, listen and ignore following the r
 Not required for the macOS release. On each system available:
 
 1. Download its artifact, follow the README's first launch procedure for that system.
-   Expected: the window opens; on Windows, no console window.
+   Expected: the window opens; on Windows, no console window. The executable in Explorer, the window and the taskbar show the application's icon; on Linux, the icon in the application menu once installed as the README says.
 2. Run section 3 with the synthetic server on that machine, or section 1 if a Helper runs on the LAN.
    Expected: the same results.
 

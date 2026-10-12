@@ -61,7 +61,7 @@ cd void-oscq-0.1.0-linux-x86_64
 ./void-oscq
 ```
 
-To have it in your application menu, copy the binary to `~/.local/bin` and the `.desktop` file to `~/.local/share/applications`.
+To have it in your application menu with its icon, copy the binary to `~/.local/bin`, the `.desktop` file to `~/.local/share/applications`, and `void-oscq.png` to `~/.local/share/icons/hicolor/256x256/apps`.
 
 What the system needs to run it: X11 or Wayland, `libxkbcommon-x11-0` on X11, and a Vulkan or OpenGL driver (Mesa is enough). It needs glibc 2.35 or newer, as on Ubuntu 22.04 or later. The release build prints this requirement, measured on the binary.
 
@@ -110,6 +110,12 @@ cargo test --workspace --locked
 Protocol answers with their sources are in [docs/protocol-notes.md](docs/protocol-notes.md), including what OSCQuery Helper and Max 9 really do. Decisions are in [docs/decisions.md](docs/decisions.md), traps met in [PITFALLS.md](PITFALLS.md), test fixtures and their provenance in [tests/fixtures/README.md](tests/fixtures/README.md), the release checklist in [docs/acceptance.md](docs/acceptance.md).
 
 ### Tools
+
+The application icon is drawn in code, `crates/void-oscq/src/icon.rs`: the window icon, the macOS `.icns`, the Windows executable's icon and the Linux `.png` all come from it, and no image file is stored. The release packaging writes the image files with:
+
+```
+cargo run -p void-oscq --example icons -- OUT_DIR
+```
 
 `oscq_discover` lists OSCQuery and OSC servers live, with each address and the interface it was seen on:
 
@@ -160,11 +166,11 @@ git push origin v0.1.0
 - M2, discovery: done, merged. Proven on the human's LAN on 2026-10-09: one entry in 0.18 s, lo0 and en0 merged, LAN IPv4 promoted.
 - M3, application: done, merged. Tested by the human on the Mac against OSCQuery Helper.
 - M4, WebSocket and performance: done, merged. Every PRD 10 budget met on the human's Mac or the macOS CI machine, see docs/decisions.md. Values pushed by the synthetic server seen live on the Mac; Max 9 accepts the WebSocket and sends nothing, shown as open and silent.
-- M5, release: on branch `void/m5-release`. Release workflow, packaging, this README and docs/acceptance.md. The artifacts of the tag are built by CI; opening the macOS one and connecting is for the human, with docs/acceptance.md.
+- M5, release: done, merged, tag `v0.1.0`. The tagged run built the three artifacts; the macOS app was installed, opened and connected to Max 9 by the human.
+- M5 polish: on branch `void/m5-polish`. The application icon on the three systems, the bundle's version keys wired to the workspace version and checked against the tag, `actions/upload-artifact` v7, and a failed operation's error cleared once the same operation succeeds. The icon and the Finder version are for the human to check, docs/acceptance.md section 0.
 
 Backlog:
 
 - Acceptance against a real server that notifies over its WebSocket (VDMX, ossia): a value changed inside it updates in the app without user action. Neither OSCQuery Helper nor Max 9 notifies; the synthetic server is the only proof so far.
 - Real captured documents from VDMX and ossia, PRD 12. OSCQuery Helper and Max 9 are captured.
 - OSC sent over the WebSocket, opt in per server (PRD 7.5).
-- An application icon.

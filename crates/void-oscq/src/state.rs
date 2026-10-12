@@ -363,6 +363,20 @@ impl AppState {
                     }
                 }
             }
+            // PRD 9.6: an error the same operation has since overcome is no longer shown.
+            Event::Succeeded {
+                server_id,
+                operation,
+                path,
+            } => {
+                if let Some(e) = self.entry_mut(server_id)
+                    && e.last_error.as_ref().is_some_and(|err| {
+                        err.operation == operation && (path.is_none() || err.path == path)
+                    })
+                {
+                    e.last_error = None;
+                }
+            }
         }
     }
 }
@@ -386,6 +400,64 @@ mod tests {
                 service_type: "_oscjson._tcp.local.".into(),
             },
             stale: false,
+        }
+    }
+
+    /// PRD 9.6: an error is cleared by the success of the operation it comes from, on the same
+    /// path, and by nothing else.
+    #[test]
+    fn an_error_is_cleared_only_by_the_same_operation_succeeding() {
+        use oscq_core::{Operation, UserFacingError};
+        let mut s = AppState::default();
+        let srv = server();
+        let id = srv.id;
+        s.apply(Event::ServerFound(srv));
+        let fail = |s: &mut AppState, operation, path: Option<&str>| {
+            s.apply(Event::Error {
+                server_id: Some(id),
+                error: UserFacingError {
+                    operation,
+                    path: path.map(str::to_owned),
+                    message: "failed".into(),
+                },
+            });
+        };
+        let succeed = |s: &mut AppState, operation, path: Option<&str>| {
+            s.apply(Event::Succeeded {
+                server_id: id,
+                operation,
+                path: path.map(str::to_owned),
+            });
+        };
+        let shown = |s: &AppState| s.entry(id).unwrap().last_error.is_some();
+        fail(&mut s, Operation::Connect, Some("/"));
+        succeed(&mut s, Operation::LoadTree, Some("/"));
+        succeed(&mut s, Operation::ReadValue, None);
+        assert!(
+            shown(&s),
+            "another operation does not clear a connection error"
+        );
+        succeed(&mut s, Operation::Connect, None);
+        assert!(
+            !shown(&s),
+            "a connection that succeeds clears the failed one"
+        );
+
+        for op in [Operation::LoadTree, Operation::ReadValue, Operation::Send] {
+            fail(&mut s, op, Some("/a/x"));
+            succeed(&mut s, op, Some("/b"));
+            assert!(shown(&s), "{op:?} on another path does not clear it");
+            for other in [Operation::LoadTree, Operation::ReadValue, Operation::Send] {
+                if other != op {
+                    succeed(&mut s, other, Some("/a/x"));
+                }
+            }
+            assert!(
+                shown(&s),
+                "another operation on the path does not clear {op:?}"
+            );
+            succeed(&mut s, op, Some("/a/x"));
+            assert!(!shown(&s), "{op:?} succeeding on the path clears it");
         }
     }
 

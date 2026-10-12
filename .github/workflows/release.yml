@@ -1,8 +1,9 @@
 name: Release
 
 # On a tag v*, builds the three release artifacts (PRD 13): a macOS universal .app in a zip, a
-# Windows .exe, a Linux binary with its .desktop file in a tarball, all unsigned. A push that
-# changes the packaging runs the same jobs without a tag, so packaging is tested before tagging.
+# Windows .exe, a Linux binary with its .desktop file and icon in a tarball, all unsigned. A push
+# that changes the packaging or the icon runs the same jobs without a tag, so they are tested
+# before tagging.
 # Path filters are not evaluated for tag pushes: every tag runs.
 on:
   push:
@@ -13,6 +14,10 @@ on:
       - "packaging/**"
       - "ci/release-version.sh"
       - "ci/smoke-start.sh"
+      - "crates/void-oscq/build.rs"
+      - "crates/void-oscq/examples/icons.rs"
+      - "crates/void-oscq/src/icon.rs"
+      - "crates/void-oscq/src/winres.rs"
 
 permissions:
   contents: read
@@ -50,8 +55,13 @@ jobs:
           cargo build --release --locked -p void-oscq --target aarch64-apple-darwin
           cargo build --release --locked -p void-oscq --target x86_64-apple-darwin
 
-      - name: Bundle, universal binary, ad hoc signature
+      - name: Bundle, universal binary, icon, ad hoc signature
         run: ./packaging/macos/bundle.sh "${{ steps.version.outputs.version }}" dist
+
+      - name: The bundle's version keys match the crates and the tag
+        run: |
+          plist="dist/Void OSCQ.app/Contents/Info.plist"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then ./ci/release-version.sh "$GITHUB_REF_NAME" --plist "$plist"; else ./ci/release-version.sh --plist "$plist"; fi
 
       # Signing and notarisation, disabled in v1 (PRD 13: no signing, no notarisation). Enabling it
       # is configuration: change `if: false` to `if: true` and add these repository secrets:
@@ -95,7 +105,7 @@ jobs:
           ditto -c -k --keepParent "dist/Void OSCQ.app" "$zip"
           echo "path=$zip" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: void-oscq-${{ steps.version.outputs.version }}-macos-universal
           path: ${{ steps.zip.outputs.path }}
@@ -123,6 +133,21 @@ jobs:
       - name: Build
         run: cargo build --release --locked -p void-oscq
 
+      # build.rs links the icon as a resource; Explorer reads it with the same call as this check.
+      - name: The executable carries its icon
+        shell: pwsh
+        run: |
+          Add-Type -Namespace Win32 -Name Shell -MemberDefinition '[DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern uint ExtractIconEx(string file, int index, IntPtr[] large, IntPtr[] small, uint count);'
+          $exe = (Resolve-Path target/release/void-oscq.exe).Path
+          $count = [Win32.Shell]::ExtractIconEx($exe, -1, $null, $null, 0)
+          $large = New-Object IntPtr[] 1
+          $extracted = [Win32.Shell]::ExtractIconEx($exe, 0, $large, $null, 1)
+          Write-Output "icons in ${exe}: $count, first one extracted: $extracted"
+          if ($count -lt 1 -or $extracted -ne 1 -or $large[0] -eq [IntPtr]::Zero) {
+            Write-Output "FAIL: the executable carries no icon"
+            exit 1
+          }
+
       - name: Name the executable
         id: exe
         shell: bash
@@ -132,7 +157,7 @@ jobs:
           cp target/release/void-oscq.exe "$exe"
           echo "path=$exe" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: void-oscq-${{ steps.version.outputs.version }}-windows-x86_64
           path: ${{ steps.exe.outputs.path }}
@@ -170,13 +195,14 @@ jobs:
         id: tarball
         run: echo "path=$(./packaging/linux/package.sh "${{ steps.version.outputs.version }}" dist)" >> "$GITHUB_OUTPUT"
 
-      - name: The packed binary starts
+      - name: The packed binary starts, its icon is packed
         run: |
           mkdir -p unpacked
           tar -C unpacked -xzf "${{ steps.tarball.outputs.path }}"
+          file "unpacked/void-oscq-${{ steps.version.outputs.version }}-linux-x86_64/void-oscq.png" | grep "PNG image data, 256 x 256"
           xvfb-run -a ./ci/smoke-start.sh "unpacked/void-oscq-${{ steps.version.outputs.version }}-linux-x86_64/void-oscq"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: void-oscq-${{ steps.version.outputs.version }}-linux-x86_64
           path: ${{ steps.tarball.outputs.path }}

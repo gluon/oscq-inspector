@@ -67,11 +67,28 @@ pub enum Command {
     Shutdown,
 }
 
-/// What a user is shown when something fails: the failing path, when there is one, and why.
+/// What a user is shown when something fails: what was being done, the failing path, when there
+/// is one, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserFacingError {
+    pub operation: Operation,
     pub path: Option<String>,
     pub message: String,
+}
+
+/// The operation an error comes from. When the same operation later succeeds on the same server,
+/// and on the same path for those that have one, [`Event::Succeeded`] reports it: the error no
+/// longer describes the server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Operation {
+    /// Connecting: the HTTP client, then the tree from `/`.
+    Connect,
+    /// Loading the subtree at the error's path.
+    LoadTree,
+    /// Reading the value at the error's path.
+    ReadValue,
+    /// Sending OSC to the error's path.
+    Send,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,6 +188,13 @@ pub enum Event {
         server_id: Option<ServerId>,
         error: UserFacingError,
     },
+    /// `operation` succeeded on `path`; `None` for [`Operation::Connect`], which concerns the
+    /// whole server.
+    Succeeded {
+        server_id: ServerId,
+        operation: Operation,
+        path: Option<String>,
+    },
 }
 
 /// Called after every event, from a runtime thread.
@@ -202,10 +226,28 @@ impl Shared {
         }
     }
 
-    fn error(&self, server_id: ServerId, path: Option<String>, message: String) {
+    fn error(
+        &self,
+        server_id: ServerId,
+        operation: Operation,
+        path: Option<String>,
+        message: String,
+    ) {
         self.emit(Event::Error {
             server_id: Some(server_id),
-            error: UserFacingError { path, message },
+            error: UserFacingError {
+                operation,
+                path,
+                message,
+            },
+        });
+    }
+
+    fn succeeded(&self, server_id: ServerId, operation: Operation, path: Option<String>) {
+        self.emit(Event::Succeeded {
+            server_id,
+            operation,
+            path,
         });
     }
 
@@ -270,7 +312,7 @@ async fn run(rx: flume::Receiver<Command>, shared: Shared) {
                 let client = match OscQueryClient::new(http_base) {
                     Ok(c) => c,
                     Err(e) => {
-                        shared.error(server_id, None, e.to_string());
+                        shared.error(server_id, Operation::Connect, None, e.to_string());
                         shared.emit(Event::TransportState {
                             server_id,
                             state: TransportState::Failed(e.to_string()),
@@ -390,11 +432,17 @@ async fn connect(shared: Shared, id: ServerId, generation: u64) {
                 server_id: id,
                 state: TransportState::HttpOnly,
             });
+            shared.succeeded(id, Operation::Connect, None);
             let (host, port, advertised) = ws_address;
             websocket(shared, id, generation, ws::ws_url(&host, port), advertised).await;
         }
         Err(e) => {
-            shared.error(id, Some("/".to_owned()), e.to_string());
+            // An attempt replaced by a newer one reports nothing: its failure is not the server's
+            // state any more.
+            if shared.client(id, Some(generation)).is_none() {
+                return;
+            }
+            shared.error(id, Operation::Connect, Some("/".to_owned()), e.to_string());
             shared.emit(Event::TransportState {
                 server_id: id,
                 state: TransportState::Failed(e.to_string()),
@@ -411,13 +459,14 @@ async fn refresh_tree(shared: Shared, id: ServerId, path: String) {
         Ok(doc) if shared.client(id, Some(generation)).is_some() => {
             shared.emit(Event::SubtreeLoaded {
                 server_id: id,
-                path,
+                path: path.clone(),
                 raw: Arc::from(doc.raw),
                 report: doc.report,
             });
+            shared.succeeded(id, Operation::LoadTree, Some(path));
         }
         Ok(_) => {}
-        Err(e) => shared.error(id, Some(path), e.to_string()),
+        Err(e) => shared.error(id, Operation::LoadTree, Some(path), e.to_string()),
     }
 }
 
@@ -429,12 +478,13 @@ async fn refresh_value(shared: Shared, id: ServerId, path: String) {
         Ok(value) if shared.client(id, Some(generation)).is_some() => {
             shared.emit(Event::ValueChanged {
                 server_id: id,
-                path,
+                path: path.clone(),
                 value,
             });
+            shared.succeeded(id, Operation::ReadValue, Some(path));
         }
         Ok(_) => {}
-        Err(e) => shared.error(id, Some(path), e.to_string()),
+        Err(e) => shared.error(id, Operation::ReadValue, Some(path), e.to_string()),
     }
 }
 
@@ -453,24 +503,27 @@ async fn send(
         .ok()
         .and_then(|c| c.get(&id).map(|c| c.destination.clone()));
     let destination = match destination {
-        None => return shared.error(id, Some(p), "not connected".to_owned()),
+        None => return shared.error(id, Operation::Send, Some(p), "not connected".to_owned()),
         Some(None) => {
             return shared.error(
                 id,
+                Operation::Send,
                 Some(p),
                 "HOST_INFO unavailable: the server is not controllable".to_owned(),
             );
         }
-        Some(Some(Err(blocked))) => return shared.error(id, Some(p), blocked.to_string()),
+        Some(Some(Err(blocked))) => {
+            return shared.error(id, Operation::Send, Some(p), blocked.to_string());
+        }
         Some(Some(Ok(d))) => d,
     };
     let args = match coerce_args(&signature, args) {
         Ok(a) => a,
-        Err(e) => return shared.error(id, Some(p), e.to_string()),
+        Err(e) => return shared.error(id, Operation::Send, Some(p), e.to_string()),
     };
     let bytes = match encode_message(&path, args.clone()) {
         Ok(b) => b,
-        Err(e) => return shared.error(id, Some(p), e.to_string()),
+        Err(e) => return shared.error(id, Operation::Send, Some(p), e.to_string()),
     };
     let sent = shared
         .sender
@@ -479,7 +532,7 @@ async fn send(
         .send_to(&destination, &bytes)
         .await;
     if let Err(e) = sent {
-        return shared.error(id, Some(p), e.to_string());
+        return shared.error(id, Operation::Send, Some(p), e.to_string());
     }
     shared.emit(Event::TrafficLogged(TrafficRecord {
         at: Instant::now(),
@@ -489,6 +542,7 @@ async fn send(
         type_tags: type_tags(&args),
         args,
     }));
+    shared.succeeded(id, Operation::Send, Some(p.clone()));
     if refresh_after {
         refresh_value(shared, id, p).await;
     }
