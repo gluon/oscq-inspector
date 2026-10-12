@@ -16,5 +16,8 @@ if ! command -v desktop-file-validate >/dev/null; then
     exit 1
 fi
 desktop-file-validate "$dir/void-oscq.desktop" >&2
+# The newest glibc symbol the binary needs: the oldest glibc it runs on.
+glibc=$(objdump -T "$dir/void-oscq" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+echo "requires $glibc or newer" >&2
 tar -C "$out" -czf "$out/$name.tar.gz" "$name"
 echo "$out/$name.tar.gz"
