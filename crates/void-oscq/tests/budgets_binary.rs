@@ -114,6 +114,219 @@ impl Drop for Kill {
     }
 }
 
+/// The binary running against the synthetic server's 5000 nodes, connected by its config, with
+/// 50 pinned methods listened to, its log lines captured. Killed and cleaned up on drop.
+struct Launch {
+    server: SyntheticServer,
+    child: Kill,
+    lines: Arc<Mutex<Vec<(Instant, String)>>>,
+    spawned: Instant,
+    base: PathBuf,
+    _rt: tokio::runtime::Runtime,
+}
+
+impl Launch {
+    fn start() -> Self {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let osc = rt.block_on(OscReceiver::bind("127.0.0.1:0")).unwrap();
+        let routes = large_routes(5000, osc.port());
+        let server = rt
+            .block_on(SyntheticServer::start_ws("127.0.0.1:0", borrowed(&routes)))
+            .unwrap();
+        let key = format!("127.0.0.1:{}", server.addr.port());
+
+        let base = std::env::temp_dir().join(format!(
+            "void-oscq-budget-{}-{}",
+            std::process::id(),
+            server.addr.port()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let (config_path, env_var) = config_location(&base);
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        let pinned: Vec<String> = (0..LISTENS).map(|i| format!("/g0/p{i}")).collect();
+        let config = serde_json::json!({
+            "window": {"x": 0.0, "y": 0.0, "width": 1100.0, "height": 700.0},
+            "manual_entries": [key],
+            "last_selected": key,
+            "pinned_paths": {key.clone(): pinned},
+        });
+        std::fs::write(&config_path, config.to_string()).unwrap();
+
+        let spawned = Instant::now();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_void-oscq"))
+            .env(env_var, &base)
+            .env("RUST_LOG", "void_oscq::startup=info,void_oscq::frame=trace")
+            .env("NO_COLOR", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+        let lines = capture(&mut child);
+        Launch {
+            server,
+            child: Kill(child),
+            lines,
+            spawned,
+            base,
+            _rt: rt,
+        }
+    }
+
+    fn pid(&self) -> u32 {
+        self.child.0.id()
+    }
+
+    /// From spawn to the first frame, and from `main` to the first frame as the binary logs it.
+    fn first_frame(&self) -> (Duration, Duration) {
+        let find = || {
+            self.lines
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(_, l)| l.contains("first frame"))
+                .cloned()
+        };
+        wait_until("the first frame", Duration::from_secs(20), || {
+            find().is_some()
+        });
+        let (at, line) = find().unwrap();
+        let from_main: f64 = line
+            .split("first frame ")
+            .nth(1)
+            .and_then(|r| r.split(' ').next())
+            .unwrap()
+            .parse()
+            .unwrap();
+        (
+            at - self.spawned,
+            Duration::from_secs_f64(from_main / 1000.0),
+        )
+    }
+
+    /// Connected, the 50 pinned methods listened to, then settled: layout and animations done.
+    fn settle(&self) {
+        wait_until("50 listens on the server", Duration::from_secs(20), || {
+            self.server.ws.listens().len() == LISTENS
+        });
+        std::thread::sleep(Duration::from_secs(3));
+    }
+
+    fn frame_lines(&self) -> Vec<String> {
+        self.lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, l)| l.contains("void_oscq::frame"))
+            .map(|(_, l)| l.clone())
+            .collect()
+    }
+
+    /// The frames run during an idle window, and the CPU used meanwhile, percent of one core.
+    fn idle(&self) -> (Vec<String>, f64) {
+        let pid = self.pid();
+        let (cpu0, frames0, t0) = (cpu_time(pid), self.frame_lines().len(), Instant::now());
+        std::thread::sleep(IDLE_WINDOW);
+        let (cpu1, t1) = (cpu_time(pid), Instant::now());
+        let frames = self.frame_lines().split_off(frames0);
+        let cpu = (cpu1 - cpu0).as_secs_f64() / (t1 - t0).as_secs_f64() * 100.0;
+        (frames, cpu)
+    }
+}
+
+impl Drop for Launch {
+    fn drop(&mut self) {
+        let _ = self.child.0.kill();
+        let _ = self.child.0.wait();
+        let _ = std::fs::remove_dir_all(&self.base);
+    }
+}
+
+/// What asked for each frame, most frequent first: the source locations egui recorded for the
+/// repaint requests of the frame before, or none when the frame was woken by the operating
+/// system or by input.
+fn causes(frames: &[String]) -> Vec<(usize, String)> {
+    let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+    for f in frames {
+        let cause = f
+            .split("causes=")
+            .nth(1)
+            .map(|c| c.trim())
+            .filter(|c| *c != "[]")
+            .map(|c| {
+                // Registry paths differ per machine; keep the crate and file.
+                c.split(", ")
+                    .map(|loc| {
+                        loc.rsplit_once("/src/index.crates.io-")
+                            .map_or(loc, |(_, r)| r.split_once('/').map_or(r, |(_, rest)| rest))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_else(|| "no repaint request: woken by the OS or by input".to_owned());
+        *counts.entry(cause).or_default() += 1;
+    }
+    let mut v: Vec<(usize, String)> = counts.into_iter().map(|(c, n)| (n, c)).collect();
+    v.sort_by_key(|(n, _)| std::cmp::Reverse(*n));
+    v
+}
+
+fn print_causes(frames: &[String]) {
+    for (n, cause) in causes(frames) {
+        println!("  {n} frames: {cause}");
+    }
+}
+
+/// PRD 6.2: when idle the app must not repaint. The real window, connected, WebSocket open, 50
+/// listens, nothing changing: not one frame in ten seconds. On failure, what asked for the frames.
+#[test]
+#[ignore = "real window: display needed"]
+fn real_binary_does_not_repaint_when_idle() {
+    let launch = Launch::start();
+    launch.first_frame();
+    launch.settle();
+    let (frames, cpu) = launch.idle();
+    println!(
+        "IDLE real binary: {} frames in {} s, CPU {cpu:.2} % of one core",
+        frames.len(),
+        IDLE_WINDOW.as_secs()
+    );
+    print_causes(&frames);
+    assert!(frames.is_empty(), "the window repaints when idle");
+}
+
+/// Budget 1, cold start, over five launches in a row: from spawn to the first frame, split into
+/// the time before `main` (process creation, loading, any first launch check by the OS) and the
+/// time from `main` to the first frame (the app).
+#[test]
+#[ignore = "budget: real window, display and release build needed"]
+fn budget_cold_start_five_launches() {
+    if cfg!(debug_assertions) {
+        panic!("budgets are measured on a release build: cargo test --release");
+    }
+    let mut totals = Vec::new();
+    for i in 1..=5 {
+        let launch = Launch::start();
+        let (total, from_main) = launch.first_frame();
+        let before_main = total.saturating_sub(from_main);
+        let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+        println!(
+            "BUDGET cold start, launch {i}: {:.1} ms from spawn = {:.1} ms before main + {:.1} ms from main, budget 300 ms",
+            ms(total),
+            ms(before_main),
+            ms(from_main)
+        );
+        totals.push(total);
+    }
+    assert!(
+        totals.iter().all(|t| *t < Duration::from_millis(300)),
+        "cold start"
+    );
+}
+
 #[test]
 #[ignore = "budget: real window, display and release build needed"]
 fn budget_real_binary_start_idle_cpu_repaints_memory() {
@@ -123,100 +336,29 @@ fn budget_real_binary_start_idle_cpu_repaints_memory() {
     if cfg!(target_os = "windows") {
         panic!("CPU and memory are read with /proc or ps: not measurable here on Windows");
     }
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .unwrap();
-    let osc = rt.block_on(OscReceiver::bind("127.0.0.1:0")).unwrap();
-    let routes = large_routes(5000, osc.port());
-    let server = rt
-        .block_on(SyntheticServer::start_ws("127.0.0.1:0", borrowed(&routes)))
-        .unwrap();
-    let key = format!("127.0.0.1:{}", server.addr.port());
-
-    let base = std::env::temp_dir().join(format!("void-oscq-budget-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
-    let (config_path, env_var) = config_location(&base);
-    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
-    let pinned: Vec<String> = (0..LISTENS).map(|i| format!("/g0/p{i}")).collect();
-    let config = serde_json::json!({
-        "window": {"x": 0.0, "y": 0.0, "width": 1100.0, "height": 700.0},
-        "manual_entries": [key],
-        "last_selected": key,
-        "pinned_paths": {key.clone(): pinned},
-    });
-    std::fs::write(&config_path, config.to_string()).unwrap();
-
-    let spawned = Instant::now();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_void-oscq"))
-        .env(env_var, &base)
-        .env("RUST_LOG", "void_oscq::startup=info,void_oscq::frame=trace")
-        .env("NO_COLOR", "1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .unwrap();
-    let lines = capture(&mut child);
-    let child = Kill(child);
-    let pid = child.0.id();
-
-    let first_frame = || {
-        lines
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|(_, l)| l.contains("first frame"))
-            .cloned()
-    };
-    wait_until("the first frame", Duration::from_secs(20), || {
-        first_frame().is_some()
-    });
-    let (at, line) = first_frame().unwrap();
-    let cold = at - spawned;
-    let in_app: f64 = line
-        .split("first frame ")
-        .nth(1)
-        .and_then(|r| r.split(' ').next())
-        .unwrap()
-        .parse()
-        .unwrap();
-
-    wait_until("50 listens on the server", Duration::from_secs(20), || {
-        server.ws.listens().len() == LISTENS
-    });
-    // Let connection, layout and animations settle.
-    std::thread::sleep(Duration::from_secs(3));
-    let frames = || {
-        lines
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(_, l)| l.contains("void_oscq::frame"))
-            .count()
-    };
-    let (cpu0, frames0, t0) = (cpu_time(pid), frames(), Instant::now());
-    std::thread::sleep(IDLE_WINDOW);
-    let (cpu1, frames1, t1) = (cpu_time(pid), frames(), Instant::now());
-    let idle_cpu = (cpu1 - cpu0).as_secs_f64() / (t1 - t0).as_secs_f64() * 100.0;
-    let idle_frames = frames1 - frames0;
-    let memory = rss(pid);
-    let listens = server.ws.listens().len();
-    drop(child);
-    let _ = std::fs::remove_dir_all(&base);
+    let launch = Launch::start();
+    let (cold, from_main) = launch.first_frame();
+    launch.settle();
+    let (frames, idle_cpu) = launch.idle();
+    let memory = rss(launch.pid());
+    let listens = launch.server.ws.listens().len();
+    drop(launch);
 
     println!(
-        "BUDGET cold start to first frame: {:.1} ms from spawn ({in_app:.1} ms from main), budget 300 ms",
-        cold.as_secs_f64() * 1000.0
+        "BUDGET cold start to first frame: {:.1} ms from spawn ({:.1} ms from main), budget 300 ms",
+        cold.as_secs_f64() * 1000.0,
+        from_main.as_secs_f64() * 1000.0
     );
     println!(
         "BUDGET idle CPU, {listens} active listens: {idle_cpu:.2} % of one core over {} s, budget 1 %",
         IDLE_WINDOW.as_secs()
     );
     println!(
-        "BUDGET idle repaints: {idle_frames} frames in {} s, budget 0",
+        "BUDGET idle repaints: {} frames in {} s, budget 0",
+        frames.len(),
         IDLE_WINDOW.as_secs()
     );
+    print_causes(&frames);
     println!(
         "BUDGET resident memory, 5000 nodes connected: {:.1} MB, budget 150 MB",
         memory as f64 / 1_048_576.0
@@ -224,6 +366,6 @@ fn budget_real_binary_start_idle_cpu_repaints_memory() {
     assert_eq!(listens, LISTENS);
     assert!(cold < Duration::from_millis(300), "cold start");
     assert!(idle_cpu < 1.0, "idle CPU");
-    assert_eq!(idle_frames, 0, "idle repaints");
+    assert!(frames.is_empty(), "idle repaints");
     assert!(memory < 150 * 1_048_576, "resident memory");
 }

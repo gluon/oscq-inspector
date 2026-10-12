@@ -249,7 +249,8 @@ impl VoidApp {
     /// One frame. Everything the window shows comes from here.
     pub fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        tracing::trace!(target: "void_oscq::frame", "frame");
+        // Why this frame runs: where the previous pass asked for it. Costs nothing when off.
+        tracing::trace!(target: "void_oscq::frame", causes = ?ctx.repaint_causes(), "frame");
         if let Some(t) = self.launched.take() {
             tracing::info!(
                 target: "void_oscq::startup",

@@ -74,6 +74,45 @@ jobs:
           cargo build --release --locked -p void-oscq
           ./ci/binary-size.sh target/release/void-oscq${{ runner.os == 'Windows' && '.exe' || '' }}
 
+  real-binary:
+    name: real binary (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Linux build and display dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-x11-0 xvfb mesa-vulkan-drivers
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+
+      # PRD 6.2: the real window must not repaint when idle. Linux runs it under Xvfb.
+      - name: Real binary does not repaint when idle
+        shell: bash
+        run: |
+          run=""
+          if [ "$RUNNER_OS" = "Linux" ]; then run="xvfb-run -a"; fi
+          $run cargo test --release --locked -p void-oscq --test budgets_binary -- --ignored --exact real_binary_does_not_repaint_when_idle --nocapture
+
+      # Numbers for docs/decisions.md from a CI machine, not the human's; a measurement, not a gate.
+      - name: Real binary budgets, measurement only
+        continue-on-error: true
+        shell: bash
+        run: |
+          run=""
+          if [ "$RUNNER_OS" = "Linux" ]; then run="xvfb-run -a"; fi
+          $run cargo test --release --locked -p void-oscq --test budgets_binary -- --ignored budget_ --nocapture --test-threads=1
+
   guards:
     name: guards
     runs-on: ubuntu-22.04
