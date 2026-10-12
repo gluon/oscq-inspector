@@ -45,6 +45,9 @@ Case: "could not connect to http://localhost:30339/: error sending request" on t
 A failure to reach a server is not something the server declared. Clearing its `HOST_INFO` on an unreachable attempt turned its read write nodes into write only or blocked rows, labelled "read only".
 Case: the reconnection to Max 9 failing under a loaded tree, 2026-10-12.
 
+Commands that go out on a reload are not churn until the rows on screen are shown to be the same. A test document that replaces a subtree with part of it changes the rows, and the `IGNORE` then `LISTEN` it shows is the listen discipline doing its job. Count the rows before and after each event.
+Case: 14 `IGNORE` and 14 `LISTEN` in `a_sent_value_stays_shown_on_a_write_only_node`, taken for churn, were `/test` going from 15 rows to 1 and back, 2026-10-12.
+
 ## Linux runtime
 
 winit loads `libxkbcommon-x11.so.0` at run time on X11. A machine without `libxkbcommon-x11-0` panics at window creation; the build does not need it. A software Vulkan driver (Mesa lavapipe) is enough to run the window under Xvfb.

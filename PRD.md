@@ -2,7 +2,7 @@
 
 Status: v1 spec, locked for implementation. Amended on 2026-10-09 with the human's rulings on the M0 protocol discrepancies, see `docs/protocol-notes.md` section 10. Amended on 2026-10-12 with the human's rulings after M5: "cannot send" in place of "read only" (sections 3, 7.2, 9.6), the user's OSC port (7.2, 9.6, 9.7).
 Audience: the engineer (human or agent) implementing the app from scratch.
-Name: `void-oscq`, final. Binary `void-oscq`, app display name "Void OSCQ", repository `gluon/void-oscq`, private. The crate name `void-oscq` was free on crates.io at the time of writing; verify again before any publication.
+Name: `void-oscq`, final. Binary `void-oscq`, app display name "Void OSCQ", repository `gluon/void-oscq`, public since 2026-10-12. The crate name `void-oscq` was free on crates.io at the time of writing; verify again before any publication.
 
 Read this whole document before writing code. Everything marked LOCKED is a decision, not a suggestion. Everything marked VERIFY must be checked against a primary source before you rely on it, and the result written into `docs/protocol-notes.md`.
 
