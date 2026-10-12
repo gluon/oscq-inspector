@@ -205,6 +205,7 @@ impl VoidApp {
         config_dir: Option<PathBuf>,
     ) -> Self {
         apply_theme(ctx, config.theme);
+        calm_style(ctx);
         let history = ManualHistory::from_entries(
             config
                 .manual_entries
@@ -250,7 +251,12 @@ impl VoidApp {
     pub fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         // Why this frame runs: where the previous pass asked for it. Costs nothing when off.
-        tracing::trace!(target: "void_oscq::frame", causes = ?ctx.repaint_causes(), "frame");
+        tracing::trace!(
+            target: "void_oscq::frame",
+            causes = ?ctx.repaint_causes(),
+            inputs = ?input_kinds(&ctx),
+            "frame"
+        );
         if let Some(t) = self.launched.take() {
             tracing::info!(
                 target: "void_oscq::startup",
@@ -481,7 +487,7 @@ impl VoidApp {
                     }
                     SendMode::Final => {
                         let r = self.limiter.finish(now, &key, req);
-                        let refresh = r.readable;
+                        let refresh = r.readable && !self.value_pushed(&r);
                         self.dispatch(r, refresh);
                     }
                 }
@@ -512,6 +518,15 @@ impl VoidApp {
                 contents,
             } => self.write_export(ctx, stem, ext, contents),
         }
+    }
+
+    /// Whether the server pushes this method's value: listened to on a WebSocket that has
+    /// notified. Then a refresh after a send is redundant (PRD 7.4 fetches after a send only
+    /// without a WebSocket); on a socket that never sent anything (Max 9) it is still needed.
+    fn value_pushed(&self, req: &SendReq) -> bool {
+        self.state
+            .entry(req.server_id)
+            .is_some_and(|e| e.ws == WsState::Live && e.listening.contains(req.path.as_str()))
     }
 
     fn mark_pending(&mut self, req: &SendReq) {
@@ -893,6 +908,23 @@ impl Drop for VoidApp {
     }
 }
 
+/// The kinds of the raw input events of this frame, `PointerMoved` and so on, for the frame trace.
+fn input_kinds(ctx: &egui::Context) -> Vec<String> {
+    ctx.input(|i| {
+        i.raw
+            .events
+            .iter()
+            .map(|e| {
+                let d = format!("{e:?}");
+                d.split(['(', ' ', '{'])
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect()
+    })
+}
+
 /// The variant of an event, for the trace that tells what keeps waking the window.
 fn event_kind(e: &Event) -> &'static str {
     match e {
@@ -911,6 +943,18 @@ fn event_kind(e: &Event) -> &'static str {
         Event::TrafficLogged(_) => "TrafficLogged",
         Event::Error { .. } => "Error",
     }
+}
+
+/// PRD 6.2, no frame unless something changed. egui fades tooltips and scroll bars in over
+/// several frames, and asks for a frame on every frame until the pointer is perfectly still
+/// before a tooltip may show: a resting window drew a dozen frames after each pointer move. With
+/// no animation time, fades jump to their end; tooltips still wait their delay, measured from the
+/// last pointer move.
+fn calm_style(ctx: &egui::Context) {
+    ctx.all_styles_mut(|s| {
+        s.animation_time = 0.0;
+        s.interaction.show_tooltips_only_when_still = false;
+    });
 }
 
 fn apply_theme(ctx: &egui::Context, theme: Theme) {
@@ -1871,6 +1915,54 @@ mod tests {
             out
         }
 
+        /// One frame at an explicit time, in seconds, as an event loop would run it.
+        fn frame_at(&mut self, time: f64, events: Vec<egui::Event>) -> egui::FullOutput {
+            let input = egui::RawInput {
+                events,
+                time: Some(time),
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1100.0, 700.0),
+                )),
+                ..egui::RawInput::default()
+            };
+            let app = &mut self.app;
+            let mut out = self.ctx.run_ui(input, |ui| app.frame(ui));
+            out.textures_delta.clear();
+            out
+        }
+
+        /// Frames an event loop runs from `time` on: the next one at once for a repaint asked
+        /// with no delay, after the delay otherwise, until none is asked for. `moves` are pointer
+        /// positions fed one per frame first. Returns the frames run, the time reached, and where
+        /// each repaint was asked for.
+        fn frames_until_idle(
+            &mut self,
+            mut time: f64,
+            moves: &[egui::Pos2],
+        ) -> (usize, f64, Vec<String>) {
+            let mut frames = 0;
+            let mut causes = Vec::new();
+            let mut pending: std::collections::VecDeque<egui::Pos2> =
+                moves.iter().copied().collect();
+            loop {
+                let events = pending
+                    .pop_front()
+                    .map(|p| vec![egui::Event::PointerMoved(p)])
+                    .unwrap_or_default();
+                let moving = !events.is_empty();
+                let out = self.frame_at(time, events);
+                frames += 1;
+                causes.extend(self.ctx.repaint_causes().iter().map(|c| c.to_string()));
+                let delay = idle_delay(&out);
+                if delay == Duration::MAX && !moving && pending.is_empty() {
+                    return (frames, time, causes);
+                }
+                assert!(frames < 2000, "never idle: {causes:?}");
+                time += delay.as_secs_f64().clamp(1.0 / 60.0, 10.0);
+            }
+        }
+
         fn key(&mut self, key: Key) {
             self.frame(vec![egui::Event::Key {
                 key,
@@ -2276,6 +2368,69 @@ mod tests {
         assert!(h.app.state.entry(id).unwrap().listening.is_empty());
     }
 
+    fn count_causes(causes: &[String]) -> std::collections::BTreeMap<String, usize> {
+        let mut counted: std::collections::BTreeMap<String, usize> = Default::default();
+        for c in causes {
+            let loc = c
+                .split("/src/")
+                .last()
+                .unwrap_or_default()
+                .trim()
+                .to_owned();
+            *counted.entry(loc).or_default() += 1;
+        }
+        counted
+    }
+
+    /// PRD 6.2: input wakes the window, then it goes back to sleep. The pointer moved onto a
+    /// tree row, whose name has a tooltip, then near the scroll bar, each time left still: the
+    /// frames egui asks for afterwards are bounded, none comes from this app's code, and once
+    /// still nothing more is asked for.
+    #[test]
+    fn a_pointer_move_costs_a_bounded_number_of_frames_then_none() {
+        let mut h = harness();
+        connected(&mut h, &flat_tree(400));
+        // Load and the scroll bar appearing, then rest.
+        let (_, mut t, _) = h.frames_until_idle(0.0, &[]);
+        for (place, x0, y) in [
+            ("over a row name, with its tooltip", 260.0, 100.0),
+            ("over a row, no tooltip", 300.0, 90.0),
+            ("near the scroll bar", 1080.0, 300.0),
+        ] {
+            let path: Vec<egui::Pos2> =
+                (0..6).map(|i| egui::pos2(x0 + 2.0 * i as f32, y)).collect();
+            let (frames, end, causes) = h.frames_until_idle(t + 5.0, &path);
+            println!(
+                "POINTER {place}: {frames} frames for 6 moves, causes {:?}",
+                count_causes(&causes)
+            );
+            // Only what input needs: egui's frame after input, the tooltip's delay, the tooltip
+            // laid out then shown. No fade, no waiting for a perfectly still pointer.
+            for c in &causes {
+                assert!(
+                    [
+                        "context.rs:538",
+                        "tooltip.rs:374",
+                        "area.rs:554",
+                        "area.rs:686"
+                    ]
+                    .iter()
+                    .any(|allowed| c.contains(allowed)),
+                    "{place}: frame asked for by {c}"
+                );
+            }
+            let out = h.frame_at(end + 1.0 / 60.0, Vec::new());
+            assert_eq!(idle_delay(&out), Duration::MAX, "still and idle");
+            assert!(frames <= MOVE_FRAMES, "{place}: {frames} frames");
+            t = end;
+        }
+    }
+
+    /// Frames for six pointer moves and the stillness after them: one per move, egui's frame
+    /// after the last input, and a tooltip waited for then laid out and shown. Measured 8 away
+    /// from tooltips and 12 on a row name; 14 and 28 before `calm_style`.
+    const MOVE_FRAMES: usize = 12;
+
     /// PRD 9.6: no WebSocket, a WebSocket accepted and silent, and a WebSocket that notifies are
     /// three states the window tells apart, and only the last one is called live.
     #[test]
@@ -2455,17 +2610,39 @@ mod tests {
         let e = h.app.state.selected_entry().unwrap();
         assert_eq!(e.ws, WsState::Open, "listening, nothing received: not live");
         assert!(!values_text(e).unwrap().0.contains("live"));
+        // Two methods, two values: each row shows its own, nothing copied from one to another.
         server.ws.push(crate::synthetic::Push::Osc(
             "/g0/p0".into(),
             vec![OscType::Float(0.25)],
         ));
-        wait_for(&mut h, "the pushed value", |a| {
+        server.ws.push(crate::synthetic::Push::Osc(
+            "/g0/p1".into(),
+            vec![OscType::Float(0.75)],
+        ));
+        let shown = |a: &VoidApp, path: &str| {
             a.state
                 .selected_entry()
                 .and_then(|e| e.tree.as_ref())
-                .and_then(|t| t.node("/g0/p0").map(|n| shown_value(t, n, true)))
-                == Some(Shown::Read("0.250".into()))
+                .and_then(|t| t.node(path).map(|n| shown_value(t, n, true)))
+        };
+        wait_for(&mut h, "the pushed values", |a| {
+            shown(a, "/g0/p0") == Some(Shown::Read("0.250".into()))
+                && shown(a, "/g0/p1") == Some(Shown::Read("0.750".into()))
         });
+        assert_eq!(
+            shown(&h.app, "/g0/p2"),
+            Some(Shown::Read("0.500".into())),
+            "a method nothing was pushed to keeps its document value"
+        );
+        // The server's `?VALUE` answers what it pushed, without an error.
+        h.app
+            .act(&h.ctx.clone(), Action::RefreshValue("/g0/p1".into()));
+        for _ in 0..30 {
+            h.frame(Vec::new());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(shown(&h.app, "/g0/p1"), Some(Shown::Read("0.750".into())));
+        assert_eq!(h.app.state.selected_entry().unwrap().last_error, None);
         let e = h.app.state.selected_entry().unwrap();
         assert_eq!(e.ws, WsState::Live, "live once the server has sent a value");
         assert_eq!(values_text(e).unwrap().0, "values live over the WebSocket");
@@ -2478,11 +2655,63 @@ mod tests {
         );
     }
 
+    /// PRD 7.4: values are fetched after a send only when nothing pushes them. A listened method on
+    /// a WebSocket that notifies gets no refresh after a committed send; on a silent socket, or no
+    /// socket, it does.
+    #[test]
+    fn no_refresh_after_a_send_when_the_value_is_pushed() {
+        let mut h = harness();
+        let id = connected(&mut h, &flat_tree(3));
+        h.frame(Vec::new());
+        h.frame(Vec::new());
+        h.sent();
+        let req = || SendReq {
+            server_id: id,
+            path: OscPath::parse("/p001").unwrap(),
+            signature: TypeSignature::parse("f").unwrap(),
+            args: vec![OscType::Double(0.3)],
+            readable: true,
+        };
+        let refresh_of = |cmds: Vec<Command>| -> Vec<bool> {
+            cmds.into_iter()
+                .filter_map(|c| match c {
+                    Command::SendOsc { refresh_after, .. } => Some(refresh_after),
+                    _ => None,
+                })
+                .collect()
+        };
+        let ctx = h.ctx.clone();
+        let mut seen = Vec::new();
+        for state in [
+            None,
+            Some(oscq_core::TransportState::WebSocketOpen),
+            Some(oscq_core::TransportState::WebSocketLive),
+        ] {
+            if let Some(state) = state {
+                h.events
+                    .send(Event::TransportState {
+                        server_id: id,
+                        state,
+                    })
+                    .unwrap();
+                h.frame(Vec::new());
+            }
+            assert!(h.app.state.entry(id).unwrap().listening.contains("/p001"));
+            h.app.act(&ctx, Action::Send(req(), SendMode::Final));
+            seen.extend(refresh_of(h.sent()));
+        }
+        assert_eq!(
+            seen,
+            [true, true, false],
+            "no socket, silent socket, notifying socket"
+        );
+    }
+
     /// PRD 10, measured on the synthetic server's 5000 node document. Run on a release build:
     /// `cargo test --release -p void-oscq -- --ignored budget_ --nocapture --test-threads=1`.
     mod budgets {
         use super::*;
-        use crate::synthetic::{Reply, large_document};
+        use crate::synthetic::large_document;
 
         fn release_only() {
             if cfg!(debug_assertions) {
@@ -2639,7 +2868,7 @@ mod tests {
                     last_selected: Some(key.to_owned()),
                     ..Config::default()
                 },
-                vec![("/g0/p0?VALUE".into(), Reply::json(r#"{"VALUE":[0.5]}"#))],
+                Vec::new(),
             );
             h.app.act(&h.ctx.clone(), Action::Toggle("/g0".into()));
             wait_for(&mut h, "/g0 loaded", |a| {

@@ -264,6 +264,20 @@ impl Idle {
         for (n, cause) in causes(&self.frames) {
             println!("  {n} frames asked for by: {cause}");
         }
+        let mut inputs: std::collections::BTreeMap<&str, usize> = Default::default();
+        for f in &self.frames {
+            let list = f
+                .split("inputs=[")
+                .nth(1)
+                .and_then(|r| r.split(']').next())
+                .unwrap_or_default();
+            for kind in list.split(", ").filter(|k| !k.is_empty()) {
+                *inputs.entry(kind.trim_matches('"')).or_default() += 1;
+            }
+        }
+        for (kind, n) in inputs {
+            println!("  {n} input events {kind}");
+        }
         let mut kinds: std::collections::BTreeMap<&str, usize> = Default::default();
         for e in &self.events {
             let kind = e.split("kind=").nth(1).unwrap_or("?").trim();
@@ -293,6 +307,7 @@ fn causes(frames: &[String]) -> Vec<(usize, String)> {
         let cause = f
             .split("causes=")
             .nth(1)
+            .and_then(|c| c.split(" inputs=").next())
             .map(|c| c.trim())
             .filter(|c| *c != "[]")
             .map(|c| {

@@ -94,6 +94,6 @@ Backlog:
 - Real captured documents from VDMX and ossia, PRD 12. OSCQuery Helper and Max 9 are captured.
 - M3 acceptance on the human's Mac: browse OSCQuery Helper, change a value, JSON and traffic tabs correct.
 - M4 acceptance: a value changed inside a real server that notifies over its WebSocket (VDMX, ossia; not Max 9, which sends nothing) updates in the app without user action.
-- PRD 10 on the human's Mac: idle repaints (563 frames in 10 s) and idle CPU (21.36 %) over budget, cause not identified, not reproduced on the macOS CI machine; cold start 457.3 ms with 323.7 ms before `main`. Rerun the real binary tests there, they print what woke each frame and split each launch before and after `main`.
+- PRD 10 on the human's Mac after `calm_style`: idle repaints and idle CPU to measure again, Max and the Helper closed, the pointer outside the window. Cold start closed, 132.8 ms at worst.
 - OSC sent over the WebSocket, opt in per server (PRD 7.5).
 - M5 release, as in PRD 14.

@@ -81,6 +81,8 @@ pub struct WsControl {
     listens: Mutex<HashSet<String>>,
     /// Sessions opened so far.
     sessions: AtomicUsize,
+    /// The last value pushed for each path, which `?VALUE` answers.
+    values: Mutex<HashMap<String, Vec<OscType>>>,
 }
 
 impl WsControl {
@@ -91,6 +93,7 @@ impl WsControl {
             received: Mutex::new(Vec::new()),
             listens: Mutex::new(HashSet::new()),
             sessions: AtomicUsize::new(0),
+            values: Mutex::new(HashMap::new()),
         }
     }
 
@@ -100,6 +103,12 @@ impl WsControl {
     }
 
     pub fn push(&self, p: Push) {
+        if let Push::Osc(path, args) = &p {
+            self.values
+                .lock()
+                .unwrap()
+                .insert(path.clone(), args.clone());
+        }
         let _ = self.push.send(p);
     }
 
@@ -218,9 +227,16 @@ async fn serve(
         .and_then(|l| l.split(' ').nth(1))
         .unwrap_or("")
         .to_owned();
-    let reply = routes
-        .get(&target)
-        .cloned()
+    // A value pushed over the WebSocket is the server's current value: `?VALUE` answers it.
+    let pushed = target
+        .strip_suffix("?VALUE")
+        .and_then(|p| ws.values.lock().unwrap().get(p).cloned())
+        .map(|args| {
+            let body = serde_json::json!({ "VALUE": oscq_core::ws::args_to_json(&args) });
+            Reply::json(body.to_string())
+        });
+    let reply = pushed
+        .or_else(|| routes.get(&target).cloned())
         .unwrap_or(Reply::Body(404, Vec::new()));
     let response = match reply {
         Reply::Hang => {
@@ -344,8 +360,8 @@ pub fn large_group(g: usize, n: usize) -> String {
     )
 }
 
-/// The routes of a server publishing [`large_document`]: the root, each container, and a
-/// `HOST_INFO` sending OSC to `osc_port`.
+/// The routes of a server publishing [`large_document`]: the root, each container, the `?VALUE`
+/// of each method, and a `HOST_INFO` sending OSC to `osc_port`.
 pub fn large_routes(n: usize, osc_port: u16) -> Vec<(String, Reply)> {
     let mut routes = vec![
         ("/".to_owned(), Reply::json(large_document(n))),
@@ -357,6 +373,12 @@ pub fn large_routes(n: usize, osc_port: u16) -> Vec<(String, Reply)> {
         ),
     ];
     routes.extend((0..n.div_ceil(100)).map(|g| (format!("/g{g}"), Reply::json(large_group(g, n)))));
+    routes.extend((0..n).map(|i| {
+        (
+            format!("/g{}/p{i}?VALUE", i / 100),
+            Reply::json(r#"{"VALUE":[0.5]}"#),
+        )
+    }));
     routes
 }
 

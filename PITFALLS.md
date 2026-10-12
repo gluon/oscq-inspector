@@ -19,6 +19,14 @@ Case: `budget_idle_repaints_with_50_listens` found 8 repaints in 100 frames, all
 A headless test cannot prove that the window does not repaint when idle: it has no operating system, no window events, no real time. Only the real binary can, by counting its frames.
 Case: the headless test found 0 idle repaints while the real binary did 563 frames in 10 s on the human's Mac, 2026-10-11.
 
+egui animates tooltip and scroll bar fades over frames, and before showing a tooltip asks for a frame on every frame until the pointer is perfectly still. Every pointer move over the tree, where every row name has a tooltip, cost a dozen frames or more of a window at rest. Set `animation_time` to 0 and `show_tooltips_only_when_still` to false.
+Case: 57 and 65 frames in 10 s on the human's Mac, causes in `tooltip.rs`, `scroll_area.rs` and `context.rs:538`, 2026-10-12.
+
+Each input event costs at least 3 frames in egui: the event's, the one `wants_repaint_after` asks for after any input (`context.rs:538`), and the second pass egui runs after every immediate request. An idle measurement with the pointer resting on the window counts every tiny move.
+
+A measurement taken with other servers running on the same machine measures them too. Close Max and OSCQuery Helper before measuring idle CPU or repaints.
+Case: 563 frames and 21.36 % CPU with Max and the Helper running, 57 frames and 1.50 % without, 2026-10-11 and 2026-10-12.
+
 `Context::repaint_causes()` lists where the code asked for the frame. A frame woken by the operating system or by input, a window event, has no cause listed. An empty list is therefore a finding, not a lack of one.
 
 A headless frame through `Context::run_ui` must consume `FullOutput::textures_delta`, as a renderer would, or the test panics in debug when the delta is dropped.

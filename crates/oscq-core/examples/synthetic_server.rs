@@ -1,7 +1,8 @@
 //! The synthetic OSCQuery server of the test suite, as a program: `large_document` of 5000
 //! methods by default, HTTP and WebSocket on one port, OSC received on a UDP port it advertises.
-//! With `--stream HZ` it changes the value of every listened method HZ times a second, which the
-//! app shows without user action when its WebSocket is live.
+//! With `--stream HZ` it changes the value of every listened method HZ times a second, each
+//! method on its own phase so that no two show the same value, which the app shows without user
+//! action when its WebSocket is live. `?VALUE` answers the value last pushed.
 //!
 //! ```text
 //! cargo run -p oscq-core --example synthetic_server -- --port 5678 --nodes 5000 --stream 2
@@ -61,7 +62,9 @@ async fn main() -> anyhow::Result<()> {
         if stream > 0.0 {
             phase += 0.1;
             for p in &listens {
-                let v = 0.5 + 0.5 * phase.sin();
+                // A phase per path: values that differ from method to method.
+                let offset = p.bytes().map(f32::from).sum::<f32>() * 0.37;
+                let v = 0.5 + 0.5 * (phase + offset).sin();
                 server
                     .ws
                     .push(Push::Osc(p.clone(), vec![OscType::Float(v)]));
