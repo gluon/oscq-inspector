@@ -4315,6 +4315,7 @@ dependencies = [
  "nucleo-matcher",
  "oscq-core",
  "oscq-discovery",
+ "png",
  "rosc",
  "serde",
  "serde_json",

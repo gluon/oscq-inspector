@@ -26,5 +26,7 @@ workspace = true
 # The synthetic server of `oscq-core`'s tests, included by path for the budget measurements.
 [dev-dependencies]
 futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
+# Writes the icon files of the release packaging, examples/icons.rs.
+png = "0.18.1"
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "io-util", "net", "time", "sync"] }
 tokio-tungstenite = "0.30.0"

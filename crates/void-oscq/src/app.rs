@@ -68,6 +68,8 @@ enum Action {
     SelectServer(ServerId),
     Connect(ServerId),
     Disconnect(ServerId),
+    /// The OSC port the user sets for a server whose port is inferred; `None` infers it again.
+    SetOscPort(ServerId, Option<u16>),
     Toggle(String),
     SelectPath(String),
     Send(SendReq, SendMode),
@@ -123,6 +125,9 @@ struct View {
     manual_open: bool,
     manual_text: String,
     manual_error: Option<String>,
+    /// The OSC port field of the status bar, and the server and port it was last filled from.
+    osc_port_text: String,
+    osc_port_shown: Option<(ServerId, u16)>,
     about_open: bool,
     note: Option<String>,
     geometry_dirty_since: Option<Instant>,
@@ -277,7 +282,7 @@ impl VoidApp {
             .resizable(true)
             .default_size(230.0)
             .show(ui, |ui| self.server_pane(ui, &mut actions));
-        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui, &mut actions));
         egui::CentralPanel::default().show(ui, |ui| self.main_pane(ui, &mut actions));
         self.manual_modal(&ctx, &mut actions);
         self.about_modal(&ctx);
@@ -439,6 +444,13 @@ impl VoidApp {
                         e.conn = ConnState::Connecting;
                         e.ws = WsState::Absent;
                         e.listening.clear();
+                        // The port the user set, before the connection derives its destination.
+                        if let Some(&port) = self.config.osc_ports.get(&e.key()) {
+                            let _ = self.backend.commands.send(Command::SetOscPort {
+                                server_id: id,
+                                port: Some(port),
+                            });
+                        }
                         let _ = self.backend.commands.send(Command::Connect {
                             server_id: id,
                             http_base: url,
@@ -446,6 +458,20 @@ impl VoidApp {
                     }
                     None => e.conn = ConnState::Failed("no usable address".to_owned()),
                 }
+            }
+            Action::SetOscPort(id, port) => {
+                let Some(key) = self.state.entry(id).map(|e| e.key()) else {
+                    return;
+                };
+                match port {
+                    Some(p) => self.config.osc_ports.insert(key, p),
+                    None => self.config.osc_ports.remove(&key),
+                };
+                self.save_config(ctx);
+                let _ = self.backend.commands.send(Command::SetOscPort {
+                    server_id: id,
+                    port,
+                });
             }
             Action::Disconnect(id) => {
                 let _ = self
@@ -739,27 +765,32 @@ impl VoidApp {
 
     // ---------------------------------------------------------------- status bar
 
-    fn status_bar(&self, ui: &mut egui::Ui) {
+    fn status_bar(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let view = &mut self.view;
         ui.horizontal_wrapped(|ui| {
             if let Some(e) = self.state.selected_entry() {
                 ui.strong(&e.server.name);
                 ui.label(conn_text(e));
                 match &e.destination {
                     Some(Ok(d)) => {
-                        let source = match d.port_source {
-                            PortSource::Advertised => "port advertised",
-                            PortSource::InferredFromHttp => "port inferred from the HTTP port",
-                        };
                         let transport = match d.transport {
                             oscq_core::OscTransport::Udp => "UDP",
                             oscq_core::OscTransport::Tcp => "TCP",
                         };
-                        ui.label(format!("OSC {}:{} {transport}, {source}", d.host, d.port));
+                        ui.label(format!(
+                            "OSC {}:{} {transport}, {}",
+                            d.host,
+                            d.port,
+                            port_source_text(d.port_source)
+                        ));
+                        if d.port_source != PortSource::Advertised {
+                            osc_port_editor(ui, e.server.id, d, view, actions);
+                        }
                     }
                     Some(Err(blocked)) => {
                         ui.colored_label(
                             ui.visuals().warn_fg_color,
-                            format!("read only: {blocked}"),
+                            format!("{CANNOT_SEND}: {blocked}"),
                         );
                     }
                     None => {}
@@ -792,11 +823,7 @@ impl VoidApp {
                         ui.weak(format!("{} document warnings", t.diagnostics.len()));
                     }
                 }
-                if let Some(err) = &e.last_error {
-                    let text = match &err.path {
-                        Some(p) => format!("{p}: {}", err.message),
-                        None => err.message.clone(),
-                    };
+                if let Some(text) = error_text(e) {
                     ui.colored_label(ui.visuals().error_fg_color, text);
                 }
             } else {
@@ -805,7 +832,7 @@ impl VoidApp {
             if let Some(g) = &self.state.global_error {
                 ui.colored_label(ui.visuals().error_fg_color, g);
             }
-            if let Some(n) = &self.view.note {
+            if let Some(n) = &view.note {
                 ui.weak(n);
             }
         });
@@ -942,7 +969,64 @@ fn event_kind(e: &Event) -> &'static str {
         Event::TransportState { .. } => "TransportState",
         Event::TrafficLogged(_) => "TrafficLogged",
         Event::Error { .. } => "Error",
+        Event::Succeeded { .. } => "Succeeded",
     }
+}
+
+/// Where the OSC port comes from, as the status bar says it.
+fn port_source_text(source: PortSource) -> &'static str {
+    match source {
+        PortSource::Advertised => "port advertised",
+        PortSource::InferredFromHttp => "port inferred from the HTTP port",
+        PortSource::User => "port set by the user",
+    }
+}
+
+/// The field to set the OSC port of a server that does not advertise one, and the button that
+/// infers it again once set.
+fn osc_port_editor(
+    ui: &mut egui::Ui,
+    id: ServerId,
+    d: &oscq_core::OscDestination,
+    view: &mut View,
+    actions: &mut Vec<Action>,
+) {
+    if view.osc_port_shown != Some((id, d.port)) {
+        view.osc_port_shown = Some((id, d.port));
+        view.osc_port_text = d.port.to_string();
+    }
+    let field = ui
+        .add(egui::TextEdit::singleline(&mut view.osc_port_text).desired_width(48.0))
+        .on_hover_text(
+            "The server does not advertise its OSC port. Set the port it receives OSC on; \
+             it is kept for this server.",
+        );
+    let enter = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+    if ui.small_button("Set OSC port").clicked() || enter {
+        match view.osc_port_text.trim().parse::<u16>() {
+            Ok(p) if p > 0 => actions.push(Action::SetOscPort(id, Some(p))),
+            _ => view.note = Some(format!("not a port: {}", view.osc_port_text.trim())),
+        }
+    }
+    if d.port_source == PortSource::User && ui.small_button("Infer OSC port").clicked() {
+        actions.push(Action::SetOscPort(id, None));
+    }
+}
+
+/// What a row or the status bar says of a writable node nothing can be sent to.
+const CANNOT_SEND: &str = "cannot send";
+
+/// The error the status bar shows for a server, with the path it concerns. A failed connection
+/// is already told by the connection state, and is not said twice.
+fn error_text(e: &ServerEntry) -> Option<String> {
+    let err = e.last_error.as_ref()?;
+    if err.operation == oscq_core::Operation::Connect && matches!(e.conn, ConnState::Failed(_)) {
+        return None;
+    }
+    Some(match &err.path {
+        Some(p) => format!("{p}: {}", err.message),
+        None => err.message.clone(),
+    })
 }
 
 /// PRD 6.2, no frame unless something changed. egui fades tooltips and scroll bars in over
@@ -1239,8 +1323,9 @@ fn tree_row(
         }
         Shown::Nothing => {}
     }
+    // The node keeps the access its server declares; what is said is that nothing can be sent.
     if let Some(reason) = &p.blocked {
-        ui.weak("read only").on_hover_text(reason);
+        ui.weak(CANNOT_SEND).on_hover_text(reason);
     }
     if let Some(tags) = &node.type_raw {
         ui.weak(RichText::new(tags).monospace());
@@ -1856,7 +1941,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
-    use oscq_core::{AttributeReply, DiscoveredServer, Origin, parse_document};
+    use oscq_core::{Access, AttributeReply, DiscoveredServer, Origin, parse_document};
 
     struct Harness {
         ctx: egui::Context,
@@ -2175,6 +2260,13 @@ mod tests {
             })
             .unwrap();
         h.events.send(tree_loaded()).unwrap();
+        // The service's order: the tree, then the connection is up.
+        h.events
+            .send(Event::TransportState {
+                server_id: id,
+                state: oscq_core::TransportState::HttpOnly,
+            })
+            .unwrap();
         h.frame(Vec::new());
         h.app.act(&ctx, Action::Toggle("/test".into()));
         h.app.view.selected_path = Some(path.into());
@@ -2222,7 +2314,13 @@ mod tests {
                 "the widget stays where it was put"
             );
         }
-        assert!(h.sent().is_empty(), "no refresh, no send again");
+        // Listens follow the rows on screen; what matters is that nothing is sent or read again.
+        let sent: Vec<Command> = h
+            .sent()
+            .into_iter()
+            .filter(|c| !matches!(c, Command::Listen { .. } | Command::Ignore { .. }))
+            .collect();
+        assert!(sent.is_empty(), "no refresh, no send again: {sent:?}");
 
         h.key(Key::Enter);
         h.key(Key::ArrowRight);
@@ -2576,6 +2674,344 @@ mod tests {
             h.frame(Vec::new());
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    /// PRD 9.6, as met with Max 9: the restored server is connected at launch before it serves,
+    /// the attempt fails, a later one succeeds. The status bar then shows the connection, not the
+    /// superseded failure. Real service, synthetic server started on the refused port.
+    #[test]
+    fn a_failed_connection_is_not_shown_once_a_new_one_succeeds() {
+        use crate::synthetic::{SyntheticServer, borrowed, large_routes};
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let key = format!("127.0.0.1:{port}");
+        let (ev_tx, ev_rx) = flume::unbounded();
+        let commands = oscq_core::service::spawn(rt.handle(), ev_tx, Arc::new(|| {}));
+        let ctx = egui::Context::default();
+        let app = VoidApp::with_backend(
+            &ctx,
+            Backend {
+                commands,
+                events: ev_rx,
+                io: rt.handle().clone(),
+            },
+            Config {
+                manual_entries: vec![key.clone()],
+                last_selected: Some(key.clone()),
+                ..Config::default()
+            },
+            None,
+        );
+        let mut h = Harness {
+            ctx,
+            app,
+            commands: flume::unbounded().1,
+            events: flume::unbounded().0,
+            _rt: rt,
+        };
+        wait_for(&mut h, "the launch attempt to fail", |a| {
+            a.state
+                .selected_entry()
+                .is_some_and(|e| matches!(e.conn, ConnState::Failed(_)))
+        });
+        let e = h.app.state.selected_entry().unwrap();
+        let text = conn_text(e);
+        assert!(text.starts_with("error: could not connect to "), "{text}");
+        assert_eq!(
+            error_text(e),
+            None,
+            "the failure is said once, by the connection"
+        );
+        assert!(e.last_error.is_some());
+
+        let routes = large_routes(10, 9);
+        let _server = h
+            ._rt
+            .block_on(SyntheticServer::start_ws(&key, borrowed(&routes)))
+            .unwrap();
+        let id = h.app.state.selected.unwrap();
+        h.app.act(&h.ctx.clone(), Action::SelectServer(id));
+        wait_for(&mut h, "connected with its WebSocket open", |a| {
+            a.state.selected_entry().is_some_and(|e| {
+                e.conn == ConnState::Connected && e.tree.is_some() && e.ws == WsState::Open
+            })
+        });
+        h.frame(Vec::new());
+        let e = h.app.state.selected_entry().unwrap();
+        assert_eq!(error_text(e), None, "the superseded failure is gone");
+        assert_eq!(e.last_error, None);
+    }
+
+    /// Every text the frame drew.
+    fn drawn_texts(out: &egui::FullOutput) -> Vec<String> {
+        fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, texts)),
+                egui::Shape::Text(t) => texts.push(t.galley.text().to_owned()),
+                _ => {}
+            }
+        }
+        let mut texts = Vec::new();
+        for clipped in &out.shapes {
+            walk(&clipped.shape, &mut texts);
+        }
+        texts
+    }
+
+    /// A node's access is what its server declares, whatever the connection: when a reconnection
+    /// fails, a read write node stays read write, explicit or inferred from `HOST_INFO`, and the
+    /// row says nothing can be sent, with the reason, never "read only". The failure is said once.
+    /// Real service, synthetic server stopped between the two connections.
+    #[test]
+    fn a_failed_connection_keeps_the_declared_access_and_says_nothing_can_be_sent() {
+        use crate::synthetic::{Reply, SyntheticServer};
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{
+            "declared":{"FULL_PATH":"/declared","TYPE":"f","ACCESS":3,"VALUE":[0.5]},
+            "inferred":{"FULL_PATH":"/inferred","TYPE":"f","VALUE":[0.25]}}}"#;
+        let routes = vec![
+            ("/", Reply::json(doc)),
+            (
+                "/?HOST_INFO",
+                Reply::json(r#"{"NAME":"rw","OSC_PORT":9,"EXTENSIONS":{"VALUE":true}}"#),
+            ),
+        ];
+        let server = rt
+            .block_on(SyntheticServer::start("127.0.0.1:0", routes))
+            .unwrap();
+        let key = format!("127.0.0.1:{}", server.addr.port());
+        let (ev_tx, ev_rx) = flume::unbounded();
+        let commands = oscq_core::service::spawn(rt.handle(), ev_tx, Arc::new(|| {}));
+        let ctx = egui::Context::default();
+        let app = VoidApp::with_backend(
+            &ctx,
+            Backend {
+                commands,
+                events: ev_rx,
+                io: rt.handle().clone(),
+            },
+            Config {
+                manual_entries: vec![key.clone()],
+                last_selected: Some(key),
+                ..Config::default()
+            },
+            None,
+        );
+        let mut h = Harness {
+            ctx,
+            app,
+            commands: flume::unbounded().1,
+            events: flume::unbounded().0,
+            _rt: rt,
+        };
+        wait_for(&mut h, "connected", |a| {
+            a.state
+                .selected_entry()
+                .is_some_and(|e| e.conn == ConnState::Connected && e.tree.is_some())
+        });
+        let rows = |a: &VoidApp| {
+            let e = a.state.selected_entry().unwrap();
+            let t = e.tree.as_ref().unwrap();
+            ["/declared", "/inferred"].map(|p| {
+                let node = t.node(p).unwrap();
+                let access = node.effective_access(e.value_supported());
+                let shown = widget::present(node, access, e.send_blocked().as_deref());
+                (access, shown.widget, shown.blocked)
+            })
+        };
+        for (access, widget, blocked) in rows(&h.app) {
+            assert_eq!(access, Access::READ_WRITE);
+            assert!(widget && blocked.is_none(), "{blocked:?}");
+        }
+
+        drop(server);
+        let id = h.app.state.selected.unwrap();
+        h.app.act(&h.ctx.clone(), Action::Connect(id));
+        wait_for(&mut h, "the reconnection to fail", |a| {
+            a.state
+                .selected_entry()
+                .is_some_and(|e| matches!(e.conn, ConnState::Failed(_)))
+        });
+        for (access, widget, blocked) in rows(&h.app) {
+            assert_eq!(
+                access,
+                Access::READ_WRITE,
+                "the server's declaration stands"
+            );
+            assert!(!widget);
+            let reason = blocked.unwrap();
+            assert!(
+                reason.starts_with("not connected: could not connect to "),
+                "{reason}"
+            );
+        }
+        let texts = drawn_texts(&h.frame(Vec::new()));
+        assert!(!texts.iter().any(|t| t == "read only"), "{texts:?}");
+        assert_eq!(texts.iter().filter(|t| *t == CANNOT_SEND).count(), 2);
+        assert_eq!(texts.iter().filter(|t| *t == "rw").count(), 2);
+        assert_eq!(
+            texts
+                .iter()
+                .filter(|t| t.contains("could not connect"))
+                .count(),
+            1,
+            "said once: {texts:?}"
+        );
+    }
+
+    /// The window on the real network service, with `config`, on its own runtime.
+    fn service_harness(config: Config) -> Harness {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (ev_tx, ev_rx) = flume::unbounded();
+        let commands = oscq_core::service::spawn(rt.handle(), ev_tx, Arc::new(|| {}));
+        let ctx = egui::Context::default();
+        let app = VoidApp::with_backend(
+            &ctx,
+            Backend {
+                commands,
+                events: ev_rx,
+                io: rt.handle().clone(),
+            },
+            config,
+            None,
+        );
+        Harness {
+            ctx,
+            app,
+            commands: flume::unbounded().1,
+            events: flume::unbounded().0,
+            _rt: rt,
+        }
+    }
+
+    /// Max 9 serves OSCQuery on one port and receives OSC on another, and ignores `HOST_INFO`: the
+    /// inferred port is wrong. The user sets the port in the status bar; the status bar tells the
+    /// three origins apart, sends reach the user's port, the port is kept in the config, and after
+    /// a restart the connection takes it again instead of inferring.
+    #[test]
+    fn a_user_osc_port_replaces_the_inferred_one_and_is_kept() {
+        use crate::synthetic::{OscReceiver, Reply, SyntheticServer};
+        assert_eq!(
+            [
+                PortSource::Advertised,
+                PortSource::InferredFromHttp,
+                PortSource::User
+            ]
+            .map(port_source_text),
+            [
+                "port advertised",
+                "port inferred from the HTTP port",
+                "port set by the user"
+            ]
+        );
+        let root = include_str!("../../../tests/fixtures/max-root.json");
+        let host = include_str!("../../../tests/fixtures/max-hostinfo.json");
+        // The server and the OSC receiver outlive both windows below.
+        let srv = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let osc = srv.block_on(OscReceiver::bind("127.0.0.1:0")).unwrap();
+        let server = srv
+            .block_on(SyntheticServer::start(
+                "127.0.0.1:0",
+                vec![("/", Reply::json(root)), ("/?HOST_INFO", Reply::json(host))],
+            ))
+            .unwrap();
+        let key = format!("127.0.0.1:{}", server.addr.port());
+        let mut h = service_harness(Config {
+            manual_entries: vec![key.clone()],
+            last_selected: Some(key.clone()),
+            ..Config::default()
+        });
+        let port_of =
+            |a: &VoidApp| match a.state.selected_entry().and_then(|e| e.destination.clone()) {
+                Some(Ok(d)) => Some((d.port, d.port_source)),
+                _ => None,
+            };
+        wait_for(&mut h, "connected", |a| {
+            a.state
+                .selected_entry()
+                .is_some_and(|e| e.conn == ConnState::Connected)
+        });
+        assert_eq!(
+            port_of(&h.app),
+            Some((server.addr.port(), PortSource::InferredFromHttp))
+        );
+        let texts = drawn_texts(&h.frame(Vec::new()));
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.ends_with("port inferred from the HTTP port")),
+            "{texts:?}"
+        );
+
+        let id = h.app.state.selected.unwrap();
+        h.app
+            .act(&h.ctx.clone(), Action::SetOscPort(id, Some(osc.port())));
+        assert_eq!(h.app.config.osc_ports.get(&key), Some(&osc.port()));
+        wait_for(&mut h, "the user's port", |a| {
+            port_of(a) == Some((osc.port(), PortSource::User))
+        });
+        let texts = drawn_texts(&h.frame(Vec::new()));
+        assert!(
+            texts.iter().any(|t| t.ends_with("port set by the user")),
+            "{texts:?}"
+        );
+        let send = |h: &mut Harness| {
+            let req = SendReq {
+                server_id: h.app.state.selected.unwrap(),
+                path: OscPath::parse("/test/param/fader/normalized").unwrap(),
+                signature: TypeSignature::parse("f").unwrap(),
+                args: vec![OscType::Double(0.5)],
+                readable: false,
+            };
+            h.app
+                .act(&h.ctx.clone(), Action::Send(req, SendMode::Final));
+            srv.block_on(osc.recv())
+        };
+        assert!(matches!(
+            send(&mut h),
+            rosc::OscPacket::Message(m) if m.addr == "/test/param/fader/normalized"
+        ));
+
+        // The config as saved, read back: a restart connects with the user's port.
+        let dir = std::env::temp_dir().join(format!("void-oscq-port-{}", std::process::id()));
+        let path = config::config_path(&dir);
+        config::write_atomic(&path, &h.app.config.to_bytes()).unwrap();
+        let (saved, warning) = Config::load(&path);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(warning, None);
+        assert_eq!(saved.osc_ports.get(&key), Some(&osc.port()));
+        let mut restarted = service_harness(saved);
+        wait_for(&mut restarted, "reconnected with the user's port", |a| {
+            a.state
+                .selected_entry()
+                .is_some_and(|e| e.conn == ConnState::Connected)
+        });
+        assert_eq!(
+            port_of(&restarted.app),
+            Some((osc.port(), PortSource::User)),
+            "never replaced by the inference"
+        );
+        assert!(matches!(send(&mut restarted), rosc::OscPacket::Message(_)));
     }
 
     /// M4: a value changed inside the server reaches the window with no user action. Real

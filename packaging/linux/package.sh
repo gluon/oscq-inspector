@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Packs the Linux release binary and its .desktop file in a tarball. Run from the workspace root
-# after cargo build --release --locked -p void-oscq.
+# Packs the Linux release binary, its .desktop file and its icon in a tarball. Run from the
+# workspace root after cargo build --release --locked -p void-oscq.
 # Arguments: version, output directory. Prints the path of the tarball.
 set -euo pipefail
 version="$1"
@@ -11,6 +11,11 @@ rm -rf "$dir"
 mkdir -p "$dir"
 cp target/release/void-oscq "$dir/"
 cp packaging/linux/void-oscq.desktop "$dir/"
+# The icon, 256 pixels, drawn by the application's own code.
+icons=$(mktemp -d)
+cargo run --release --locked -p void-oscq --example icons -- "$icons" >&2
+cp "$icons/void-oscq.png" "$dir/"
+rm -rf "$icons"
 if ! command -v desktop-file-validate >/dev/null; then
     echo "FAIL: desktop-file-validate not installed, the .desktop file cannot be checked"
     exit 1

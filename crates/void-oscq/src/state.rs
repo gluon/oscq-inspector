@@ -117,8 +117,15 @@ impl ServerEntry {
         self.host_info.as_ref().is_some_and(|h| h.supports("VALUE"))
     }
 
-    /// Why nothing can be sent to this server, if anything prevents it.
+    /// Why nothing can be sent to this server, if anything prevents it. A connection that is not
+    /// up blocks every send, whatever the nodes declare: their access stays the server's.
     pub fn send_blocked(&self) -> Option<String> {
+        match &self.conn {
+            ConnState::Connected => {}
+            ConnState::Failed(reason) => return Some(format!("not connected: {reason}")),
+            ConnState::Connecting => return Some("connecting".to_owned()),
+            ConnState::Idle | ConnState::Disconnected => return Some("not connected".to_owned()),
+        }
         match (&self.destination, &self.host_info_error) {
             (Some(Ok(d)), _) => d.check_sendable().err().map(|e| e.to_string()),
             (Some(Err(e)), _) => Some(e.to_string()),
@@ -363,6 +370,20 @@ impl AppState {
                     }
                 }
             }
+            // PRD 9.6: an error the same operation has since overcome is no longer shown.
+            Event::Succeeded {
+                server_id,
+                operation,
+                path,
+            } => {
+                if let Some(e) = self.entry_mut(server_id)
+                    && e.last_error.as_ref().is_some_and(|err| {
+                        err.operation == operation && (path.is_none() || err.path == path)
+                    })
+                {
+                    e.last_error = None;
+                }
+            }
         }
     }
 }
@@ -386,6 +407,64 @@ mod tests {
                 service_type: "_oscjson._tcp.local.".into(),
             },
             stale: false,
+        }
+    }
+
+    /// PRD 9.6: an error is cleared by the success of the operation it comes from, on the same
+    /// path, and by nothing else.
+    #[test]
+    fn an_error_is_cleared_only_by_the_same_operation_succeeding() {
+        use oscq_core::{Operation, UserFacingError};
+        let mut s = AppState::default();
+        let srv = server();
+        let id = srv.id;
+        s.apply(Event::ServerFound(srv));
+        let fail = |s: &mut AppState, operation, path: Option<&str>| {
+            s.apply(Event::Error {
+                server_id: Some(id),
+                error: UserFacingError {
+                    operation,
+                    path: path.map(str::to_owned),
+                    message: "failed".into(),
+                },
+            });
+        };
+        let succeed = |s: &mut AppState, operation, path: Option<&str>| {
+            s.apply(Event::Succeeded {
+                server_id: id,
+                operation,
+                path: path.map(str::to_owned),
+            });
+        };
+        let shown = |s: &AppState| s.entry(id).unwrap().last_error.is_some();
+        fail(&mut s, Operation::Connect, Some("/"));
+        succeed(&mut s, Operation::LoadTree, Some("/"));
+        succeed(&mut s, Operation::ReadValue, None);
+        assert!(
+            shown(&s),
+            "another operation does not clear a connection error"
+        );
+        succeed(&mut s, Operation::Connect, None);
+        assert!(
+            !shown(&s),
+            "a connection that succeeds clears the failed one"
+        );
+
+        for op in [Operation::LoadTree, Operation::ReadValue, Operation::Send] {
+            fail(&mut s, op, Some("/a/x"));
+            succeed(&mut s, op, Some("/b"));
+            assert!(shown(&s), "{op:?} on another path does not clear it");
+            for other in [Operation::LoadTree, Operation::ReadValue, Operation::Send] {
+                if other != op {
+                    succeed(&mut s, other, Some("/a/x"));
+                }
+            }
+            assert!(
+                shown(&s),
+                "another operation on the path does not clear {op:?}"
+            );
+            succeed(&mut s, op, Some("/a/x"));
+            assert!(!shown(&s), "{op:?} succeeding on the path clears it");
         }
     }
 
@@ -569,6 +648,14 @@ mod tests {
         let s = server();
         let id = s.id;
         st.apply(Event::ServerFound(s));
+        assert_eq!(
+            st.entry(id).unwrap().send_blocked().unwrap(),
+            "not connected"
+        );
+        st.apply(Event::TransportState {
+            server_id: id,
+            state: TransportState::HttpOnly,
+        });
         assert!(
             st.entry(id)
                 .unwrap()
@@ -600,6 +687,14 @@ mod tests {
                 .send_blocked()
                 .unwrap()
                 .contains("TCP")
+        );
+        st.apply(Event::TransportState {
+            server_id: id,
+            state: TransportState::Failed("refused".into()),
+        });
+        assert_eq!(
+            st.entry(id).unwrap().send_blocked().unwrap(),
+            "not connected: refused"
         );
     }
 

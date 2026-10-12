@@ -41,6 +41,9 @@ pub enum PortSource {
     Advertised,
     /// `OSC_PORT` absent, the HTTP port is used, as the proposal specifies.
     InferredFromHttp,
+    /// Set by the user in place of a port inferred from the HTTP port, which can be wrong: Max 9
+    /// serves OSCQuery on one port and receives OSC on another, and says neither.
+    User,
 }
 
 /// Why nothing can be sent to a server.
@@ -62,6 +65,18 @@ pub struct OscDestination {
 }
 
 impl OscDestination {
+    /// The destination with the user's port, when there is one and the port was only inferred.
+    /// A port the server advertises stands; a user's port is never replaced by an inference.
+    pub fn with_user_port(mut self, port: Option<u16>) -> Self {
+        if let Some(p) = port
+            && self.port_source != PortSource::Advertised
+        {
+            self.port = p;
+            self.port_source = PortSource::User;
+        }
+        self
+    }
+
     /// `Ok` when this client can send to the destination.
     pub fn check_sendable(&self) -> Result<(), SendBlocked> {
         match self.transport {
@@ -218,6 +233,35 @@ fn port(v: &Value) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The three origins of the OSC port, and which wins: an advertised port over the user's,
+    /// the user's over an inferred one.
+    #[test]
+    fn a_user_port_replaces_an_inferred_port_never_an_advertised_one() {
+        let parse = |json: &str| HostInfo::parse(json.as_bytes()).unwrap().0;
+        let advertised = parse(r#"{"OSC_PORT":30338}"#).osc_destination("localhost", 30339);
+        let inferred = parse("{}").osc_destination("localhost", 30339);
+        let got = |d: &Result<OscDestination, SendBlocked>, user| {
+            let d = d.clone().unwrap().with_user_port(user);
+            (d.port, d.port_source)
+        };
+        assert_eq!(got(&advertised, None), (30338, PortSource::Advertised));
+        assert_eq!(
+            got(&advertised, Some(9000)),
+            (30338, PortSource::Advertised)
+        );
+        assert_eq!(got(&inferred, None), (30339, PortSource::InferredFromHttp));
+        assert_eq!(got(&inferred, Some(30338)), (30338, PortSource::User));
+        let user = inferred.unwrap().with_user_port(Some(30338));
+        assert_eq!(
+            (
+                user.clone().with_user_port(None).port,
+                user.with_user_port(None).port_source
+            ),
+            (30338, PortSource::User),
+            "no inference replaces the user's port"
+        );
+    }
 
     #[test]
     fn port_forms() {
