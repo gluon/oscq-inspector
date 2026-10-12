@@ -3,7 +3,7 @@
 //! memory. Needs a display, Linux or macOS, and a release build:
 //!
 //! ```text
-//! cargo test --release -p void-oscq --test budgets_binary -- --ignored --nocapture
+//! cargo test --release -p void-oscq --test budgets_binary -- --ignored --nocapture --test-threads=1
 //! ```
 
 #![allow(clippy::unwrap_used)] // test code, unwrap is allowed outside production paths (PRD 11)
@@ -159,7 +159,10 @@ impl Launch {
         let spawned = Instant::now();
         let mut child = Command::new(env!("CARGO_BIN_EXE_void-oscq"))
             .env(env_var, &base)
-            .env("RUST_LOG", "void_oscq::startup=info,void_oscq::frame=trace")
+            .env(
+                "RUST_LOG",
+                "void_oscq::startup=info,void_oscq::frame=trace,void_oscq::event=trace",
+            )
             .env("NO_COLOR", "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -215,25 +218,60 @@ impl Launch {
         std::thread::sleep(Duration::from_secs(3));
     }
 
-    fn frame_lines(&self) -> Vec<String> {
+    fn lines_of(&self, target: &str) -> Vec<String> {
         self.lines
             .lock()
             .unwrap()
             .iter()
-            .filter(|(_, l)| l.contains("void_oscq::frame"))
+            .filter(|(_, l)| l.contains(target))
             .map(|(_, l)| l.clone())
             .collect()
     }
 
-    /// The frames run during an idle window, and the CPU used meanwhile, percent of one core.
-    fn idle(&self) -> (Vec<String>, f64) {
+    /// The frames run during an idle window, the network and discovery events applied meanwhile,
+    /// and the CPU used, percent of one core.
+    fn idle(&self) -> Idle {
         let pid = self.pid();
-        let (cpu0, frames0, t0) = (cpu_time(pid), self.frame_lines().len(), Instant::now());
+        let frames0 = self.lines_of("void_oscq::frame").len();
+        let events0 = self.lines_of("void_oscq::event").len();
+        let (cpu0, t0) = (cpu_time(pid), Instant::now());
         std::thread::sleep(IDLE_WINDOW);
         let (cpu1, t1) = (cpu_time(pid), Instant::now());
-        let frames = self.frame_lines().split_off(frames0);
-        let cpu = (cpu1 - cpu0).as_secs_f64() / (t1 - t0).as_secs_f64() * 100.0;
-        (frames, cpu)
+        Idle {
+            frames: self.lines_of("void_oscq::frame").split_off(frames0),
+            events: self.lines_of("void_oscq::event").split_off(events0),
+            cpu: (cpu1 - cpu0).as_secs_f64() / (t1 - t0).as_secs_f64() * 100.0,
+        }
+    }
+}
+
+struct Idle {
+    frames: Vec<String>,
+    events: Vec<String>,
+    cpu: f64,
+}
+
+impl Idle {
+    /// What woke the window, so that one failing run names the cause.
+    fn print(&self) {
+        println!(
+            "IDLE real binary: {} frames and {} events in {} s, CPU {:.2} % of one core",
+            self.frames.len(),
+            self.events.len(),
+            IDLE_WINDOW.as_secs(),
+            self.cpu
+        );
+        for (n, cause) in causes(&self.frames) {
+            println!("  {n} frames asked for by: {cause}");
+        }
+        let mut kinds: std::collections::BTreeMap<&str, usize> = Default::default();
+        for e in &self.events {
+            let kind = e.split("kind=").nth(1).unwrap_or("?").trim();
+            *kinds.entry(kind).or_default() += 1;
+        }
+        for (kind, n) in kinds {
+            println!("  {n} events {kind}");
+        }
     }
 }
 
@@ -247,7 +285,8 @@ impl Drop for Launch {
 
 /// What asked for each frame, most frequent first: the source locations egui recorded for the
 /// repaint requests of the frame before, or none when the frame was woken by the operating
-/// system or by input.
+/// system or by input. `void-oscq/src/app.rs` at the notify callback means a network or
+/// discovery event.
 fn causes(frames: &[String]) -> Vec<(usize, String)> {
     let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
     for f in frames {
@@ -274,12 +313,6 @@ fn causes(frames: &[String]) -> Vec<(usize, String)> {
     v
 }
 
-fn print_causes(frames: &[String]) {
-    for (n, cause) in causes(frames) {
-        println!("  {n} frames: {cause}");
-    }
-}
-
 /// PRD 6.2: when idle the app must not repaint. The real window, connected, WebSocket open, 50
 /// listens, nothing changing: not one frame in ten seconds. On failure, what asked for the frames.
 #[test]
@@ -288,14 +321,9 @@ fn real_binary_does_not_repaint_when_idle() {
     let launch = Launch::start();
     launch.first_frame();
     launch.settle();
-    let (frames, cpu) = launch.idle();
-    println!(
-        "IDLE real binary: {} frames in {} s, CPU {cpu:.2} % of one core",
-        frames.len(),
-        IDLE_WINDOW.as_secs()
-    );
-    print_causes(&frames);
-    assert!(frames.is_empty(), "the window repaints when idle");
+    let idle = launch.idle();
+    idle.print();
+    assert!(idle.frames.is_empty(), "the window repaints when idle");
 }
 
 /// Budget 1, cold start, over five launches in a row: from spawn to the first frame, split into
@@ -303,7 +331,7 @@ fn real_binary_does_not_repaint_when_idle() {
 /// time from `main` to the first frame (the app).
 #[test]
 #[ignore = "budget: real window, display and release build needed"]
-fn budget_cold_start_five_launches() {
+fn real_binary_cold_start_five_launches() {
     if cfg!(debug_assertions) {
         panic!("budgets are measured on a release build: cargo test --release");
     }
@@ -329,7 +357,7 @@ fn budget_cold_start_five_launches() {
 
 #[test]
 #[ignore = "budget: real window, display and release build needed"]
-fn budget_real_binary_start_idle_cpu_repaints_memory() {
+fn real_binary_budgets() {
     if cfg!(debug_assertions) {
         panic!("budgets are measured on a release build: cargo test --release");
     }
@@ -339,7 +367,7 @@ fn budget_real_binary_start_idle_cpu_repaints_memory() {
     let launch = Launch::start();
     let (cold, from_main) = launch.first_frame();
     launch.settle();
-    let (frames, idle_cpu) = launch.idle();
+    let idle = launch.idle();
     let memory = rss(launch.pid());
     let listens = launch.server.ws.listens().len();
     drop(launch);
@@ -350,22 +378,23 @@ fn budget_real_binary_start_idle_cpu_repaints_memory() {
         from_main.as_secs_f64() * 1000.0
     );
     println!(
-        "BUDGET idle CPU, {listens} active listens: {idle_cpu:.2} % of one core over {} s, budget 1 %",
+        "BUDGET idle CPU, {listens} active listens: {:.2} % of one core over {} s, budget 1 %",
+        idle.cpu,
         IDLE_WINDOW.as_secs()
     );
     println!(
         "BUDGET idle repaints: {} frames in {} s, budget 0",
-        frames.len(),
+        idle.frames.len(),
         IDLE_WINDOW.as_secs()
     );
-    print_causes(&frames);
+    idle.print();
     println!(
         "BUDGET resident memory, 5000 nodes connected: {:.1} MB, budget 150 MB",
         memory as f64 / 1_048_576.0
     );
     assert_eq!(listens, LISTENS);
     assert!(cold < Duration::from_millis(300), "cold start");
-    assert!(idle_cpu < 1.0, "idle CPU");
-    assert!(frames.is_empty(), "idle repaints");
+    assert!(idle.cpu < 1.0, "idle CPU");
+    assert!(idle.frames.is_empty(), "idle repaints");
     assert!(memory < 150 * 1_048_576, "resident memory");
 }

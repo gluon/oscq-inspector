@@ -353,6 +353,7 @@ impl VoidApp {
                     moved(p);
                 }
             }
+            tracing::trace!(target: "void_oscq::event", kind = event_kind(&event));
             self.state.apply(event);
             if let Some(id) = restore {
                 self.act(ctx, Action::SelectServer(id));
@@ -889,6 +890,26 @@ impl Drop for VoidApp {
             owned.discovery.stop();
             owned.runtime.shutdown_background();
         }
+    }
+}
+
+/// The variant of an event, for the trace that tells what keeps waking the window.
+fn event_kind(e: &Event) -> &'static str {
+    match e {
+        Event::ServerFound(_) => "ServerFound",
+        Event::ServerChanged(_) => "ServerChanged",
+        Event::ServerStale(_) => "ServerStale",
+        Event::HostInfo { .. } => "HostInfo",
+        Event::HostInfoUnavailable { .. } => "HostInfoUnavailable",
+        Event::TreeLoaded { .. } => "TreeLoaded",
+        Event::SubtreeLoaded { .. } => "SubtreeLoaded",
+        Event::ValueChanged { .. } => "ValueChanged",
+        Event::PathAdded { .. } => "PathAdded",
+        Event::PathRemoved { .. } => "PathRemoved",
+        Event::PathRenamed { .. } => "PathRenamed",
+        Event::TransportState { .. } => "TransportState",
+        Event::TrafficLogged(_) => "TrafficLogged",
+        Event::Error { .. } => "Error",
     }
 }
 

@@ -59,13 +59,13 @@ cargo run -p oscq-core --example synthetic_server -- --port 5678 --stream 2
 PRD 10 budgets, on a release build. In process, also run in CI:
 
 ```
-cargo test --release --workspace -- --ignored budget_ --skip budget_real_binary --nocapture --test-threads=1
+cargo test --release --workspace -- --ignored budget_ --nocapture --test-threads=1
 ```
 
 The real binary, window included, against the synthetic server; needs a display, Linux or macOS:
 
 ```
-cargo test --release -p void-oscq --test budgets_binary -- --ignored --nocapture
+cargo test --release -p void-oscq --test budgets_binary -- --ignored --nocapture --test-threads=1
 ```
 
 Measured numbers are in [docs/decisions.md](docs/decisions.md).
@@ -94,6 +94,6 @@ Backlog:
 - Real captured documents from VDMX and ossia, PRD 12. OSCQuery Helper and Max 9 are captured.
 - M3 acceptance on the human's Mac: browse OSCQuery Helper, change a value, JSON and traffic tabs correct.
 - M4 acceptance: a value changed inside a real server that notifies over its WebSocket (VDMX, ossia; not Max 9, which sends nothing) updates in the app without user action.
-- PRD 10 budgets on the human's Mac: the real binary test above; the in process ones run in CI on macOS.
+- PRD 10 on the human's Mac: idle repaints (563 frames in 10 s) and idle CPU (21.36 %) over budget, cause not identified, not reproduced on the macOS CI machine; cold start 457.3 ms with 323.7 ms before `main`. Rerun the real binary tests there, they print what woke each frame and split each launch before and after `main`.
 - OSC sent over the WebSocket, opt in per server (PRD 7.5).
 - M5 release, as in PRD 14.

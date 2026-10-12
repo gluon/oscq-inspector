@@ -66,7 +66,7 @@ jobs:
 
       # PRD 10 budgets that need no window; the real binary test needs a display and is run by hand.
       - name: Budgets in process, release build
-        run: cargo test --release --locked --workspace -- --ignored budget_ --skip budget_real_binary --nocapture --test-threads=1
+        run: cargo test --release --locked --workspace -- --ignored budget_ --nocapture --test-threads=1
 
       - name: Release binary size
         shell: bash
@@ -111,7 +111,7 @@ jobs:
         run: |
           run=""
           if [ "$RUNNER_OS" = "Linux" ]; then run="xvfb-run -a"; fi
-          $run cargo test --release --locked -p void-oscq --test budgets_binary -- --ignored budget_ --nocapture --test-threads=1
+          $run cargo test --release --locked -p void-oscq --test budgets_binary -- --ignored real_binary_ --nocapture --test-threads=1
 
   guards:
     name: guards

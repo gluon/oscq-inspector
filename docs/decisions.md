@@ -98,7 +98,7 @@ Measured on 2026-10-09 on commit `d664f1d`, release build, against the synthetic
 | Idle CPU, connected, 50 active listens, under 1 % of one core | 0.00 % over 10 s, 50 listens confirmed by the server | Real binary, WebSocket open, 50 pinned methods, the synthetic server sending nothing; CPU time from `/proc/PID/stat`, resolution 10 ms | Within |
 | Idle repaints, zero | 0 frames in 10 s (real binary); 0 of 100 idle frames (headless, WebSocket reported live, 50 listens) | Real binary counts its `void_oscq::frame` trace lines. Headless, a tree appearing starts egui's scroll bar fade in, 13 frames, before idle | Within |
 | Slider drag to UDP packet leaving the socket, under 2 ms | median 0.54 ms, p95 0.88 ms, max 4.41 ms, 300 sends | `budget_slider_to_udp_packet`: a keyboard step on the slider of `/g0/p0`, from the frame that reads the key to the packet received on loopback, through the real service and WebSocket session; an upper bound of the packet leaving | Within |
-| Resident memory with 5000 nodes connected, under 150 MB | 166.1, 166.5, 168.7 MB with wgpu's default backends; 145.8 MB with `WGPU_BACKEND=vulkan`; 145.7 MB with `WGPU_BACKEND=gl` | Real binary, `VmRSS`. Same window with no tree: 130.7 MB (Vulkan), 135.4 MB (GL). The 5000 nodes cost 10 to 15 MB; the rest is the software renderer, and the defaults load both Vulkan and GL here | Over with the defaults in this container; not measured on macOS, where wgpu uses Metal |
+| Resident memory with 5000 nodes connected, under 150 MB | 166.1, 166.5, 168.7 MB with wgpu's default backends; 145.8 MB with `WGPU_BACKEND=vulkan`; 145.7 MB with `WGPU_BACKEND=gl` | Real binary, `VmRSS`. Same window with no tree: 130.7 MB (Vulkan), 135.4 MB (GL). The 5000 nodes cost 10 to 15 MB; the rest is the software renderer, and the defaults load both Vulkan and GL here. The figure measures Mesa's software rendering in this container, not the app: the same test gives 111.4 MB on the human's Mac and 110.6 MB on the macOS CI machine, see below. wgpu's default backends are kept | Over in this container because of software rendering; within on macOS |
 | Release binary size, macOS aarch64, under 25 MB | 23 594 704 bytes, 22.5 MB, in CI on `macos-latest`; here, Linux x86_64: 39 080 960 bytes, 37.3 MB | `ci/binary-size.sh` on the release build | Within on macOS aarch64 |
 
 Measured in CI on GitHub hosted runners, release build, Rust 1.99.0, job `budgets`. Code of commit `d664f1d`: run 37950457503 for macOS, run 37950653368 (commit `513b040`, documentation only on top) for Linux and Windows. Virtual machines without a display; the real binary test does not run there.
@@ -111,4 +111,15 @@ Measured in CI on GitHub hosted runners, release build, Rust 1.99.0, job `budget
 | Slider to UDP packet, under 2 ms | median 0.32, p95 0.61, max 1.01 ms | median 0.25, p95 0.30, max 0.36 ms | median 0.33, p95 0.55, max 15.51 ms |
 | Release binary size | 23 594 704 bytes, 22.5 MB, within 25 MB | 39 022 192 bytes, 37.2 MB | 22 717 952 bytes, 21.7 MB |
 
-Not measured anywhere yet: cold start, idle CPU and resident memory on macOS and Windows, which need the real binary test run with a display, and GPU frame time.
+Not measured anywhere yet: cold start, idle CPU and resident memory on Windows, and GPU frame time.
+
+### On macOS, real binary
+
+`crates/void-oscq/tests/budgets_binary.rs`, release build, window open, against the synthetic server's 5000 methods with 50 pinned methods listened to, WebSocket open, nothing changing.
+
+| Budget | Human's Mac, 2026-10-11, commit `99ea308` | macOS CI machine (`macos-latest`, Apple Silicon virtual machine), 2026-10-12, run 38208380933, commit `d5b84dd` | Verdict |
+| --- | --- | --- | --- |
+| Cold start, under 300 ms | 457.3 ms from spawn: 133.6 ms from `main`, so 323.7 ms before `main` | five launches: 364.7, 241.1, 201.5, 191.2, 295.7 ms from spawn; before `main` 14.2, 21.4, 7.7, 10.1, 18.6 ms; from `main` 350.5, 219.7, 193.8, 181.1, 277.1 ms | Open. Before `main` is 8 to 21 ms on the CI machine for the same kind of build, 324 ms on the human's Mac: the gap is outside the app's code and specific to that machine. Whether it is the first launch check macOS runs on a newly built unsigned binary, or a check on every launch, is decided by the five launch test on that Mac. From `main` the app takes 133.6 ms on the human's Mac. The budget is not relaxed |
+| Idle CPU, 50 active listens, under 1 % | 21.36 % of one core over 10 s | 0.39 % (idle test), 0.30 % (budgets test) | Over on the human's Mac; within on the CI machine. Same cause as the next row |
+| Idle repaints, zero | 563 frames in 10 s | 0 frames in 10 s, twice | Over on the human's Mac, cause not identified: not reproduced on the macOS CI machine, nor in the Linux container with scale factors 1, 1.5 and 2, with or without the pointer over the window. Each frame now logs what asked for it, and the real binary test prints it |
+| Resident memory with 5000 nodes, under 150 MB | 111.4 MB | 110.6 MB | Within |
