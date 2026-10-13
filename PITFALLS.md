@@ -64,6 +64,12 @@ Case: "the about box is empty" on the human's Mac, 2026-10-13, while the box dra
 
 A test of a window opened by setting its state directly does not cover the way a user opens it. Open it as the user's entries do.
 
+In `Ui::horizontal_wrapped`, `available_width()` is the width of the whole line, not what is left of it after the cursor. Sizing a field from it sent the toolbar's fields to the next line on a window where they fitted. What is left is `max_rect().right() - cursor().min.x`.
+Case: the v0.2.1 toolbar, 2026-10-13.
+
+`Galley::text()` returns the text a label was given, whole, even when egui elides it on screen. A test comparing what the user sees must read the glyphs laid out (`galley.rows`, each glyph's `chr`).
+Case: a filter test that kept passing with labels cut to the same text on screen, 2026-10-13.
+
 ## Status display
 
 An error kept until another error replaces it outlives what it described. The status bar showed a failed connection under the tree the next connection had loaded. Clear an error when the operation it comes from succeeds, and drop the errors of an attempt that a newer one replaced.
