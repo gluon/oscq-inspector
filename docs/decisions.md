@@ -188,3 +188,17 @@ Real binary on the human's Mac, Max and OSCQuery Helper closed, the pointer outs
 | Slider to UDP packet leaving the socket, under 2 ms | p95 1.21 ms, median 0.39 ms, keyboard step to packet received on loopback | macOS CI | Met |
 | Resident memory with 5000 nodes connected, under 150 MB | 105.4 MB | human's Mac | Met |
 | Release binary size, macOS aarch64, under 25 MB | 23 630 368 bytes, 22.5 MB | macOS CI | Met |
+
+### M6, 2026-10-13, after the interface rework
+
+Measured in the container described above, release build, commit `5e00643`; the in process budgets alternated with `main` (`81c295d`) three times, in the same session, to set the rework against the noise of the machine. No budget relaxed.
+
+| Budget | M6 | `main`, same session | Verdict |
+| --- | --- | --- | --- |
+| Frame while scrolling 5050 rows, under 8 ms at p95 | p95 2.93, 3.26, 2.53 ms | p95 2.06, 1.50, 1.89 ms | Met, the three column rows cost about 1 ms more at p95 |
+| Slider to UDP packet, under 2 ms | p95 1.41, 1.00, 1.12 ms; median 0.91, 0.73, 0.74 ms | p95 1.25, 1.18, 1.00 ms; median 0.76, 0.69, 0.67 ms | Met; earlier runs of the same session, before the node count was cached and the preset grid made plain rows, reached p95 2.09 and 2.38 ms: the margin is thin on this machine, the macOS CI figure decides |
+| Idle CPU, 50 active listens, under 1 % | 0.00 % of one core over 10 s, real binary | | Met |
+| Idle repaints, zero | 0 frames and 0 events in 10 s, twice, real binary | | Met |
+| Cold start, under 300 ms | 152.8 to 191.2 ms over five launches, real binary | | Met |
+| Resident memory with 5000 nodes, under 150 MB | 168.5 MB with wgpu's default backends, 148.5 MB with `WGPU_BACKEND=vulkan` | 165.5 and 165.6 MB, default backends | Not proven here: software rendering, as before; the verdict is the human's Mac, 105.4 MB on `main` |
+| Release binary size, macOS aarch64, under 25 MB | | | Not proven here: macOS CI on the pushed commit |
