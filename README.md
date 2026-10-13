@@ -11,7 +11,7 @@ The product specification is [PRD.md](PRD.md).
 ## What it does
 
 - **Finds servers.** OSCQuery servers advertised on the network (Bonjour, `_oscjson._tcp`) appear on the left. Devices that only speak OSC, with no OSCQuery (`_osc._udp`), are listed greyed out, so you know they are there. A server that does not advertise, or sits behind a VPN or a router, is added by hand with `+ manual` and its `host:port`; the last ten are remembered, each removable. Discovered and manual servers are listed apart.
-- **Shows the address space.** A tree of every container and method, fast with thousands of nodes. A filter box finds paths by fuzzy matching, each hit named first, then its container; a prefix box roots the tree at any container.
+- **Shows the address space.** A tree of every container and method, fast with thousands of nodes. A filter box finds paths by fuzzy matching, each hit by its name, with its container when another hit has the same name elsewhere; a prefix box roots the tree at any container. **Writable only** leaves out what cannot be written, such as the metadata Max publishes for each parameter.
 - **Shows the values, and says where they come from.** Each method shows its value in its widget, as the server reported it. A value you sent but the server has not confirmed is marked "sent". The status bar says whether values are live, pushed by the server over its WebSocket, or on refresh only.
 - **Edits values with a widget that fits the type.** Sliders for numbers with a range, drag values without one, toggles, buttons for impulses, dropdowns for lists of values, text fields, colour pickers. The OSC goes to the address and port the server gives in its `HOST_INFO`, coerced to the types it declares. When the server does not give its OSC port, the app infers it from the HTTP port, as the protocol says; when that is wrong, as with Max 9, you set the right port for that server and it is kept.
 - **Keeps your controls at hand.** Pin nodes from the tree: they stay in the pinned panel whatever the tree shows, per server, across restarts.
@@ -62,8 +62,8 @@ If Windows Defender Firewall asks whether to allow Void OSCQ on networks, allow 
 The artifact holds `void-oscq-VERSION-linux-x86_64.tar.gz`. Unpack it and run the binary:
 
 ```
-tar -xzf void-oscq-0.2.1-linux-x86_64.tar.gz
-cd void-oscq-0.2.1-linux-x86_64
+tar -xzf void-oscq-0.2.2-linux-x86_64.tar.gz
+cd void-oscq-0.2.2-linux-x86_64
 ./void-oscq
 ```
 
@@ -81,7 +81,7 @@ What the system needs to run it: X11 or Wayland, `libxkbcommon-x11-0` on X11, an
 - The theme follows the system unless you force light or dark, at the bottom of the server pane; the choice is kept.
 - **Removing a manual entry.** Its **x** in the server list removes it, and forgets the OSC port set for it. A discovered server has no **x**: it would come back with the next announcement.
 - **Pinning.** Right click a row: **Pin** puts it in the pinned panel, where its widget works as in the tree; **Unpin** removes it, and so does the **×** at the end of its row in the panel. **Copy path** copies its full path. Pins are kept per server; a pinned path the server no longer has is shown as absent.
-- **Presets.** **Capture** on a slot stores the values of the writable nodes, the pinned ones only when nodes are pinned; **Recall** sends them back, all at once, logged as one block in the Traffic tab. Recalled on another server, only the nodes at the same path with the same type are sent; the status bar counts those not found. No confirmation either way: a capture replaces the slot.
+- **Presets.** **+ PRESETS** opens the section, folded until then. **Capture** on a slot stores the values of the writable nodes, the pinned ones only when nodes are pinned; **Recall** sends them back, all at once, logged as one block in the Traffic tab. Recalled on another server, only the nodes at the same path with the same type are sent; the status bar counts those not found. No confirmation either way: a capture replaces the slot.
 - **Setting the OSC port.** When the server does not advertise its OSC port, the server pane shows "port inferred from the HTTP port" under **OSC destination**, and an OSC port field. Type the port the server receives OSC on, then **Set OSC port** or Enter: the server pane says "port set by the user", sends go there, and the port is kept for that server in the config, used again at every connection and after a restart. **Infer OSC port** goes back to the HTTP port and forgets the setting. A port the server advertises is not editable and always wins, even over a port set earlier: the setting fills a silence of the server, it never contradicts what the server declares.
 - Settings are saved in your system's configuration folder, in `void-oscq/config.json`: window size and place, manual entries, the last selected server, the theme, pinned paths, the OSC ports you set, the preset slots. JSON and traffic exports go to `void-oscq/exports/` beside it.
 
@@ -167,11 +167,18 @@ cargo test --release -p void-oscq --test budgets_binary -- --ignored --nocapture
 The workflow `.github/workflows/release.yml` builds the three artifacts on a tag `v*`, and on any push that changes the packaging. The scripts are in `packaging/`. A tag must equal the workspace version:
 
 ```
-git tag v0.2.1
-git push origin v0.2.1
+git tag v0.2.2
+git push origin v0.2.2
 ```
 
 ## Version history
+
+### 0.2.2
+
+- **Filter**: a hit's container path shown only when another hit carries the same name in another container; otherwise the name alone.
+- **Writable only**, a check box in the toolbar: the tree and the filter leave out the nodes that cannot be written, and the containers left with none; the status bar counts them; the setting is kept.
+- **Presets** folded until opened, the pinned panel taking the room; kept open or folded.
+- **Light theme** toned: buttons and fields white and edged, rails a firm grey, text darker; controls stand out from the panel at least as much as in the dark theme.
 
 ### 0.2.1
 
@@ -219,7 +226,8 @@ git push origin v0.2.1
 - M6, interface rework, server list, pinned nodes, presets, traffic filter: done, merged. Checked by the human on the Mac: the three real binary tests pass, cold start 91.5 to 105.7 ms, memory 97.8 MB, no repaint at rest. Headless tests lock the removal of a manual entry with its OSC port, the pinned panel across tabs and per server, a capture and recall on the same server and on another, and the traffic direction filter. The look waits on the human, docs/acceptance.md section 5. After the human's review: the toolbar, Refresh included, on screen at any window width; the pane handles stop dead at their limits; the narrow tree keeps the widget and gives up the name, then the metadata; the discovery line says since when it searches; the about box names the author, Structure Void, the license and the repository. License GPL-3.0-or-later, with an additional permission for the bundled fonts, after the dependency audit recorded in docs/decisions.md; every release artifact carries the license texts.
 - About fix: done, merged. On macOS the application menu's About item opened the system's panel, empty outside a bundle; it now opens the application's own about box, whose six pieces of information a test checks one by one on screen. Checked by the human on the Mac: the six shown by both paths, the menu and the button.
 - v0.2.0: done, merged, tagged and released; the three artifacts complete with their license texts, installed on the human's Mac.
-- v0.2.1: on branch `void/v0-2-1`. Filter hits named first, the toolbar on one line on a wide window, unpinning from the pinned panel, preset slots that name their actions and show what they hold. The three crates at 0.2.1. The tag is the human's.
+- v0.2.1: done, merged, tagged. Checked by the human on the Mac: the toolbar on one line, the unpin button, Recall and Capture apart, a held slot seen.
+- v0.2.2: on branch `void/v0-2-2`. The filter path only on ambiguity, Writable only with its count, the folding preset section, the toned light theme. The three crates at 0.2.2. The tag is the human's.
 
 Backlog:
 

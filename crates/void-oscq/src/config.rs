@@ -1,6 +1,6 @@
 //! The single config file (PRD 9.7): window geometry, manual entries, last selected server,
-//! theme preference, pinned paths, the OSC ports the user set, and the preset slots. Nothing
-//! else.
+//! theme preference, pinned paths, the OSC ports the user set, the preset slots, whether the tree
+//! shows writable nodes only, and whether the preset section is open. Nothing else.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -40,6 +40,10 @@ pub struct Config {
     pub osc_ports: BTreeMap<String, u16>,
     /// Preset slots 1 to 16 that hold something (PRD 9.9).
     pub presets: BTreeMap<usize, crate::presets::Preset>,
+    /// The tree hides the nodes that cannot be written, and the containers left with none.
+    pub hide_read_only: bool,
+    /// The preset section is open; it is folded until the user opens it.
+    pub presets_open: bool,
 }
 
 impl Config {

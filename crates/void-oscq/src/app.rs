@@ -2,6 +2,7 @@
 //! `Command`s, results come back as `Event`s drained at the top of every frame; file writes are
 //! handed to the runtime.
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -96,14 +97,23 @@ enum Action {
 
 #[derive(Default)]
 struct RowsCache {
-    key: Option<(ServerId, u64, u64, String)>,
+    key: Option<(ServerId, u64, u64, String, bool)>,
     rows: Vec<Row>,
 }
 
 #[derive(Default)]
 struct FilterCache {
-    key: Option<(ServerId, u64, String)>,
+    key: Option<(ServerId, u64, String, bool)>,
     hits: Vec<Hit>,
+    /// Names that two hits or more carry in different containers: only those show their path.
+    ambiguous: HashSet<String>,
+}
+
+/// The paths the tree hides with writable nodes only, for one tree.
+#[derive(Default)]
+struct HiddenCache {
+    key: Option<(ServerId, u64, bool)>,
+    paths: HashSet<String>,
 }
 
 #[derive(Default)]
@@ -126,6 +136,7 @@ struct View {
     expanded_gen: u64,
     rows: RowsCache,
     hits: FilterCache,
+    hidden: HiddenCache,
     json: JsonCache,
     text_buffers: std::collections::HashMap<String, String>,
     /// Paths with a drag send not yet followed by its final send.
@@ -918,7 +929,13 @@ impl VoidApp {
                 ui.weak("Right click a node in the tree to pin it here.");
             }
             Some(e) => {
-                let height = (ui.available_height() - 64.0 * GRID).max(4.0 * ROW_H);
+                // What the preset section takes below, open or folded to its header.
+                let presets = if self.config.presets_open {
+                    64.0 * GRID
+                } else {
+                    8.0 * GRID
+                };
+                let height = (ui.available_height() - presets).max(4.0 * ROW_H);
                 egui::ScrollArea::vertical()
                     .id_salt("pinned")
                     .max_height(height)
@@ -931,7 +948,30 @@ impl VoidApp {
             }
         }
         ui.add_space(GROUP_GAP);
-        style::section(ui, "Presets");
+        // Folded until opened: open, the sixteen slots take a third of the pane.
+        let open = self.config.presets_open;
+        if ui
+            .add(
+                egui::Button::new(
+                    RichText::new(if open { "- PRESETS" } else { "+ PRESETS" })
+                        .small()
+                        .weak(),
+                )
+                .frame(false),
+            )
+            .on_hover_text(if open {
+                "Fold the preset slots"
+            } else {
+                "Show the sixteen preset slots"
+            })
+            .clicked()
+        {
+            self.config.presets_open = !open;
+            self.save_config(ui.ctx());
+        }
+        if !open {
+            return;
+        }
         let scope = if pins.is_empty() {
             "every writable node"
         } else {
@@ -1164,7 +1204,12 @@ impl VoidApp {
             let gaps = 4.0 * GROUP_GAP;
             let message_floor = if message.is_some() { 32.0 * GRID } else { 0.0 };
             let scale =
-                ((ui.available_width() - gaps - message_floor) / (156.0 * GRID)).clamp(0.0, 1.0);
+                ((ui.available_width() - gaps - message_floor) / (168.0 * GRID)).clamp(0.0, 1.0);
+            let hidden = if self.config.hide_read_only {
+                Some(hidden_paths(&mut self.view.hidden, e).len())
+            } else {
+                None
+            };
             zone(ui, 36.0 * GRID * scale, &mut |ui| {
                 ui.spacing_mut().item_spacing.x = GRID;
                 status_dot(ui, dot_colour(e));
@@ -1211,13 +1256,24 @@ impl VoidApp {
                         None => {}
                     });
             });
-            zone(ui, 28.0 * GRID * scale, &mut |ui| {
+            zone(ui, 40.0 * GRID * scale, &mut |ui| {
                 if let Some(t) = &e.tree {
                     let mut text = format!("{} nodes", t.nodes.saturating_sub(1));
+                    if let Some(n) = hidden {
+                        text.push_str(&format!(", {n} hidden"));
+                    }
                     if !t.diagnostics.is_empty() {
                         text.push_str(&format!(", {} warnings", t.diagnostics.len()));
                     }
-                    ui.add(egui::Label::new(text).truncate());
+                    let label = ui.add(egui::Label::new(text).truncate());
+                    if let Some(n) = hidden {
+                        label.on_hover_ui(|ui| {
+                            ui.label(format!(
+                                "{n} nodes hidden: read only, or containers holding only read \
+                                 only nodes. Writable only, in the toolbar, shows them again."
+                            ));
+                        });
+                    }
                 }
             });
             if let Some((text, colour)) = message {
@@ -1254,6 +1310,18 @@ impl VoidApp {
                 .clicked()
             {
                 actions.push(self.refresh_action());
+            }
+            ui.add_space(GROUP_GAP - gap);
+            let mut hide = self.config.hide_read_only;
+            if ui
+                .checkbox(&mut hide, "Writable only")
+                .on_hover_text(
+                    "Hide the nodes that cannot be written, and the containers left with none",
+                )
+                .changed()
+            {
+                self.config.hide_read_only = hide;
+                self.save_config(ui.ctx());
             }
             ui.add_space(GROUP_GAP - gap);
             let (filter_min, root_min) = (22.0 * GRID, 18.0 * GRID);
@@ -1310,7 +1378,14 @@ impl VoidApp {
                     .get(&entry.key())
                     .map(Vec::as_slice)
                     .unwrap_or_default();
-                tree_tab(ui, entry, pins, &mut self.view, actions)
+                tree_tab(
+                    ui,
+                    entry,
+                    pins,
+                    self.config.hide_read_only,
+                    &mut self.view,
+                    actions,
+                )
             }
             Tab::Json => json_tab(ui, entry, &mut self.view, actions),
             Tab::Traffic => {
@@ -1669,10 +1744,74 @@ fn server_tooltip(e: &ServerEntry) -> String {
 
 // -------------------------------------------------------------------- tree tab
 
+/// Full paths the tree hides when it shows writable nodes only: the methods that cannot be
+/// written, and the containers whose children are all hidden. A container with no child known,
+/// not loaded yet, stays: what it holds is not known to be read only.
+fn read_only_paths(root: &oscq_core::model::Node, value_supported: bool) -> HashSet<String> {
+    let mut hidden = HashSet::new();
+    // Children before their parent, without recursion: the depth of a tree costs no stack.
+    let mut stack = vec![(root, false)];
+    while let Some((node, children_done)) = stack.pop() {
+        if !children_done {
+            stack.push((node, true));
+            stack.extend(node.children().map(|c| (c, false)));
+            continue;
+        }
+        let writable = node.is_method() && node.effective_access(value_supported).writable();
+        let mut children = node.children().peekable();
+        let hide = if children.peek().is_some() {
+            !writable && children.all(|c| hidden.contains(&c.full_path))
+        } else {
+            node.is_method() && !writable
+        };
+        if hide && node.full_path != "/" {
+            hidden.insert(node.full_path.clone());
+        }
+    }
+    hidden
+}
+
+/// The names that hits carry in two containers or more: the hits that need their container shown
+/// to be told apart. Hits of names found once, or in one container, show their name alone.
+fn ambiguous_names(root: &oscq_core::model::Node, hits: &[Hit]) -> HashSet<String> {
+    let mut parents: HashMap<&str, HashSet<&str>> = HashMap::new();
+    for h in hits {
+        if let Some(n) = tree::node_at(root, &h.index) {
+            let (parent, name) = n.full_path.rsplit_once('/').unwrap_or(("", &n.full_path));
+            parents.entry(name).or_default().insert(parent);
+        }
+    }
+    parents
+        .into_iter()
+        .filter(|(_, p)| p.len() > 1)
+        .map(|(name, _)| name.to_owned())
+        .collect()
+}
+
+/// The paths hidden in the tree of `entry`, computed once per tree.
+fn hidden_paths<'a>(cache: &'a mut HiddenCache, entry: &ServerEntry) -> &'a HashSet<String> {
+    let value_supported = entry.value_supported();
+    match entry.tree.as_ref() {
+        Some(t) => {
+            let key = (entry.server.id, t.version, value_supported);
+            if cache.key != Some(key) {
+                cache.paths = read_only_paths(&t.root, value_supported);
+                cache.key = Some(key);
+            }
+        }
+        None => {
+            cache.paths.clear();
+            cache.key = None;
+        }
+    }
+    &cache.paths
+}
+
 fn tree_tab(
     ui: &mut egui::Ui,
     entry: &ServerEntry,
     pinned: &[String],
+    hide_read_only: bool,
     view: &mut View,
     actions: &mut Vec<Action>,
 ) {
@@ -1681,11 +1820,23 @@ fn tree_tab(
     };
     let id = entry.server.id;
     let filtering = !view.filter.trim().is_empty();
+    let empty = HashSet::new();
+    let hidden = if hide_read_only {
+        hidden_paths(&mut view.hidden, entry)
+    } else {
+        &empty
+    };
+    let shown = |index: &tree::NodeIndex| {
+        tree::node_at(&t.root, index).is_some_and(|n| !hidden.contains(&n.full_path))
+    };
 
     let rows: Vec<Row> = if filtering {
-        let key = (id, t.version, view.filter.clone());
+        let key = (id, t.version, view.filter.clone(), hide_read_only);
         if view.hits.key.as_ref() != Some(&key) {
-            view.hits.hits = tree::fuzzy(&t.root, &view.filter);
+            let mut hits = tree::fuzzy(&t.root, &view.filter);
+            hits.retain(|h| shown(&h.index));
+            view.hits.ambiguous = ambiguous_names(&t.root, &hits);
+            view.hits.hits = hits;
             view.hits.key = Some(key);
         }
         view.hits
@@ -1698,7 +1849,13 @@ fn tree_tab(
             .collect()
     } else {
         let prefix = view.prefix.trim().to_owned();
-        let key = (id, t.version, view.expanded_gen, prefix.clone());
+        let key = (
+            id,
+            t.version,
+            view.expanded_gen,
+            prefix.clone(),
+            hide_read_only,
+        );
         if view.rows.key.as_ref() != Some(&key) {
             let base = if prefix.is_empty() {
                 Vec::new()
@@ -1707,7 +1864,9 @@ fn tree_tab(
                     .filter(|i| tree::node_at(&t.root, i).is_some_and(|n| n.is_container()))
                     .unwrap_or_default()
             };
-            view.rows.rows = tree::visible_rows(&t.root, &base, &t.expanded);
+            let mut rows = tree::visible_rows(&t.root, &base, &t.expanded);
+            rows.retain(|r| shown(&r.index));
+            view.rows.rows = rows;
             view.rows.key = Some(key);
         }
         if !prefix.is_empty()
@@ -1768,6 +1927,9 @@ fn tree_tab(
                     &node.full_path,
                     &h.positions,
                     cols.name - style::INDENT - 2.0 * ui.spacing().button_padding.x,
+                    view.hits
+                        .ambiguous
+                        .contains(node.full_path.rsplit('/').next().unwrap_or_default()),
                 )
                 .into(),
                 None => style::data(leaf_name(node)).into(),
@@ -2191,11 +2353,18 @@ fn signature_of(node: &oscq_core::Node) -> Option<TypeSignature> {
     }
 }
 
-/// A filter hit as its row shows it: its name first, then the path of its container, cut from
-/// the left when the column is short, so that the nearest containers, which tell apart hits of the
-/// same name, stay in sight ("normalized  .../param/fader"). The matched characters are marked
-/// wherever they show; the full path is on hover.
-fn hit_label(ui: &egui::Ui, full_path: &str, positions: &[u32], width: f32) -> LayoutJob {
+/// A filter hit as its row shows it: its name, and when another hit carries the same name in
+/// another container, the path of its own container after it, cut from the left when the column
+/// is short, so that the nearest containers, which tell those hits apart, stay in sight
+/// ("normalized  .../param/fader"). The matched characters are marked wherever they show; the
+/// full path is on hover.
+fn hit_label(
+    ui: &egui::Ui,
+    full_path: &str,
+    positions: &[u32],
+    width: f32,
+    with_container: bool,
+) -> LayoutJob {
     let font = egui::FontId::new(style::DATA, egui::FontFamily::Monospace);
     // Monospace: every character, the ellipsis included, is as wide as the others.
     let char_w = ui.fonts_mut(|f| f.glyph_width(&font, 'm')).max(1.0);
@@ -2239,7 +2408,7 @@ fn hit_label(ui: &egui::Ui, full_path: &str, positions: &[u32], width: f32) -> L
     for (i, c) in chars.iter().enumerate().skip(cut + 1) {
         job.append(&c.to_string(), 0.0, format(color, marked(i)));
     }
-    if parent.is_empty() || (cut_head && from >= cut) {
+    if !with_container || parent.is_empty() || (cut_head && from >= cut) {
         return job;
     }
     job.append(gap, 0.0, format(weak, false));
@@ -4028,21 +4197,22 @@ mod tests {
         found[0].1
     }
 
-    /// On a wide window the side panes keep their width, the centre takes the rest, and the
-    /// toolbar holds on one line: the three tabs, Refresh, the filter and the root fields side by
-    /// side, frame after frame.
+    /// On a wide window, 1100 points or more, the default width, the side panes keep their width,
+    /// the centre takes the rest, and the toolbar holds on one line: the three tabs, Refresh,
+    /// Writable only, the filter and the root fields side by side, frame after frame.
     #[test]
     fn the_toolbar_holds_one_line_on_a_wide_window() {
-        const CONTROLS: [&str; 6] = [
+        const CONTROLS: [&str; 7] = [
             "Tree",
             "JSON",
             "Traffic",
             "Refresh",
+            "Writable only",
             "filter  /",
             "root at path",
         ];
         let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
-        for width in [1000.0, 1100.0, 1440.0, 1800.0, 2560.0, 3840.0] {
+        for width in [1100.0, 1440.0, 1800.0, 2560.0, 3840.0] {
             let mut h = harness();
             controllable(&mut h, "127.0.0.1", 2345, "S", doc);
             h.app
@@ -4141,6 +4311,215 @@ mod tests {
         }
     }
 
+    /// When every hit carries its own name, as hits in one container do, no container path is
+    /// shown: the name takes the whole column. The case of Max, where the hits of a parameter
+    /// showed three different cuts of the same path.
+    #[test]
+    fn filter_hits_of_distinct_names_show_no_path() {
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{"test":{"FULL_PATH":"/test","CONTENTS":{
+            "param":{"FULL_PATH":"/test/param","CONTENTS":{
+            "fader":{"FULL_PATH":"/test/param/fader","CONTENTS":{
+              "normalized":{"FULL_PATH":"/test/param/fader/normalized","TYPE":"f","ACCESS":3,"VALUE":[0.5]},
+              "raw":{"FULL_PATH":"/test/param/fader/raw","TYPE":"f","ACCESS":3,"VALUE":[64.0]}}},
+            "gain":{"FULL_PATH":"/test/param/gain","CONTENTS":{
+              "level":{"FULL_PATH":"/test/param/gain/level","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}
+            }}}}}}"#;
+        for (filter, names) in [
+            // Three hits, one container: name alone.
+            ("fader/", vec!["normalized", "raw"]),
+            // Two containers, names apart: name alone.
+            ("l", vec!["normalized", "level"]),
+        ] {
+            let mut h = harness();
+            controllable(&mut h, "127.0.0.1", 2345, "S", doc);
+            h.app.view.filter = filter.into();
+            h.frame(Vec::new());
+            let shown: Vec<String> = shown_texts(&h.frame(Vec::new()))
+                .into_iter()
+                .map(|(t, _, _)| t)
+                .collect();
+            // Each hit's label is its name and nothing after it.
+            for name in names {
+                let labels: Vec<_> = shown.iter().filter(|t| t.starts_with(name)).collect();
+                assert_eq!(
+                    labels,
+                    [name],
+                    "filter {filter:?}: {name:?} shown alone, no path after it"
+                );
+            }
+        }
+    }
+
+    /// Writable only: the tree hides the methods that cannot be written and the containers left
+    /// with none, keeps a container whose children are not known, hides read only hits of the
+    /// filter too, and the status bar counts what is hidden. The setting is kept in the config.
+    #[test]
+    fn writable_only_hides_read_only_nodes_and_says_how_many() {
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{
+            "normalized":{"FULL_PATH":"/normalized","TYPE":"f","ACCESS":3,"VALUE":[0.5]},
+            "longname":{"FULL_PATH":"/longname","TYPE":"s","ACCESS":1,"VALUE":["Fader"]},
+            "exponent":{"FULL_PATH":"/exponent","TYPE":"f","ACCESS":1,"VALUE":[1.0]},
+            "info":{"FULL_PATH":"/info","CONTENTS":{
+              "min":{"FULL_PATH":"/info/min","TYPE":"f","ACCESS":1,"VALUE":[0.0]},
+              "max":{"FULL_PATH":"/info/max","TYPE":"f","ACCESS":1,"VALUE":[1.0]}}},
+            "later":{"FULL_PATH":"/later","CONTENTS":{}},
+            "mixed":{"FULL_PATH":"/mixed","CONTENTS":{
+              "gain":{"FULL_PATH":"/mixed/gain","TYPE":"f","ACCESS":3,"VALUE":[0.5]},
+              "type":{"FULL_PATH":"/mixed/type","TYPE":"s","ACCESS":1,"VALUE":["float"]}}}}}"#;
+        let mut h = harness();
+        controllable(&mut h, "127.0.0.1", 2345, "S", doc);
+        let texts = drawn_texts(&h.frame(Vec::new()));
+        for name in [
+            "normalized",
+            "longname",
+            "exponent",
+            "info",
+            "later",
+            "mixed",
+        ] {
+            assert!(texts.iter().any(|t| t == name), "{name} shown before");
+        }
+        let out = h.frame(Vec::new());
+        click(
+            &mut h,
+            place(&out, "Writable only"),
+            egui::PointerButton::Primary,
+        );
+        assert!(h.app.config.hide_read_only, "the toggle set");
+        h.frame(Vec::new());
+        let texts = drawn_texts(&h.frame(Vec::new()));
+        for name in ["normalized", "later", "mixed"] {
+            assert!(
+                texts.iter().any(|t| t == name),
+                "{name} still shown: {texts:?}"
+            );
+        }
+        for name in ["longname", "exponent", "info"] {
+            assert!(!texts.iter().any(|t| t == name), "{name} hidden: {texts:?}");
+        }
+        // longname, exponent, info, min, max, type.
+        assert!(
+            texts.iter().any(|t| t.contains("nodes, 6 hidden")),
+            "the count in the status bar: {texts:?}"
+        );
+        // The filter hides them too.
+        // Not the start of a label itself: the field's text is not taken for a hit.
+        h.app.view.filter = "ongname".into();
+        h.frame(Vec::new());
+        let shown: Vec<String> = shown_texts(&h.frame(Vec::new()))
+            .into_iter()
+            .map(|(t, _, _)| t)
+            .collect();
+        assert!(
+            !shown.iter().any(|t| t.starts_with("longname")),
+            "no read only hit: {shown:?}"
+        );
+        // Kept in the config; an older config without the field reads as off.
+        let saved: Config = serde_json::from_slice(&h.app.config.to_bytes()).unwrap();
+        assert!(saved.hide_read_only);
+        let older: Config = serde_json::from_str(r#"{"manual_entries":[]}"#).unwrap();
+        assert!(!older.hide_read_only && !older.presets_open);
+    }
+
+    /// The preset section is folded until opened: its header only, no slot, and the pinned
+    /// panel takes the room. Opened by its header, it shows the sixteen slots, and stays open in
+    /// the config.
+    #[test]
+    fn the_preset_section_is_folded_until_opened() {
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
+        let mut h = harness();
+        controllable(&mut h, "127.0.0.1", 2345, "S", doc);
+        let out = h.frame(Vec::new());
+        let texts = drawn_texts(&out);
+        assert!(!h.app.config.presets_open, "folded by default");
+        assert!(
+            !texts.iter().any(|t| t == "Recall" || t == "Capture"),
+            "no slot while folded"
+        );
+        click(
+            &mut h,
+            place(&out, "+ PRESETS"),
+            egui::PointerButton::Primary,
+        );
+        assert!(h.app.config.presets_open, "opened by its header");
+        let out = h.frame(Vec::new());
+        let texts = drawn_texts(&out);
+        assert_eq!(
+            texts.iter().filter(|t| *t == "Recall").count(),
+            presets::SLOTS
+        );
+        assert!(texts.iter().any(|t| t == "- PRESETS"));
+        let saved: Config = serde_json::from_slice(&h.app.config.to_bytes()).unwrap();
+        assert!(saved.presets_open, "kept open in the config");
+    }
+
+    /// WCAG contrast of two colours, the first blended onto `ground` when translucent.
+    fn contrast(c: Color32, ground: Color32) -> f32 {
+        fn lum(c: Color32) -> f32 {
+            let f = |v: u8| {
+                let v = v as f32 / 255.0;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * f(c.r()) + 0.7152 * f(c.g()) + 0.0722 * f(c.b())
+        }
+        let [r, g, b, a] = c.to_srgba_unmultiplied();
+        let a = a as f32 / 255.0;
+        let mix = |x: u8, y: u8| (x as f32 * a + y as f32 * (1.0 - a)).round() as u8;
+        let c = Color32::from_rgb(mix(r, ground.r()), mix(g, ground.g()), mix(b, ground.b()));
+        let (l1, l2) = (lum(c), lum(ground));
+        (l1.max(l2) + 0.05) / (l1.min(l2) + 0.05)
+    }
+
+    /// The light theme reads as the dark one does: each control stands out from the panel at
+    /// least as much, text and weak text at least as much, a control's text on its own ground at
+    /// least as much. The dark theme is egui's, unchanged.
+    #[test]
+    fn the_light_theme_contrasts_as_the_dark_one_does() {
+        let h = harness();
+        let dark = h.ctx.style_of(egui::Theme::Dark).visuals.clone();
+        let light = h.ctx.style_of(egui::Theme::Light).visuals.clone();
+        assert_eq!(dark, egui::Visuals::dark(), "the dark theme unchanged");
+        // A button or field at rest: its ground, or its edge when it has one.
+        fn edge(v: &egui::Visuals) -> f32 {
+            let w = &v.widgets.inactive;
+            let ground = contrast(w.weak_bg_fill, v.panel_fill);
+            if w.bg_stroke.width > 0.0 {
+                ground.max(contrast(w.bg_stroke.color, v.panel_fill))
+            } else {
+                ground
+            }
+        }
+        type Measure = fn(&egui::Visuals) -> f32;
+        let measures: [(&str, Measure); 5] = [
+            ("a button or field against the panel", edge),
+            ("a slider rail against the panel", |v| {
+                contrast(v.widgets.inactive.bg_fill, v.panel_fill)
+            }),
+            ("text against the panel", |v| {
+                contrast(v.text_color(), v.panel_fill)
+            }),
+            ("weak text against the panel", |v| {
+                contrast(v.weak_text_color(), v.panel_fill)
+            }),
+            ("a control's text on its ground", |v| {
+                contrast(
+                    v.widgets.inactive.fg_stroke.color,
+                    v.widgets.inactive.weak_bg_fill,
+                )
+            }),
+        ];
+        for (what, measure) in measures {
+            let (d, l) = (measure(&dark), measure(&light));
+            println!("CONTRAST {what}: dark {d:.2}, light {l:.2}");
+            assert!(l >= d, "{what}: light {l:.2} below dark {d:.2}");
+        }
+        assert!(contrast(light.text_color(), light.panel_fill) >= 4.5);
+    }
+
     /// A pinned node is unpinned from the pinned panel by the button on its row, as from the
     /// tree by its menu; the context menu of the panel row unpins too.
     #[test]
@@ -4183,6 +4562,7 @@ mod tests {
         let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
         let mut h = harness();
         controllable(&mut h, "127.0.0.1", 2345, "S", doc);
+        h.app.config.presets_open = true;
         let out = h.frame(Vec::new());
         let texts = drawn_texts(&out);
         for action in ["Recall", "Capture"] {
@@ -4282,13 +4662,14 @@ mod tests {
     /// window: the theme and About under the server list, the status bar and its message.
     #[test]
     fn every_toolbar_control_stays_on_screen_whatever_the_width() {
-        const CONTROLS: [&str; 6] = [
+        const CONTROLS: [&str; 7] = [
             "filter  /",
             "root at path",
             "Tree",
             "JSON",
             "Traffic",
             "Refresh",
+            "Writable only",
         ];
         let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
         for width in [
@@ -4302,6 +4683,7 @@ mod tests {
                     .pinned_paths
                     .insert("127.0.0.1:2345".into(), vec!["/a".into()]);
                 h.app.view.note = Some("a note long enough to need the whole width ".repeat(4));
+                h.app.config.presets_open = true;
                 if dragged {
                     // Both side panes as a previous session left them, wider than any window.
                     for pane in ["servers", "work"] {

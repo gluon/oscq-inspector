@@ -1,7 +1,7 @@
 //! The visual system (PRD 9.1): a 4 px grid, one type scale, monospace for data and proportional
 //! for the interface around it, groups apart by space rather than by rules.
 
-use egui::{FontFamily, FontId, RichText, TextStyle};
+use egui::{Color32, FontFamily, FontId, RichText, Stroke, TextStyle};
 
 /// The base grid. Every size, margin and gap below is a multiple of it.
 pub const GRID: f32 = 4.0;
@@ -77,6 +77,39 @@ pub fn apply(ctx: &egui::Context) {
         s.animation_time = 0.0;
         s.interaction.show_tooltips_only_when_still = false;
     });
+    ctx.set_visuals_of(egui::Theme::Light, light_visuals());
+}
+
+/// The light theme, toned so that its hierarchy reads as the dark one's. egui's own light theme
+/// paints controls a shade off the panel, grey on grey: an editable value barely stands out from
+/// a read only one. Here buttons and fields are white with a border, rails and boxes a firmer
+/// grey, text darker, on a panel a little darker than white. The dark theme is egui's, unchanged.
+pub fn light_visuals() -> egui::Visuals {
+    let gray = Color32::from_gray;
+    let mut v = egui::Visuals::light();
+    v.panel_fill = gray(238);
+    v.window_fill = gray(238);
+    v.extreme_bg_color = gray(255);
+    let w = &mut v.widgets;
+    // Text, separators and guides.
+    w.noninteractive.bg_fill = gray(238);
+    w.noninteractive.weak_bg_fill = gray(238);
+    w.noninteractive.bg_stroke = Stroke::new(1.0, gray(190));
+    w.noninteractive.fg_stroke = Stroke::new(1.0, gray(40));
+    // Controls at rest: buttons and fields white, edged; rails and boxes a firm grey.
+    w.inactive.weak_bg_fill = gray(255);
+    w.inactive.bg_fill = gray(190);
+    w.inactive.bg_stroke = Stroke::new(1.0, gray(150));
+    w.inactive.fg_stroke = Stroke::new(1.0, gray(20));
+    w.hovered.weak_bg_fill = gray(246);
+    w.hovered.bg_fill = gray(175);
+    w.hovered.bg_stroke = Stroke::new(1.0, gray(90));
+    w.hovered.fg_stroke = Stroke::new(1.5, gray(0));
+    w.active.weak_bg_fill = gray(225);
+    w.active.bg_fill = gray(160);
+    w.active.bg_stroke = Stroke::new(1.0, gray(0));
+    w.active.fg_stroke = Stroke::new(2.0, gray(0));
+    v
 }
 
 /// Data: a path, a value, type tags, flags.
