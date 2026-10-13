@@ -129,3 +129,6 @@ jobs:
 
       - name: No conflict markers in tracked files
         run: ./ci/check-no-conflict-markers.sh
+
+      - name: The font license texts are those of the fonts in the binary
+        run: ./ci/check-licenses.sh

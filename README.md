@@ -4,6 +4,8 @@ Void OSCQ is a desktop application for macOS, Windows and Linux that connects to
 
 It is meant for people who build or debug OSC setups: checking what a server really publishes, driving it by hand, and watching the messages that go out and come back.
 
+Copyright (C) 2026 Julien Bayle, Structure Void. Void OSCQ is free software under the GNU General Public License, version 3 or any later version ([LICENSE](LICENSE)), with an additional permission for the fonts compiled into the application ([LICENSE-EXCEPTION](LICENSE-EXCEPTION)). The fonts keep their own licenses, in [licenses/fonts](licenses/fonts).
+
 The product specification is [PRD.md](PRD.md).
 
 ## What it does
@@ -28,6 +30,8 @@ The product specification is [PRD.md](PRD.md).
 
 Releases are built by GitHub Actions on each version tag, workflow **Release**. Open the run of the tag, scroll to **Artifacts**, and download the one for your system. GitHub hands every artifact as a zip: unzip it first.
 
+Every artifact carries the license texts: the GNU GPL, its additional permission and the licenses of the bundled fonts, in a `licenses` folder, inside `Void OSCQ.app/Contents/Resources` on macOS.
+
 ### macOS 12 or later, Apple Silicon or Intel
 
 The artifact holds `void-oscq-VERSION-macos-universal.zip`. Unzip it to get **Void OSCQ.app**, and move it to your Applications folder.
@@ -44,7 +48,7 @@ The first time the app looks for servers, macOS asks whether Void OSCQ may find 
 
 ### Windows 10 or later, 64 bit
 
-The artifact holds `void-oscq-VERSION-windows-x86_64.exe`. It is the whole application: no installer, put it where you like.
+The artifact holds `void-oscq-VERSION-windows-x86_64.exe` and a `licenses` folder. The `.exe` is the whole application: no installer, put it where you like.
 
 The program is not signed, so Windows SmartScreen stops it the first time:
 
@@ -196,7 +200,7 @@ git push origin v0.1.1
 - M5 polish: done, merged. The OSC port setting checked by the human on the Mac against Max 9: sends reach 30338 once set, kept across a restart. The loss and return of a server, the system's cause in the error and the declared access kept were checked there too.
 - v0.1.1: done, merged, tag `v0.1.1`. The tagged run 38269010531 built the three artifacts; on the human's Mac the app installed, showed its icon and 0.1.1 in the Finder, connected to Max 9 with the OSC port read from the config, and its sends moved the fader.
 - Cleanup: done, merged. A reload that leaves the rows on screen is locked to send no `LISTEN` or `IGNORE`; the PRD says the repository is public; docs/acceptance.md states the known limit of WebSocket interoperability.
-- M6, interface rework, server list, pinned nodes, presets, traffic filter: on branch `void/m6-ui`. Headless tests lock the removal of a manual entry with its OSC port, the pinned panel across tabs and per server, a capture and recall on the same server and on another, and the traffic direction filter. The look waits on the human, docs/acceptance.md section 5. After the human's review: the toolbar, Refresh included, on screen at any window width; the pane handles stop dead at their limits; the narrow tree keeps the widget and gives up the name, then the metadata; the discovery line says since when it searches; the about box names the author, Structure Void and the repository. The license is not applied yet: one point of the dependency audit, the bundled fonts, waits on the human.
+- M6, interface rework, server list, pinned nodes, presets, traffic filter: on branch `void/m6-ui`. Headless tests lock the removal of a manual entry with its OSC port, the pinned panel across tabs and per server, a capture and recall on the same server and on another, and the traffic direction filter. The look waits on the human, docs/acceptance.md section 5. After the human's review: the toolbar, Refresh included, on screen at any window width; the pane handles stop dead at their limits; the narrow tree keeps the widget and gives up the name, then the metadata; the discovery line says since when it searches; the about box names the author, Structure Void, the license and the repository. License GPL-3.0-or-later, with an additional permission for the bundled fonts, after the dependency audit recorded in docs/decisions.md; every release artifact carries the license texts.
 
 Backlog:
 
