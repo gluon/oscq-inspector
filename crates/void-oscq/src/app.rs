@@ -161,6 +161,8 @@ pub struct VoidApp {
     view: View,
     limiter: RateLimiter<SendReq>,
     started: Instant,
+    /// The wall clock time discovery began, as the server pane says it: "14:05".
+    searching_since: String,
     io_tx: flume::Sender<String>,
     io_rx: flume::Receiver<String>,
     owned: Option<Owned>,
@@ -241,6 +243,7 @@ impl VoidApp {
             view: View::default(),
             limiter: RateLimiter::new(INTERVAL),
             started: Instant::now(),
+            searching_since: clock_time(std::time::SystemTime::now()),
             io_tx,
             io_rx,
             owned: None,
@@ -294,9 +297,10 @@ impl VoidApp {
         self.view.visible_methods.clear();
         // The side panes take what the centre leaves, so the centre keeps CENTRE_MIN whatever
         // the window width and however the panes were dragged: the server pane first, leaving
-        // the work pane its least width, then the work pane, from what the server pane took.
+        // the work pane its default width, so that it is the one to narrow first; then the work
+        // pane, from what the server pane took.
         let width = ui.available_width();
-        let servers_max = (width - style::CENTRE_MIN - style::WORK_MIN).max(style::SERVERS_MIN);
+        let servers_max = (width - style::CENTRE_MIN - style::WORK_DEFAULT).max(style::SERVERS_MIN);
         let servers = egui::Panel::left("servers")
             .resizable(true)
             .default_size(56.0 * style::GRID)
@@ -311,7 +315,7 @@ impl VoidApp {
             .show(ui, |ui| self.status_bar(ui));
         egui::Panel::right("work")
             .resizable(true)
-            .default_size(style::WORK_MIN)
+            .default_size(style::WORK_DEFAULT)
             .size_range(style::WORK_MIN..=work_max)
             .show(ui, |ui| self.work_pane(ui, &mut actions));
         egui::CentralPanel::default().show(ui, |ui| self.main_pane(ui, &mut actions));
@@ -780,6 +784,8 @@ impl VoidApp {
     // ---------------------------------------------------------------- server pane
 
     fn server_pane(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        // As wide as the pane, whatever it holds: see `work_pane`.
+        ui.set_min_width(ui.available_width());
         // The footer first, so the list above takes what remains.
         egui::Panel::bottom("server_footer")
             .show_separator_line(false)
@@ -828,7 +834,13 @@ impl VoidApp {
                         ui.ctx()
                             .request_repaint_after(DISCOVERY_HINT_AFTER - elapsed);
                     } else {
-                        ui.weak("None found. Use + manual for a host the network does not show.");
+                        // A time, not a running count: a count would repaint the window every
+                        // second while it is at rest.
+                        ui.weak(format!(
+                            "Searching since {}, none found. Use + manual for a host the \
+                             network does not show.",
+                            self.searching_since
+                        ));
                     }
                 }
                 for e in discovered {
@@ -877,6 +889,10 @@ impl VoidApp {
 
     /// The working surface, whatever the tab: the pinned nodes, then the presets.
     fn work_pane(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        // A side pane is drawn as wide as its content: without this, a pane holding little
+        // would be painted narrower than it was dragged, the rest of the window left blank, then
+        // spring back on release.
+        ui.set_min_width(ui.available_width());
         ui.add_space(GRID);
         style::section(ui, "Pinned");
         let entry = self.state.selected_entry();
@@ -1027,9 +1043,20 @@ impl VoidApp {
             return;
         }
         let response = egui::Modal::new(egui::Id::new("about")).show(ctx, |ui| {
-            ui.heading("Void OSCQ");
-            ui.label(format!("version {}", env!("CARGO_PKG_VERSION")));
-            ui.label("OSCQuery client: browse an address space, edit values, send OSC.");
+            for line in about_lines() {
+                match line {
+                    AboutLine::Title(t) => {
+                        ui.heading(t);
+                    }
+                    AboutLine::Text(t) => {
+                        ui.label(t);
+                    }
+                    AboutLine::Link(text, url) => {
+                        ui.hyperlink_to(style::data(text), url);
+                    }
+                }
+            }
+            ui.add_space(style::ITEM_GAP);
             if ui.button("Close").clicked() {
                 self.view.about_open = false;
             }
@@ -1372,6 +1399,55 @@ fn error_text(e: &ServerEntry) -> Option<String> {
     })
 }
 
+/// What the about box says, from the manifest so it cannot drift from the release: the name, the
+/// version, the author and his studio, the license when one is declared, the repository.
+enum AboutLine {
+    Title(&'static str),
+    Text(String),
+    Link(String, &'static str),
+}
+
+fn about_lines() -> Vec<AboutLine> {
+    let mut lines = vec![
+        AboutLine::Title("Void OSCQ"),
+        AboutLine::Text(format!("version {}", env!("CARGO_PKG_VERSION"))),
+        AboutLine::Text(format!("{}, Structure Void", env!("CARGO_PKG_AUTHORS"))),
+    ];
+    let license = env!("CARGO_PKG_LICENSE");
+    if !license.is_empty() {
+        lines.push(AboutLine::Text(format!("License {license}")));
+    }
+    let repository = env!("CARGO_PKG_REPOSITORY");
+    lines.push(AboutLine::Link(
+        repository.trim_start_matches("https://").to_owned(),
+        repository,
+    ));
+    lines
+}
+
+/// The offset of local time from UTC, read once by `capture_local_offset`.
+static LOCAL_OFFSET: std::sync::OnceLock<time::UtcOffset> = std::sync::OnceLock::new();
+
+/// Reads the local time offset. On Linux and macOS the system gives it only to a process with a
+/// single thread: call this first thing in `main`, before any thread starts.
+pub fn capture_local_offset() {
+    if let Ok(offset) = time::UtcOffset::current_local_offset() {
+        let _ = LOCAL_OFFSET.set(offset);
+    }
+}
+
+/// Hours and minutes of `at`, in local time, or in UTC, said so, when the local offset is unknown.
+fn clock_time(at: std::time::SystemTime) -> String {
+    let utc = time::OffsetDateTime::from(at);
+    match LOCAL_OFFSET.get() {
+        Some(offset) => {
+            let t = utc.to_offset(*offset);
+            format!("{:02}:{:02}", t.hour(), t.minute())
+        }
+        None => format!("{:02}:{:02} UTC", utc.hour(), utc.minute()),
+    }
+}
+
 fn apply_theme(ctx: &egui::Context, theme: Theme) {
     ctx.set_theme(match theme {
         Theme::System => egui::ThemePreference::System,
@@ -1668,13 +1744,29 @@ impl Columns {
         (x / GRID).floor() * GRID
     }
 
-    /// The tree: the name close to its control, the metadata at the right edge.
+    /// The tree: the name close to its control, the metadata at the right edge. On a narrow
+    /// pane the name gives way first, down to NAME_FLOOR, then the metadata, down to the access
+    /// flags alone, then the name again: the widget is the tool and keeps its width, the name
+    /// gives its full path on hover.
     fn tree(width: f32) -> Self {
-        let name = Self::snap((width * 0.3).clamp(40.0 * GRID, 72.0 * GRID));
-        let meta = style::META_W;
-        let control = Self::snap((width - name - meta).max(style::CONTROL_W));
+        let full_name = 40.0 * GRID;
+        let control = style::CONTROL_W;
+        if width >= full_name + control + style::META_W {
+            let name = Self::snap((width * 0.3).clamp(full_name, 72.0 * GRID));
+            let meta = style::META_W;
+            return Columns {
+                name,
+                control: Self::snap(width - name - meta),
+                meta,
+            };
+        }
+        let meta = if width >= style::NAME_FLOOR + control + style::META_W {
+            style::META_W
+        } else {
+            style::FLAGS_W
+        };
         Columns {
-            name,
+            name: Self::snap((width - control - meta).max(0.0)),
             control,
             meta,
         }
@@ -1876,12 +1968,13 @@ fn node_row(
                     if access.writable() { "w" } else { "" }
                 );
                 ui.label(style::data(flags).weak());
+                // Narrowed to the flags alone, the column holds nothing else.
                 if cols.meta >= style::META_W
                     && let Some(tags) = &node.type_raw
                 {
                     ui.add(egui::Label::new(style::data(tags).weak()).truncate());
                 }
-                if matches!(shown, Shown::Sent(_)) {
+                if cols.meta >= style::META_W && matches!(shown, Shown::Sent(_)) {
                     ui.label(style::data("sent").italics().weak())
                         .on_hover_text(if p.value {
                             "Sent, not yet confirmed by the server"
@@ -3800,7 +3893,8 @@ mod tests {
                 let drawn = drawn_text_rects(&out);
                 let whole = |text: &str, rect: &egui::Rect, clip: &egui::Rect| {
                     assert!(
-                        clip.intersect(screen).contains_rect(*rect),
+                        // Half a pixel of slack: clip rectangles are rounded to the pixel.
+                        clip.intersect(screen).expand(0.5).contains_rect(*rect),
                         "{text:?} at {rect:?} cut by {clip:?} at width {width}, panes dragged {dragged}"
                     );
                 };
@@ -3825,6 +3919,15 @@ mod tests {
                     "every slot at width {width}"
                 );
                 slots.iter().for_each(|(t, r, c)| whole(t, r, c));
+                // The access flags close each row on the right, of the tree and of the pinned
+                // panel: seen whole, the widget before them is on screen too.
+                let flags: Vec<_> = drawn.iter().filter(|(t, _, _)| t == "rw").collect();
+                assert_eq!(
+                    flags.len(),
+                    2,
+                    "the tree row and the pinned row at width {width}"
+                );
+                flags.iter().for_each(|(t, r, c)| whole(t, r, c));
                 let pinned: Vec<_> = drawn.iter().filter(|(t, _, _)| t == "/a").collect();
                 assert_eq!(pinned.len(), 1, "the pinned row at width {width}");
                 whole("/a", &pinned[0].1, &pinned[0].2);
@@ -3835,6 +3938,236 @@ mod tests {
                     "the status bar drawn at width {width}: {status:?}"
                 );
                 status.iter().for_each(|(t, r, c)| whole(t, r, c));
+            }
+        }
+    }
+
+    /// The about box says the name, the version, the author and Structure Void, the license once
+    /// the manifest declares one, and links the repository, all read from the manifest.
+    #[test]
+    fn the_about_box_names_the_app_its_author_its_license_and_its_repository() {
+        let mut h = harness();
+        h.app.view.about_open = true;
+        // A modal is sized on its first frame and drawn on the next.
+        h.frame(Vec::new());
+        let texts = drawn_texts(&h.frame(Vec::new()));
+        let mut expected = vec![
+            "Void OSCQ".to_owned(),
+            format!("version {}", env!("CARGO_PKG_VERSION")),
+            "Julien Bayle, Structure Void".to_owned(),
+            "github.com/gluon/void-oscq".to_owned(),
+        ];
+        let license = env!("CARGO_PKG_LICENSE");
+        if !license.is_empty() {
+            expected.push(format!("License {license}"));
+        }
+        for e in &expected {
+            assert!(texts.contains(e), "{e:?} not in the about box: {texts:?}");
+        }
+        assert_eq!(
+            texts.iter().any(|t| t.starts_with("License ")),
+            !license.is_empty(),
+            "a license line exactly when the manifest declares one"
+        );
+    }
+
+    /// With no server found, the server pane says since when it has been searching, as a time
+    /// of day, so the text holds still: a running count would repaint the window at rest.
+    #[test]
+    fn with_no_server_found_the_pane_says_since_when_it_searches() {
+        let mut h = harness();
+        let texts = drawn_texts(&h.frame(Vec::new()));
+        let line = texts
+            .iter()
+            .find(|t| t.starts_with("Searching since "))
+            .unwrap_or_else(|| panic!("no search line: {texts:?}"));
+        assert!(line.contains("none found"), "{line}");
+        let time = line["Searching since ".len()..].split(',').next().unwrap();
+        let hm = time.trim_end_matches(" UTC");
+        assert!(
+            hm.len() == 5 && hm.as_bytes()[2] == b':' && hm.replace(':', "").parse::<u32>().is_ok(),
+            "a time of day, {time:?}"
+        );
+        // Start up, then rest: from then on, one frame and nothing asked for.
+        let (_, t, _) = h.frames_until_idle(20.0, &[]);
+        let (frames, _, causes) = h.frames_until_idle(t + 60.0, &[]);
+        assert_eq!(
+            (frames, causes.len()),
+            (1, 0),
+            "the line asks for no repaint: {causes:?}"
+        );
+        assert!(
+            causes.is_empty(),
+            "the line asks for no repaint: {causes:?}"
+        );
+    }
+
+    /// On a narrow tree the name gives way first, then the metadata down to the flags, then the
+    /// name again; the widget keeps its width throughout, and the columns never take more than
+    /// the width given while there is room for the widget and the flags.
+    #[test]
+    fn narrow_tree_columns_give_up_the_name_then_the_metadata_never_the_widget() {
+        let mut previous: Option<Columns> = None;
+        for w in (184..=700).rev().step_by(4).map(|w| w as f32) {
+            let c = Columns::tree(w);
+            assert!(
+                c.name + c.control + c.meta <= w + 0.5,
+                "{w}: columns wider than the pane"
+            );
+            assert!(c.control >= style::CONTROL_W, "{w}: the widget narrowed");
+            if c.meta < style::META_W {
+                assert_eq!(c.meta, style::FLAGS_W, "{w}");
+                assert!(
+                    w < style::NAME_FLOOR + style::CONTROL_W + style::META_W,
+                    "{w}: the metadata gave way while the name could"
+                );
+            }
+            if let Some(p) = previous
+                && p.meta == c.meta
+            {
+                assert!(
+                    c.name <= p.name && c.control <= p.control,
+                    "{w}: grew while narrowing"
+                );
+            }
+            previous = Some(c);
+        }
+        assert_eq!(Columns::tree(200.0).meta, style::FLAGS_W);
+        assert_eq!(Columns::tree(440.0).meta, style::META_W);
+    }
+
+    /// Where the panes' backgrounds were painted, left to right, along the line at `y`: the
+    /// spans of every rectangle filled with the panel colour that crosses it, merged.
+    fn painted_spans(out: &egui::FullOutput, fill: Color32, y: f32) -> Vec<(f32, f32)> {
+        fn walk(shape: &egui::Shape, fill: Color32, y: f32, spans: &mut Vec<(f32, f32)>) {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, fill, y, spans)),
+                egui::Shape::Rect(r) if r.fill == fill && r.rect.y_range().contains(y) => {
+                    spans.push((r.rect.min.x, r.rect.max.x))
+                }
+                _ => {}
+            }
+        }
+        let mut spans = Vec::new();
+        for clipped in &out.shapes {
+            walk(&clipped.shape, fill, y, &mut spans);
+        }
+        spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut merged: Vec<(f32, f32)> = Vec::new();
+        for (lo, hi) in spans {
+            match merged.last_mut() {
+                // A separator line, one pixel wide, is drawn between two panes, not filled.
+                Some(last) if lo <= last.1 + 1.5 => last.1 = last.1.max(hi),
+                _ => merged.push((lo, hi)),
+            }
+        }
+        merged
+    }
+
+    /// The handles of the side panes stop dead at their limits, and each pane follows its handle
+    /// whole: dragged past what the centre can give, past the pane's least width, and out of the
+    /// window on either side, with nothing pinned to fill the right pane. On every frame of the
+    /// drag the window is painted from edge to edge, the handle never passes its limit, and on
+    /// release the pane keeps the width it was dragged to.
+    #[test]
+    fn the_pane_handles_stop_dead_at_their_limits() {
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
+        for width in [640.0, 900.0, 1100.0, 1600.0] {
+            let mut h = harness();
+            controllable(&mut h, "127.0.0.1", 2345, "S", doc);
+            let size = egui::vec2(width, 600.0);
+            h.frame_sized(size, Vec::new());
+            h.frame_sized(size, Vec::new());
+            let ctx = h.ctx.clone();
+            let fill = ctx.global_style().visuals.panel_fill;
+            let y = 300.0;
+            let pointer = |x: f32| egui::pos2(x, y);
+            for pane in ["work", "servers"] {
+                // The handle's place, after checking the window is painted whole.
+                let edge = |out: &egui::FullOutput, when: &str| {
+                    let spans = painted_spans(out, fill, y);
+                    assert!(
+                        spans.len() == 1 && spans[0].0 <= 0.5 && spans[0].1 >= width - 0.5,
+                        "unpainted gaps {when}, {pane} handle, window {width}: painted {spans:?}"
+                    );
+                    ctx.read_response(egui::Id::new(pane).with("__resize"))
+                        .unwrap()
+                        .rect
+                        .center()
+                        .x
+                };
+                for targets in [
+                    vec![300.0, 100.0, 0.0, -200.0],
+                    vec![width - 100.0, width - 20.0, width + 200.0],
+                ] {
+                    let out = h.frame_sized(size, Vec::new());
+                    let start = edge(&out, "before the drag");
+                    h.frame_sized(size, vec![egui::Event::PointerMoved(pointer(start))]);
+                    h.frame_sized(
+                        size,
+                        vec![egui::Event::PointerButton {
+                            pos: pointer(start),
+                            button: egui::PointerButton::Primary,
+                            pressed: true,
+                            modifiers: Modifiers::NONE,
+                        }],
+                    );
+                    let servers = egui::PanelState::load(&h.ctx, egui::Id::new("servers"))
+                        .unwrap()
+                        .outer_rect
+                        .max
+                        .x;
+                    // The leftmost the handle may go, and the rightmost.
+                    let (lo, hi) = if pane == "work" {
+                        (
+                            (servers + style::CENTRE_MIN).min(width - style::WORK_MIN),
+                            width - style::WORK_MIN,
+                        )
+                    } else {
+                        (
+                            style::SERVERS_MIN,
+                            (width - style::CENTRE_MIN - style::WORK_DEFAULT)
+                                .max(style::SERVERS_MIN),
+                        )
+                    };
+                    let mut last = start;
+                    for x in &targets {
+                        let out = h.frame_sized(size, vec![egui::Event::PointerMoved(pointer(*x))]);
+                        last = edge(&out, &format!("dragging to {x}"));
+                        assert!(
+                            (lo - 0.5..=hi + 0.5).contains(&last),
+                            "{pane} handle at {last}, dragging to {x}, its range {lo}..{hi}, window {width}"
+                        );
+                    }
+                    if targets[targets.len() - 1] < 0.0 {
+                        assert!(
+                            (last - lo).abs() < 1.0,
+                            "{pane} dragged left stops at {last}, its limit {lo}, window {width}"
+                        );
+                    } else {
+                        assert!(
+                            (last - hi).abs() < 1.0,
+                            "{pane} dragged right stops at {last}, its limit {hi}, window {width}"
+                        );
+                    }
+                    let end = *targets.last().unwrap();
+                    h.frame_sized(
+                        size,
+                        vec![egui::Event::PointerButton {
+                            pos: pointer(end),
+                            button: egui::PointerButton::Primary,
+                            pressed: false,
+                            modifiers: Modifiers::NONE,
+                        }],
+                    );
+                    h.frame_sized(size, vec![egui::Event::PointerGone]);
+                    let out = h.frame_sized(size, Vec::new());
+                    let released = edge(&out, "after release");
+                    assert!(
+                        (released - last).abs() < 0.5,
+                        "{pane} handle went from {last} to {released} on release, window {width}"
+                    );
+                }
             }
         }
     }

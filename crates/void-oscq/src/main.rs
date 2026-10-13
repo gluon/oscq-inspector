@@ -26,6 +26,8 @@ use anyhow::{Context as _, anyhow};
 
 fn main() -> anyhow::Result<()> {
     let launched = std::time::Instant::now();
+    // Before any thread exists, or the system will not tell the local time offset.
+    app::capture_local_offset();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();

@@ -1,6 +1,6 @@
 # Void OSCQ: Product Requirements Document
 
-Status: v1 spec, locked for implementation. Amended on 2026-10-09 with the human's rulings on the M0 protocol discrepancies, see `docs/protocol-notes.md` section 10. Amended on 2026-10-12 with the human's rulings after M5: "cannot send" in place of "read only" (sections 3, 7.2, 9.6), the user's OSC port (7.2, 9.6, 9.7). Amended on 2026-10-13 for milestone M6: visual system, server list, pinned nodes, presets, traffic direction filter (sections 3, 9, 14, 17). Amended again on 2026-10-13, after the human found Refresh off screen: the toolbar and the narrow window rule (9.1).
+Status: v1 spec, locked for implementation. Amended on 2026-10-09 with the human's rulings on the M0 protocol discrepancies, see `docs/protocol-notes.md` section 10. Amended on 2026-10-12 with the human's rulings after M5: "cannot send" in place of "read only" (sections 3, 7.2, 9.6), the user's OSC port (7.2, 9.6, 9.7). Amended on 2026-10-13 for milestone M6: visual system, server list, pinned nodes, presets, traffic direction filter (sections 3, 9, 14, 17). Amended again on 2026-10-13, after the human found Refresh off screen: the toolbar and the narrow window rule (9.1). Then the narrow tree, the pane handles, the discovery line and the about box (9.1).
 Audience: the engineer (human or agent) implementing the app from scratch.
 Name: `void-oscq`, final. Binary `void-oscq`, app display name "Void OSCQ", repository `gluon/void-oscq`, public since 2026-10-12. The crate name `void-oscq` was free on crates.io at the time of writing; verify again before any publication.
 
@@ -287,7 +287,7 @@ One window. No modal dialogs except the manual connection entry and the about bo
 +--------------------------------------------------------------------------+
 ```
 
-Left, the server pane: discovered servers, then manual entries, two groups apart, each server with a status dot (discovered, connecting, connected, websocket live, stale, error). A manual entry has a remove button; a discovered one has none, since it comes back. Removing a manual entry drops its saved OSC port. Below the list, the OSC destination of the selected server and, when its port is not advertised, the OSC port field (7.2). Then `+ manual`, the theme and the about box. Multiple servers may be connected at once; the centre shows the selected one.
+Left, the server pane: discovered servers, then manual entries, two groups apart, each server with a status dot (discovered, connecting, connected, websocket live, stale, error). A manual entry has a remove button; a discovered one has none, since it comes back. Removing a manual entry drops its saved OSC port. Below the list, the OSC destination of the selected server and, when its port is not advertised, the OSC port field (7.2). With no server found, it says since when it has been searching, as a time of day: a running count would repaint the window at rest. Then `+ manual`, the theme and the about box: the name, the version, Julien Bayle, Structure Void, the license, and a link to the repository, sober, imitating no system window. Multiple servers may be connected at once; the centre shows the selected one.
 
 Centre: a toolbar over the address space: the filter, the root box, three tabs and no more, and Refresh. With a server that never notifies, Refresh is the only way to read a value again.
 
@@ -295,7 +295,7 @@ Right: the pinned nodes (9.8) and the presets (9.9), visible whatever the tab an
 
 Bottom: the status bar, one line in fixed zones: connection state, server, transport (OSC destination, values live or on refresh only), node count, then the last error or note. Each zone is short; the details are on hover.
 
-Narrow windows: whatever the window width, down to its 640 px minimum, and however the side panes were dragged, no control of the toolbar, the server pane, the right pane or the status bar leaves the screen. The toolbar wraps onto further lines; the server pane narrows first; the right pane keeps its width; the centre keeps at least 176 px; the status bar zones narrow together, their text cut and whole on hover.
+Narrow windows: whatever the window width, down to its 640 px minimum, and however the side panes were dragged, no control of the toolbar, the server pane, the right pane or the status bar leaves the screen. The toolbar wraps onto further lines; the server pane narrows first, down to 128 px, then the right pane, down to 288 px; the centre keeps at least 224 px; the status bar zones narrow together, their text cut and whole on hover. On a narrow tree the name gives way first, then the metadata, down to the access flags alone, then the name again: the widget is the tool and keeps its width, the name gives its full path on hover. A pane's handle stops dead at its limits, and the pane follows it whole.
 
 Visual system, applied everywhere:
 

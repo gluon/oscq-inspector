@@ -52,6 +52,13 @@ Case: same day.
 `TextShape::visual_bounding_rect` is the bounds of the tessellated glyphs: in a headless frame it is a sliver, not the text. To test where a text lies on screen, use `galley.rect` moved by the shape's `pos`.
 Case: the toolbar visibility test, 2026-10-13.
 
+A side panel in egui 0.36 gives its content only the least width of its size range and is painted as wide as that content, from its left edge; its size is stored only on release, from what was painted. A right panel holding little, dragged wider, was painted short with the rest of the window left black, then went back to its least width on release. Make the content fill: `ui.set_min_width(ui.available_width())` first thing in the panel. A test that reads `PanelState` during a drag sees the old size: check what was painted.
+Case: the work pane with nothing pinned, on the human's Mac, 2026-10-13.
+
+`egui::Modal` is sized on its first frame and drawn on the next: a headless test reads its texts on the second frame.
+
+`time::UtcOffset::current_local_offset` fails on Linux and macOS as soon as the process has a second thread. Read it first thing in `main`, before the async runtime or the window start.
+
 ## Status display
 
 An error kept until another error replaces it outlives what it described. The status bar showed a failed connection under the tree the next connection had loaded. Clear an error when the operation it comes from succeeds, and drop the errors of an attempt that a newer one replaced.
