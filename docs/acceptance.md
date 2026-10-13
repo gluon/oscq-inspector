@@ -142,10 +142,10 @@ Setup: the synthetic server of section 3 running, Max 9 with its patch as in sec
    Expected: `/g0/p2` leaves the panel; pin it again from the tree.
    Type `p1` in the filter.
    Expected: each hit named first, `p1  /g0`, `p10  /g0`, `p100  /g1`, the containers after the name; the full path on hover.
-   On a window of 1100 points or more (2200 pixels on a Retina screen), the toolbar holds on one line.
+   On a window of 1060 points or more (2120 pixels on a Retina screen), the toolbar holds on one line.
    Type `fader/` in the filter, on Max 9's tree.
    Expected: the hits by their names alone, no container path: they are all in one container.
-   Check **Writable only** in the toolbar, clear the filter.
+   Check **Writable** in the toolbar, clear the filter.
    Expected: Max 9's tree without `longname`, `shortname`, `type`, `min`, `max` and the other read only metadata; the status bar says how many nodes are hidden. Quit and open again: still checked.
    Switch **Theme** to light.
    Expected: buttons and fields white and edged, sliders on a firm grey rail, text dark: an editable value stands out from a read only one as clearly as in the dark theme.

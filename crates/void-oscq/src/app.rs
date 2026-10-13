@@ -1270,7 +1270,7 @@ impl VoidApp {
                         label.on_hover_ui(|ui| {
                             ui.label(format!(
                                 "{n} nodes hidden: read only, or containers holding only read \
-                                 only nodes. Writable only, in the toolbar, shows them again."
+                                 only nodes. Unchecking Writable, in the toolbar, shows them again."
                             ));
                         });
                     }
@@ -1314,7 +1314,7 @@ impl VoidApp {
             ui.add_space(GROUP_GAP - gap);
             let mut hide = self.config.hide_read_only;
             if ui
-                .checkbox(&mut hide, "Writable only")
+                .checkbox(&mut hide, "Writable")
                 .on_hover_text(
                     "Hide the nodes that cannot be written, and the containers left with none",
                 )
@@ -4197,9 +4197,9 @@ mod tests {
         found[0].1
     }
 
-    /// On a wide window, 1100 points or more, the default width, the side panes keep their width,
-    /// the centre takes the rest, and the toolbar holds on one line: the three tabs, Refresh,
-    /// Writable only, the filter and the root fields side by side, frame after frame.
+    /// On a wide window, 1060 points or more, under the default width of 1100, the side panes keep
+    /// their width, the centre takes the rest, and the toolbar holds on one line: the three tabs,
+    /// Refresh, Writable, the filter and the root fields side by side, frame after frame.
     #[test]
     fn the_toolbar_holds_one_line_on_a_wide_window() {
         const CONTROLS: [&str; 7] = [
@@ -4207,12 +4207,12 @@ mod tests {
             "JSON",
             "Traffic",
             "Refresh",
-            "Writable only",
+            "Writable",
             "filter  /",
             "root at path",
         ];
         let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
-        for width in [1100.0, 1440.0, 1800.0, 2560.0, 3840.0] {
+        for width in [1060.0, 1100.0, 1440.0, 1800.0, 2560.0, 3840.0] {
             let mut h = harness();
             controllable(&mut h, "127.0.0.1", 2345, "S", doc);
             h.app
@@ -4382,7 +4382,7 @@ mod tests {
         let out = h.frame(Vec::new());
         click(
             &mut h,
-            place(&out, "Writable only"),
+            place(&out, "Writable"),
             egui::PointerButton::Primary,
         );
         assert!(h.app.config.hide_read_only, "the toggle set");
@@ -4669,7 +4669,7 @@ mod tests {
             "JSON",
             "Traffic",
             "Refresh",
-            "Writable only",
+            "Writable",
         ];
         let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
         for width in [
