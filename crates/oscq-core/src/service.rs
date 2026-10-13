@@ -60,6 +60,13 @@ pub enum Command {
         args: Vec<OscType>,
         refresh_after: bool,
     },
+    /// Messages sent at once, a preset recall: each as `SendOsc` would, each its own UDP packet,
+    /// logged as one block entry named `label` holding them all.
+    SendBlock {
+        server_id: ServerId,
+        label: String,
+        messages: Vec<BlockMessage>,
+    },
     /// Ask for value updates of one method over the WebSocket. Kept across reconnections.
     Listen {
         server_id: ServerId,
@@ -71,6 +78,15 @@ pub enum Command {
         path: String,
     },
     Shutdown,
+}
+
+/// One message of a [`Command::SendBlock`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockMessage {
+    pub path: OscPath,
+    pub signature: TypeSignature,
+    pub args: Vec<OscType>,
+    pub refresh_after: bool,
 }
 
 /// What a user is shown when something fails: what was being done, the failing path, when there
@@ -134,6 +150,9 @@ pub struct TrafficRecord {
     pub path: String,
     pub type_tags: String,
     pub args: Vec<OscType>,
+    /// The messages of a block sent at once, in order; empty for a single message. A block's own
+    /// `path` is its label and it has no arguments.
+    pub block: Vec<TrafficRecord>,
 }
 
 /// Network to UI.
@@ -431,6 +450,13 @@ async fn run(rx: flume::Receiver<Command>, shared: Shared) {
                     refresh_after,
                 ));
             }
+            Command::SendBlock {
+                server_id,
+                label,
+                messages,
+            } => {
+                tokio::spawn(send_block(shared.clone(), server_id, label, messages));
+            }
             Command::Listen { server_id, path } => {
                 shared.edit_listens(server_id, |l| {
                     l.insert(path);
@@ -566,34 +592,86 @@ async fn send(
     args: Vec<OscType>,
     refresh_after: bool,
 ) {
+    let Some(record) = send_one(&shared, id, &path, &signature, args).await else {
+        return;
+    };
+    let p = record.path.clone();
+    shared.emit(Event::TrafficLogged(record));
+    shared.succeeded(id, Operation::Send, Some(p.clone()));
+    if refresh_after {
+        refresh_value(shared, id, p).await;
+    }
+}
+
+/// Sends every message of a block, then logs those sent as one entry. A message that cannot be
+/// sent is reported as `SendOsc` reports it and left out of the block; with none sent, there is
+/// no entry.
+async fn send_block(shared: Shared, id: ServerId, label: String, messages: Vec<BlockMessage>) {
+    let mut sent = Vec::with_capacity(messages.len());
+    let mut refresh = Vec::new();
+    for m in messages {
+        if let Some(record) = send_one(&shared, id, &m.path, &m.signature, m.args).await {
+            if m.refresh_after {
+                refresh.push(record.path.clone());
+            }
+            sent.push(record);
+        }
+    }
+    if sent.is_empty() {
+        return;
+    }
+    let paths: Vec<String> = sent.iter().map(|r| r.path.clone()).collect();
+    shared.emit(Event::TrafficLogged(TrafficRecord {
+        at: Instant::now(),
+        server_id: id,
+        direction: Direction::Out,
+        path: label,
+        type_tags: String::new(),
+        args: Vec::new(),
+        block: sent,
+    }));
+    for p in paths {
+        shared.succeeded(id, Operation::Send, Some(p));
+    }
+    for p in refresh {
+        tokio::spawn(refresh_value(shared.clone(), id, p));
+    }
+}
+
+/// Coerces, encodes and sends one message. Returns its log record, or reports why it was not
+/// sent.
+async fn send_one(
+    shared: &Shared,
+    id: ServerId,
+    path: &OscPath,
+    signature: &TypeSignature,
+    args: Vec<OscType>,
+) -> Option<TrafficRecord> {
     let p = path.as_str().to_owned();
+    let fail = |message: String| {
+        shared.error(id, Operation::Send, Some(p.clone()), message);
+        None
+    };
     let destination = shared
         .conns
         .lock()
         .ok()
         .and_then(|c| c.get(&id).map(|c| c.destination.clone()));
     let destination = match destination {
-        None => return shared.error(id, Operation::Send, Some(p), "not connected".to_owned()),
+        None => return fail("not connected".to_owned()),
         Some(None) => {
-            return shared.error(
-                id,
-                Operation::Send,
-                Some(p),
-                "HOST_INFO unavailable: the server is not controllable".to_owned(),
-            );
+            return fail("HOST_INFO unavailable: the server is not controllable".to_owned());
         }
-        Some(Some(Err(blocked))) => {
-            return shared.error(id, Operation::Send, Some(p), blocked.to_string());
-        }
+        Some(Some(Err(blocked))) => return fail(blocked.to_string()),
         Some(Some(Ok(d))) => d,
     };
-    let args = match coerce_args(&signature, args) {
+    let args = match coerce_args(signature, args) {
         Ok(a) => a,
-        Err(e) => return shared.error(id, Operation::Send, Some(p), e.to_string()),
+        Err(e) => return fail(e.to_string()),
     };
-    let bytes = match encode_message(&path, args.clone()) {
+    let bytes = match encode_message(path, args.clone()) {
         Ok(b) => b,
-        Err(e) => return shared.error(id, Operation::Send, Some(p), e.to_string()),
+        Err(e) => return fail(e.to_string()),
     };
     let sent = shared
         .sender
@@ -602,20 +680,17 @@ async fn send(
         .send_to(&destination, &bytes)
         .await;
     if let Err(e) = sent {
-        return shared.error(id, Operation::Send, Some(p), e.to_string());
+        return fail(e.to_string());
     }
-    shared.emit(Event::TrafficLogged(TrafficRecord {
+    Some(TrafficRecord {
         at: Instant::now(),
         server_id: id,
         direction: Direction::Out,
-        path: p.clone(),
+        path: p,
         type_tags: type_tags(&args),
         args,
-    }));
-    shared.succeeded(id, Operation::Send, Some(p.clone()));
-    if refresh_after {
-        refresh_value(shared, id, p).await;
-    }
+        block: Vec::new(),
+    })
 }
 
 /// Why a WebSocket session ended.
@@ -870,6 +945,7 @@ fn on_binary(shared: &Shared, id: ServerId, bytes: &[u8], heard: &mut bool) {
             path: m.addr,
             type_tags: type_tags(&m.args),
             args: m.args,
+            block: Vec::new(),
         }));
     }
 }

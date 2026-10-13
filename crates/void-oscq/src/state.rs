@@ -171,6 +171,12 @@ impl AppState {
         self.selected.and_then(|id| self.entry(id))
     }
 
+    /// Removes a server entry, its tree and traffic with it.
+    pub fn remove(&mut self, id: ServerId) -> Option<ServerEntry> {
+        let i = self.servers.iter().position(|e| e.server.id == id)?;
+        Some(self.servers.remove(i))
+    }
+
     /// Adds a manual server, or returns the existing manual entry for the same `host:port`.
     pub fn add_manual(&mut self, server: DiscoveredServer) -> ServerId {
         let key = host_port(&server);

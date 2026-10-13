@@ -135,6 +135,13 @@ impl ManualHistory {
         self.entries.truncate(HISTORY_LEN);
     }
 
+    /// Removes an entry, compared by target as `remember` does. Says whether it was there.
+    pub fn forget(&mut self, entry: &ManualEntry) -> bool {
+        let before = self.entries.len();
+        self.entries.retain(|e| !e.same_target(entry));
+        self.entries.len() != before
+    }
+
     pub fn entries(&self) -> impl Iterator<Item = &ManualEntry> {
         self.entries.iter()
     }
@@ -181,6 +188,17 @@ mod tests {
         assert_eq!(ManualEntry::parse("h:70000"), Err(ManualEntryError::Port));
         assert_eq!(ManualEntry::parse("h:x"), Err(ManualEntryError::Port));
         assert_eq!(ManualEntry::parse(":80"), Err(ManualEntryError::EmptyHost));
+    }
+
+    #[test]
+    fn forgetting_an_entry_removes_it_by_target() {
+        let mut h = ManualHistory::new();
+        h.remember(ManualEntry::parse("localhost:30339").unwrap());
+        h.remember(ManualEntry::parse("10.0.0.2:2345").unwrap());
+        assert!(h.forget(&ManualEntry::parse("LOCALHOST:30339").unwrap()));
+        assert!(!h.forget(&ManualEntry::parse("localhost:30339").unwrap()));
+        let left: Vec<String> = h.entries().map(ToString::to_string).collect();
+        assert_eq!(left, ["10.0.0.2:2345"]);
     }
 
     #[test]
