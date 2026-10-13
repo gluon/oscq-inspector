@@ -18,6 +18,8 @@ Record for the release: the tag, the CI run, the macOS version, the date, and th
    Expected: it opens with no warning.
 5. Click **About**, at the bottom of the server pane.
    Expected: Void OSCQ, version equal to the tag without the `v`, "Julien Bayle, Structure Void", "License GPL-3.0-or-later", and a link to github.com/gluon/void-oscq that opens the repository. A plain box, like no system window.
+   Then choose **About Void OSCQ** in the application menu, at the left of the menu bar.
+   Expected: the same box, not the system's panel with a folder icon.
    In the Finder, **Show Package Contents** on the app, `Contents/Resources/licenses`: `LICENSE`, `LICENSE-EXCEPTION` and the four font licenses in `fonts`.
 6. While it runs, look at the Dock.
    Expected: the same icon as in the Finder, not the generic one and not another application's.
