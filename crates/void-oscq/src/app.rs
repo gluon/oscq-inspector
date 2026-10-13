@@ -2388,6 +2388,68 @@ mod tests {
 
     /// PRD 7.4: one `LISTEN` per visible or pinned method, none for containers, `IGNORE` when a
     /// method leaves, nothing sent while nothing changes, and all dropped with the connection.
+    /// PRD 7.4: listens follow the rows on screen, so a reload that leaves the same rows on screen
+    /// sends nothing: no `IGNORE` then `LISTEN` of every visible method. A reload of a subtree, of
+    /// the root as after a WebSocket reopens, of the whole tree, and a value read, each with the
+    /// document unchanged.
+    #[test]
+    fn a_reload_that_leaves_the_rows_on_screen_sends_no_listen_or_ignore() {
+        let mut h = harness();
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{
+            "a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]},
+            "g":{"FULL_PATH":"/g","CONTENTS":{
+                "x":{"FULL_PATH":"/g/x","TYPE":"f","ACCESS":3,"VALUE":[0.1]},
+                "y":{"FULL_PATH":"/g/y","TYPE":"i","ACCESS":3,"VALUE":[2]}}}}}"#;
+        let sub = r#"{"FULL_PATH":"/g","CONTENTS":{
+            "x":{"FULL_PATH":"/g/x","TYPE":"f","ACCESS":3,"VALUE":[0.1]},
+            "y":{"FULL_PATH":"/g/y","TYPE":"i","ACCESS":3,"VALUE":[2]}}}"#;
+        let id = connected(&mut h, doc);
+        h.frame(Vec::new());
+        h.app.act(&h.ctx.clone(), Action::Toggle("/g".into()));
+        for _ in 0..3 {
+            h.frame(Vec::new());
+        }
+        let visible = sorted(h.app.view.visible_methods.clone());
+        assert_eq!(visible, ["/a", "/g/x", "/g/y"]);
+        h.sent();
+        for event in [
+            Event::SubtreeLoaded {
+                server_id: id,
+                path: "/g".into(),
+                raw: Arc::from(sub),
+                report: parse_document(sub.as_bytes()).unwrap(),
+            },
+            // The reload after a lost WebSocket reopens.
+            Event::SubtreeLoaded {
+                server_id: id,
+                path: "/".into(),
+                raw: Arc::from(doc),
+                report: parse_document(doc.as_bytes()).unwrap(),
+            },
+            Event::TreeLoaded {
+                server_id: id,
+                raw: Arc::from(doc),
+                report: parse_document(doc.as_bytes()).unwrap(),
+            },
+            Event::ValueChanged {
+                server_id: id,
+                path: "/g/x".into(),
+                value: AttributeReply::Value(serde_json::json!([0.2])),
+            },
+        ] {
+            h.events.send(event).unwrap();
+            for _ in 0..3 {
+                h.frame(Vec::new());
+            }
+            assert_eq!(sorted(h.app.view.visible_methods.clone()), visible);
+            let (listen, ignore) = listen_commands(&h.sent());
+            assert!(
+                listen.is_empty() && ignore.is_empty(),
+                "listen {listen:?} ignore {ignore:?}"
+            );
+        }
+    }
+
     #[test]
     fn listens_follow_the_visible_and_pinned_methods() {
         let mut config = Config::default();

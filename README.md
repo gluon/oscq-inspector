@@ -179,10 +179,11 @@ git push origin v0.1.1
 - M4, WebSocket and performance: done, merged. Every PRD 10 budget met on the human's Mac or the macOS CI machine, see docs/decisions.md. Values pushed by the synthetic server seen live on the Mac; Max 9 accepts the WebSocket and sends nothing, shown as open and silent.
 - M5, release: done, merged, tag `v0.1.0`. The tagged run built the three artifacts; the macOS app was installed, opened and connected to Max 9 by the human.
 - M5 polish: done, merged. The OSC port setting checked by the human on the Mac against Max 9: sends reach 30338 once set, kept across a restart. The loss and return of a server, the system's cause in the error and the declared access kept were checked there too.
-- v0.1.1: on branch `void/v0-1-1`. Version 0.1.1, the PRD amended with the human's rulings, this README and docs/acceptance.md. Tagging is the human's.
+- v0.1.1: done, merged, tag `v0.1.1`. The tagged run 38269010531 built the three artifacts; on the human's Mac the app installed, showed its icon and 0.1.1 in the Finder, connected to Max 9 with the OSC port read from the config, and its sends moved the fader.
+- Cleanup: on branch `void/cleanup`. A reload that leaves the rows on screen is locked to send no `LISTEN` or `IGNORE`; the PRD says the repository is public; docs/acceptance.md states the known limit of WebSocket interoperability.
 
 Backlog:
 
-- Acceptance against a real server that notifies over its WebSocket (VDMX, ossia): a value changed inside it updates in the app without user action. Neither OSCQuery Helper nor Max 9 notifies; the synthetic server is the only proof so far.
+- Acceptance against a real server that notifies over its WebSocket (VDMX, ossia): a value changed inside it updates in the app without user action. Neither OSCQuery Helper nor Max 9 notifies; the synthetic server is the only proof so far. The known limit and what lifts it are in docs/acceptance.md.
 - Real captured documents from VDMX and ossia, PRD 12. OSCQuery Helper and Max 9 are captured.
 - OSC sent over the WebSocket, opt in per server (PRD 7.5).

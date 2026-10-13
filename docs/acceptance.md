@@ -2,7 +2,7 @@
 
 The manual checklist run by the human before a release, on the artifacts of the release tag, not on a build from source. Each step gives what to do and what must be seen. A step whose result differs is a failed release: note what was seen instead.
 
-Three servers are available and covered: Vidvox OSCQuery Helper, Max 9, and this project's synthetic server. VDMX and an ossia based patch, named in PRD 12, are not available and are not covered. No covered server is a third party server that notifies over its WebSocket: the live update of a value changed inside a real server stays unproven, see the end.
+Three servers are available and covered: Vidvox OSCQuery Helper, Max 9, and this project's synthetic server. VDMX and an ossia based patch, named in PRD 12, are not available and are not covered. No covered server is a third party server that notifies over its WebSocket: the live update of a value changed inside a real server stays unproven, see "Known limit" at the end.
 
 Record for the release: the tag, the CI run, the macOS version, the date, and the result of each section.
 
@@ -52,7 +52,7 @@ Setup: OSCQuery Helper running with its `SampleDocument`, its OSC target port se
 8. Open the **Traffic** tab.
    Expected: every message of steps 4 to 6, direction `out`, with path, type tags and arguments as the monitor received them. **Export** writes a text file, its path shown in the status line.
 
-Proves: discovery by Bonjour on the LAN, `HOST_INFO` with an advertised port, sending OSC to a real server with the declared types, the write only display, the JSON and traffic tabs. Cannot prove: values read from the server (the Helper serves none), the WebSocket (the Helper has none).
+Proves: discovery by Bonjour on the LAN, `HOST_INFO` with an advertised port, sending OSC to a real server with the declared types, the write only display, the JSON and traffic tabs. Cannot prove: values read from the server (the Helper serves none), the WebSocket (the Helper lists no `LISTEN` and has no value to push, see "Known limit").
 
 ## 2. Max 9, on the same Mac
 
@@ -115,6 +115,24 @@ Not required for the macOS release. On each system available:
 
 Proves: the artifacts of that system. Cannot prove: the systems not run.
 
-## Open item
+## Known limit: WebSocket interoperability with a third party server
 
-A value changed inside a real third party server that notifies over its WebSocket, VDMX or ossia, updating in Void OSCQ without user action. Neither OSCQuery Helper nor Max 9 sends notifications; the synthetic server is the only proof so far. Stays open until such a server is available.
+Not proven by this checklist: that Void OSCQ receives the notifications of a third party OSCQuery server over its WebSocket, values changed inside the server appearing without user action, and `PATH_*` commands reloading the tree. The only server on which the notification path is proven is this project's synthetic server (section 3), written from this project's own reading of the proposal: it shows the client agrees with itself, not with anyone else.
+
+The two third party servers tested do not notify:
+
+| Server | WebSocket, as observed | What it does not do |
+| --- | --- | --- |
+| Vidvox OSCQuery Helper | Its `HOST_INFO` (`tests/fixtures/helper-hostinfo.json`) gives no `WS_IP` or `WS_PORT` and lists `PATH_CHANGED` but not `LISTEN`; `LISTEN` is commented out in its source (docs/protocol-notes.md section 4). Every node is write only, `ACCESS` 2, and `?VALUE` answers `{}`. Whether it accepts a socket on its HTTP port was not observed | No `LISTEN`, so no value frames; no value of its own to push |
+| Max 9 | Accepts a WebSocket on its HTTP port 30339 and accepts `LISTEN` (`/test/param/fader/raw`, checked with `websocat`, docs/protocol-notes.md section 12) | Sends nothing on the socket: no binary value frame when a parameter moves, no `PATH_*` command |
+
+Untested against a real server, in consequence: binary OSC value frames as a third party encodes them (bundles, type tags, timetags); `PATH_ADDED`, `PATH_REMOVED`, `PATH_RENAMED` and `PATH_CHANGED` as a third party sends them; `LISTEN` and `IGNORE` honoured by a server; the reconnection after a third party server drops its socket.
+
+To lift it, one server that notifies over its WebSocket and is not this project's, for example VDMX or an ossia based patch, both named in PRD 12; that they notify is what their makers state, not something checked here. Then:
+
+1. Connect to it and expand a container: the status bar says "values live over the WebSocket" only once the server has sent a frame.
+2. Change a value inside the server, without touching Void OSCQ: the row updates, read, not marked "(sent)"; the Traffic tab logs it as `in`.
+3. Add or remove a node inside the server: the tree follows without a refresh.
+4. Capture the frames with `websocat` while doing 2 and 3, and commit them under `tests/fixtures` with their provenance, so that the client's decoding of that server is tested in CI as the Helper and Max documents are.
+
+Until then the limit stands, and no release note may say that live values work with third party servers.
