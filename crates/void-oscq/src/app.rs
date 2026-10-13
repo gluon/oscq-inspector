@@ -899,24 +899,31 @@ impl VoidApp {
         } else {
             "the pinned nodes"
         };
-        egui::Grid::new("presets")
-            .num_columns(4)
-            .spacing(egui::vec2(GRID, GRID))
-            .show(ui, |ui| {
-                for slot in 1..=presets::SLOTS {
+        // Four rows of four slots. Every cell has the same width, so plain rows line up as a grid
+        // would, without its per frame bookkeeping.
+        const NUMBERS: [&str; presets::SLOTS] = [
+            "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14",
+            "15", "16",
+        ];
+        for (r, numbers) in NUMBERS.chunks(4).enumerate() {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = GRID;
+                for (c, number) in numbers.iter().enumerate() {
+                    let slot = r * 4 + c + 1;
                     let held = self.config.presets.get(&slot);
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
-                        let number = style::data(format!("{slot:02}"));
                         let recall = ui
-                            .add_enabled(held.is_some(), egui::Button::new(number))
-                            .on_hover_text(match held {
-                                Some(p) => format!(
-                                    "Recall: send {} values, captured on {}",
-                                    p.values.len(),
-                                    p.server_name
-                                ),
-                                None => "Empty".to_owned(),
+                            .add_enabled(held.is_some(), egui::Button::new(style::data(*number)))
+                            // Hover texts are built only when shown: a frame builds none.
+                            .on_hover_ui(|ui| {
+                                if let Some(p) = held {
+                                    ui.label(format!(
+                                        "Recall: send {} values, captured on {}",
+                                        p.values.len(),
+                                        p.server_name
+                                    ));
+                                }
                             })
                             .on_disabled_hover_text("Empty");
                         if recall.clicked() {
@@ -924,17 +931,17 @@ impl VoidApp {
                         }
                         if ui
                             .small_button("set")
-                            .on_hover_text(format!("Capture {scope} of this server"))
+                            .on_hover_ui(|ui| {
+                                ui.label(format!("Capture {scope} of this server"));
+                            })
                             .clicked()
                         {
                             actions.push(Action::Capture(slot));
                         }
                     });
-                    if slot % 4 == 0 {
-                        ui.end_row();
-                    }
                 }
             });
+        }
     }
 
     fn manual_modal(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
@@ -1035,43 +1042,52 @@ impl VoidApp {
             zone(ui, 36.0 * GRID, &mut |ui| {
                 ui.spacing_mut().item_spacing.x = GRID;
                 status_dot(ui, dot_colour(e));
-                let mut hover = conn_text(e);
-                if let Some((v, _)) = values_text(e) {
-                    hover.push('\n');
-                    hover.push_str(&v);
-                }
                 ui.add(egui::Label::new(state_text(e)).truncate())
-                    .on_hover_text(hover);
+                    .on_hover_ui(|ui| {
+                        ui.label(conn_text(e));
+                        if let Some((v, _)) = values_text(e) {
+                            ui.label(v);
+                        }
+                    });
             });
             zone(ui, 40.0 * GRID, &mut |ui| {
                 ui.add(egui::Label::new(RichText::new(&e.server.name).strong()).truncate())
-                    .on_hover_text(server_tooltip(e));
+                    .on_hover_ui(|ui| {
+                        ui.label(server_tooltip(e));
+                    });
             });
             zone(ui, 52.0 * GRID, &mut |ui| {
-                let (text, hover) = match &e.destination {
+                let text = match &e.destination {
                     Some(Ok(d)) => {
                         let transport = match d.transport {
                             oscq_core::OscTransport::Udp => "UDP",
                             oscq_core::OscTransport::Tcp => "TCP",
                         };
-                        let mut hover = port_source_text(d.port_source).to_owned();
-                        if e.host_info.as_ref().is_some_and(|h| h.query_ignored) {
-                            hover.push_str(
-                                "\nHOST_INFO ignored by the server, defaults used: OSC and \
-                                 WebSocket on the HTTP address and port",
-                            );
-                        }
-                        (format!("OSC {}:{} {transport}", d.host, d.port), hover)
+                        format!("OSC {}:{} {transport}", d.host, d.port)
                     }
-                    Some(Err(blocked)) => ("OSC: cannot send".to_owned(), blocked.to_string()),
-                    None => ("OSC: not known yet".to_owned(), String::new()),
+                    Some(Err(_)) => "OSC: cannot send".to_owned(),
+                    None => "OSC: not known yet".to_owned(),
                 };
                 ui.add(egui::Label::new(style::data(text)).truncate())
-                    .on_hover_text(hover);
+                    .on_hover_ui(|ui| match &e.destination {
+                        Some(Ok(d)) => {
+                            ui.label(port_source_text(d.port_source));
+                            if e.host_info.as_ref().is_some_and(|h| h.query_ignored) {
+                                ui.label(
+                                    "HOST_INFO ignored by the server, defaults used: OSC and \
+                                     WebSocket on the HTTP address and port",
+                                );
+                            }
+                        }
+                        Some(Err(blocked)) => {
+                            ui.label(blocked.to_string());
+                        }
+                        None => {}
+                    });
             });
             zone(ui, 28.0 * GRID, &mut |ui| {
                 if let Some(t) = &e.tree {
-                    let mut text = format!("{} nodes", t.root.count().saturating_sub(1));
+                    let mut text = format!("{} nodes", t.nodes.saturating_sub(1));
                     if !t.diagnostics.is_empty() {
                         text.push_str(&format!(", {} warnings", t.diagnostics.len()));
                     }
@@ -1417,7 +1433,12 @@ fn server_row(
                     .min_size(egui::vec2(name_w, style::CONTROL_H)),
             )
         };
-        if label.on_hover_text(server_tooltip(e)).clicked() {
+        if label
+            .on_hover_ui(|ui| {
+                ui.label(server_tooltip(e));
+            })
+            .clicked()
+        {
             actions.push(Action::SelectServer(e.server.id));
         }
         if manual

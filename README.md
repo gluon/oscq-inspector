@@ -8,11 +8,13 @@ The product specification is [PRD.md](PRD.md).
 
 ## What it does
 
-- **Finds servers.** OSCQuery servers advertised on the network (Bonjour, `_oscjson._tcp`) appear on the left. Devices that only speak OSC, with no OSCQuery (`_osc._udp`), are listed greyed out, so you know they are there. A server that does not advertise, or sits behind a VPN or a router, is added by hand with `+ manual` and its `host:port`; the last ten are remembered.
+- **Finds servers.** OSCQuery servers advertised on the network (Bonjour, `_oscjson._tcp`) appear on the left. Devices that only speak OSC, with no OSCQuery (`_osc._udp`), are listed greyed out, so you know they are there. A server that does not advertise, or sits behind a VPN or a router, is added by hand with `+ manual` and its `host:port`; the last ten are remembered, each removable. Discovered and manual servers are listed apart.
 - **Shows the address space.** A tree of every container and method, fast with thousands of nodes. A filter box finds paths by fuzzy matching, a prefix box roots the tree at any container.
-- **Shows the values, and says where they come from.** Each method shows its value as the server reported it. A value you sent but the server has not confirmed is drawn differently. The status bar says whether values are live, pushed by the server over its WebSocket, or on refresh only.
+- **Shows the values, and says where they come from.** Each method shows its value in its widget, as the server reported it. A value you sent but the server has not confirmed is marked "sent". The status bar says whether values are live, pushed by the server over its WebSocket, or on refresh only.
 - **Edits values with a widget that fits the type.** Sliders for numbers with a range, drag values without one, toggles, buttons for impulses, dropdowns for lists of values, text fields, colour pickers. The OSC goes to the address and port the server gives in its `HOST_INFO`, coerced to the types it declares. When the server does not give its OSC port, the app infers it from the HTTP port, as the protocol says; when that is wrong, as with Max 9, you set the right port for that server and it is kept.
-- **Shows what arrived.** The JSON tab shows the document of the selected node exactly as the server sent it. The Traffic tab logs every OSC message sent and every value received, with times, and exports it as text.
+- **Keeps your controls at hand.** Pin nodes from the tree: they stay in the pinned panel whatever the tree shows, per server, across restarts.
+- **Presets.** Sixteen slots: one click captures the values of every writable node, or of the pinned ones when there are any; one click sends them all back, to the same server or to another, where what does not exist is counted and skipped.
+- **Shows what arrived.** The JSON tab shows the document of the selected node exactly as the server sent it. The Traffic tab logs every OSC message sent and every value received, with times, filters them by text and direction, and exports them as text.
 
 ## What it does not do
 
@@ -68,11 +70,16 @@ What the system needs to run it: X11 or Wayland, `libxkbcommon-x11-0` on X11, an
 ## Using it
 
 - Select a server on the left: the app connects, reads its `HOST_INFO` and its whole tree.
-- **Max 9** serves OSCQuery on its own machine only and does not advertise it: use `+ manual` with `localhost:30339`. It receives OSC on another port, 30338 by default, which it does not tell: set it in the status bar's OSC port field, see below.
+- **Max 9** serves OSCQuery on its own machine only and does not advertise it: use `+ manual` with `localhost:30339`. It receives OSC on another port, 30338 by default, which it does not tell: set it in the OSC port field of the server pane, see below.
 - Keyboard: arrows to move, right and left to expand and collapse, Enter to focus the widget of the selected row, Escape to leave it, `/` for the filter, F5 to refresh the selection, Cmd or Ctrl and C to copy the selected path.
-- The status bar tells, for the selected server: the OSC destination and whether its port was advertised, inferred from the HTTP port, or set by you; whether values are live, open but silent (the WebSocket is connected and the server has sent nothing yet), or on refresh only; and the last error with the path it concerns.
-- **Setting the OSC port.** When the server does not advertise its OSC port, the status bar shows "port inferred from the HTTP port" and an OSC port field. Type the port the server receives OSC on, then **Set OSC port** or Enter: the status bar says "port set by the user", sends go there, and the port is kept for that server in the config, used again at every connection and after a restart. **Infer OSC port** goes back to the HTTP port and forgets the setting. A port the server advertises is not editable and always wins, even over a port set earlier: the setting fills a silence of the server, it never contradicts what the server declares.
-- Settings are saved in your system's configuration folder, in `void-oscq/config.json`: window size and place, manual entries, the last selected server, the theme, pinned paths, the OSC ports you set. JSON and traffic exports go to `void-oscq/exports/` beside it.
+- The window: servers on the left, the tree in the centre, pinned nodes and presets on the right, the status bar below. Each tree row has three columns: the name, the widget holding the value, and on the right the type tags and access flags (`r`, `w`, `rw`).
+- The status bar is one line for the selected server: its state (live, connected but silent when the WebSocket is open and the server has sent nothing yet, connected on refresh only, error), its name, the OSC destination, the node count, and the last error with the path it concerns. Hover a zone for its details.
+- The theme follows the system unless you force light or dark, at the bottom of the server pane; the choice is kept.
+- **Removing a manual entry.** Its **x** in the server list removes it, and forgets the OSC port set for it. A discovered server has no **x**: it would come back with the next announcement.
+- **Pinning.** Right click a row: **Pin** puts it in the pinned panel, where its widget works as in the tree; **Unpin** removes it. **Copy path** copies its full path. Pins are kept per server; a pinned path the server no longer has is shown as absent.
+- **Presets.** **set** on a slot captures the values of the writable nodes, the pinned ones only when nodes are pinned; the slot number then recalls them, all sent at once, logged as one block in the Traffic tab. Recalled on another server, only the nodes at the same path with the same type are sent; the status bar counts those not found. No confirmation either way: a capture replaces the slot.
+- **Setting the OSC port.** When the server does not advertise its OSC port, the server pane shows "port inferred from the HTTP port" under **OSC destination**, and an OSC port field. Type the port the server receives OSC on, then **Set OSC port** or Enter: the server pane says "port set by the user", sends go there, and the port is kept for that server in the config, used again at every connection and after a restart. **Infer OSC port** goes back to the HTTP port and forgets the setting. A port the server advertises is not editable and always wins, even over a port set earlier: the setting fills a silence of the server, it never contradicts what the server declares.
+- Settings are saved in your system's configuration folder, in `void-oscq/config.json`: window size and place, manual entries, the last selected server, the theme, pinned paths, the OSC ports you set, the preset slots. JSON and traffic exports go to `void-oscq/exports/` beside it.
 
 ## Build from source
 
@@ -160,7 +167,15 @@ git tag v0.1.1
 git push origin v0.1.1
 ```
 
-## Changes since v0.1.0
+## Changes since v0.1.1
+
+- **Interface rework**: a 4 px grid and one type scale; a tree in three columns, name, widget, type tags and flags, with indentation guides; the widget holds the value; monospace for data; a one line status bar in fixed zones, details on hover; the OSC port field moved to the server pane.
+- **Server list**: discovered and manual servers apart; a manual entry can be removed, with the OSC port set for it.
+- **Pinned nodes**, kept per server.
+- **Sixteen preset slots**, captured and recalled in one click, kept in the config.
+- **Traffic**: filter by direction, a preset recall as one block; right click a row to copy its full path.
+
+## Changes from v0.1.0 to v0.1.1
 
 - **Application icon** on the three systems: the macOS `.icns` in the bundle, the Windows executable's icon, the Linux `.png` named by the `.desktop` file, and the window and the Dock while the app runs.
 - **Version in the macOS bundle**: both version keys of `Info.plist` carry the release version, checked against the tag by the release workflow.
@@ -180,7 +195,8 @@ git push origin v0.1.1
 - M5, release: done, merged, tag `v0.1.0`. The tagged run built the three artifacts; the macOS app was installed, opened and connected to Max 9 by the human.
 - M5 polish: done, merged. The OSC port setting checked by the human on the Mac against Max 9: sends reach 30338 once set, kept across a restart. The loss and return of a server, the system's cause in the error and the declared access kept were checked there too.
 - v0.1.1: done, merged, tag `v0.1.1`. The tagged run 38269010531 built the three artifacts; on the human's Mac the app installed, showed its icon and 0.1.1 in the Finder, connected to Max 9 with the OSC port read from the config, and its sends moved the fader.
-- Cleanup: on branch `void/cleanup`. A reload that leaves the rows on screen is locked to send no `LISTEN` or `IGNORE`; the PRD says the repository is public; docs/acceptance.md states the known limit of WebSocket interoperability.
+- Cleanup: done, merged. A reload that leaves the rows on screen is locked to send no `LISTEN` or `IGNORE`; the PRD says the repository is public; docs/acceptance.md states the known limit of WebSocket interoperability.
+- M6, interface rework, server list, pinned nodes, presets, traffic filter: on branch `void/m6-ui`. Headless tests lock the removal of a manual entry with its OSC port, the pinned panel across tabs and per server, a capture and recall on the same server and on another, and the traffic direction filter. The look waits on the human, docs/acceptance.md section 5.
 
 Backlog:
 

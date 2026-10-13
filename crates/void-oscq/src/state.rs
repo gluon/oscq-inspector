@@ -62,11 +62,14 @@ pub struct TreeState {
     /// Every node by full path, rebuilt on each structural change: a pushed value finds its node
     /// without walking the tree.
     pub paths: HashMap<String, tree::NodeIndex>,
+    /// Every node, the root included, counted on each structural change rather than per frame.
+    pub nodes: usize,
 }
 
 impl TreeState {
     fn reindex(&mut self) {
         self.paths = tree::index_paths(&self.root);
+        self.nodes = self.root.count();
     }
 
     pub fn node(&self, path: &str) -> Option<&Node> {

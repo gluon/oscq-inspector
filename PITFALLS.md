@@ -34,6 +34,15 @@ A headless frame through `Context::run_ui` must consume `FullOutput::textures_de
 eframe gives the window its own egui logo as icon when the application gives none: window, taskbar, and on macOS the Dock while the app runs, over the bundle's `.icns`. Give the icon in the `ViewportBuilder`.
 Case: `load_default_egui_icon` in `eframe/src/native/epi_integration.rs`, read while adding the icon, 2026-10-12.
 
+`Ui::scope_builder` with a `max_rect` places a child and then moves the parent's cursor past it, wherever that rect was. Drawing the three cells of a row with it moved the cursor back after each row: rows overlapped every 12 px. Cells drawn at a rect of their own, without moving the parent, go through `Ui::new_child`.
+Case: the M6 three column tree, under Xvfb, 2026-10-13.
+
+A scroll area's content can be wider than what is visible of it, and `available_width()` inside it gives the content's width. A cell aligned to the right of that width is drawn off screen: no error, nothing visible. Take the visible width from the clip rectangle.
+Case: the M6 metadata column, 0 of the expected `rw` labels drawn, because a header wider than the central panel made its content overflow under the right panel, 2026-10-13.
+
+A side panel sized by its content grows a little on every frame when a child asks for `available_width()` plus anything more. The server pane widened by 3 px a frame: the remove button needed 28 px and 24 were reserved for it.
+Case: same session.
+
 ## Status display
 
 An error kept until another error replaces it outlives what it described. The status bar showed a failed connection under the tree the next connection had loaded. Clear an error when the operation it comes from succeeds, and drop the errors of an attempt that a newer one replaced.
