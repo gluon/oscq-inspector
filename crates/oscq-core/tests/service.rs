@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use common::{OscReceiver, Reply, SyntheticServer, harness, read_fixture};
 use oscq_core::{
-    AttributeReply, Command, Direction, Event, OscPath, PortSource, ServerId, TransportState,
-    TypeSignature,
+    AttributeReply, BlockMessage, Command, Direction, Event, OscPath, PortSource, ServerId,
+    TransportState, TypeSignature,
 };
 use rosc::{OscMessage, OscPacket, OscType};
 use serde_json::json;
@@ -470,5 +470,79 @@ async fn a_user_port_replaces_the_inferred_one_and_survives_a_reconnection() {
     assert_eq!(
         destination_of(&seen),
         Some((http_port, PortSource::InferredFromHttp))
+    );
+}
+
+/// A preset recall: every message of the block goes out as its own packet, and the log gets one
+/// entry, the block, holding the messages sent. A message that cannot be sent is reported and
+/// left out.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_block_sends_each_message_and_logs_one_entry() {
+    let target = OscReceiver::bind("127.0.0.1:0").await.unwrap();
+    let server = helper_like(target.port()).await;
+    let h = harness();
+    let id = ServerId::next();
+    h.commands
+        .send(Command::Connect {
+            server_id: id,
+            http_base: server.base_url(),
+        })
+        .unwrap();
+    h.until(|e| {
+        matches!(
+            e,
+            Event::TransportState {
+                state: TransportState::HttpOnly,
+                ..
+            }
+        )
+    })
+    .await;
+    let message = |path: &str, sig: &str, args: Vec<OscType>| BlockMessage {
+        path: OscPath::parse(path).unwrap(),
+        signature: TypeSignature::parse(sig).unwrap(),
+        args,
+        refresh_after: false,
+    };
+    h.commands
+        .send(Command::SendBlock {
+            server_id: id,
+            label: "preset 03".into(),
+            messages: vec![
+                message("/a", "f", vec![OscType::Double(0.25)]),
+                message("/b", "i", vec![OscType::String("not a number".into())]),
+                message("/c", "s", vec![OscType::String("x".into())]),
+            ],
+        })
+        .unwrap();
+    let mut got = Vec::new();
+    for _ in 0..2 {
+        if let OscPacket::Message(m) = target.recv().await {
+            got.push(m.addr);
+        }
+    }
+    assert_eq!(got, ["/a", "/c"]);
+    let seen = h.until(|e| matches!(e, Event::TrafficLogged(_))).await;
+    let blocks: Vec<_> = seen
+        .iter()
+        .filter_map(|e| match e {
+            Event::TrafficLogged(r) => Some(r),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(blocks.len(), 1, "one entry for the block: {seen:?}");
+    let block = blocks[0];
+    assert_eq!(
+        (block.path.as_str(), block.direction),
+        ("preset 03", Direction::Out)
+    );
+    let inside: Vec<&str> = block.block.iter().map(|r| r.path.as_str()).collect();
+    assert_eq!(inside, ["/a", "/c"]);
+    assert!(
+        seen.iter().any(|e| matches!(
+            e,
+            Event::Error { error, .. } if error.path.as_deref() == Some("/b")
+        )),
+        "the message not sent is reported: {seen:?}"
     );
 }

@@ -23,6 +23,7 @@ pub use server::{
     AddressClass, DiscoveredServer, InterfaceRef, Origin, ServerAddress, ServerId, ServiceKind,
 };
 pub use service::{
-    Command, Direction, Event, Notify, Operation, TrafficRecord, TransportState, UserFacingError,
+    BlockMessage, Command, Direction, Event, Notify, Operation, TrafficRecord, TransportState,
+    UserFacingError,
 };
 pub use types::{ArgType, TypeError, TypeSignature, TypeTag};

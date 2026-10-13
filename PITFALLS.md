@@ -34,6 +34,31 @@ A headless frame through `Context::run_ui` must consume `FullOutput::textures_de
 eframe gives the window its own egui logo as icon when the application gives none: window, taskbar, and on macOS the Dock while the app runs, over the bundle's `.icns`. Give the icon in the `ViewportBuilder`.
 Case: `load_default_egui_icon` in `eframe/src/native/epi_integration.rs`, read while adding the icon, 2026-10-12.
 
+`Ui::scope_builder` with a `max_rect` places a child and then moves the parent's cursor past it, wherever that rect was. Drawing the three cells of a row with it moved the cursor back after each row: rows overlapped every 12 px. Cells drawn at a rect of their own, without moving the parent, go through `Ui::new_child`.
+Case: the M6 three column tree, under Xvfb, 2026-10-13.
+
+A scroll area's content can be wider than what is visible of it, and `available_width()` inside it gives the content's width. A cell aligned to the right of that width is drawn off screen: no error, nothing visible. Take the visible width from the clip rectangle.
+Case: the M6 metadata column, 0 of the expected `rw` labels drawn, because a header wider than the central panel made its content overflow under the right panel, 2026-10-13.
+
+A side panel sized by its content grows a little on every frame when a child asks for `available_width()` plus anything more. The server pane widened by 3 px a frame: the remove button needed 28 px and 24 were reserved for it.
+Case: same session.
+
+A row laid out with `Ui::horizontal` does not wrap: past the width of its pane it runs on, under the next pane, clipped, with no error. A toolbar sized on a 1100 px window lost its last controls on a narrower one. Use `horizontal_wrapped`, and a text field, which shrinks to the end of the line rather than wrap, needs `end_row` first when the line is short.
+Case: Refresh and the Tree tab out of sight on the human's Mac after the M6 rework, 2026-10-13.
+
+Side panes left at egui's default size range take what they want and the central pane gets the rest, down to nothing when they are dragged wide. Give each a range computed per frame from the window width, the second from what the first actually took.
+Case: same day.
+
+`TextShape::visual_bounding_rect` is the bounds of the tessellated glyphs: in a headless frame it is a sliver, not the text. To test where a text lies on screen, use `galley.rect` moved by the shape's `pos`.
+Case: the toolbar visibility test, 2026-10-13.
+
+A side panel in egui 0.36 gives its content only the least width of its size range and is painted as wide as that content, from its left edge; its size is stored only on release, from what was painted. A right panel holding little, dragged wider, was painted short with the rest of the window left black, then went back to its least width on release. Make the content fill: `ui.set_min_width(ui.available_width())` first thing in the panel. A test that reads `PanelState` during a drag sees the old size: check what was painted.
+Case: the work pane with nothing pinned, on the human's Mac, 2026-10-13.
+
+`egui::Modal` is sized on its first frame and drawn on the next: a headless test reads its texts on the second frame.
+
+`time::UtcOffset::current_local_offset` fails on Linux and macOS as soon as the process has a second thread. Read it first thing in `main`, before the async runtime or the window start.
+
 ## Status display
 
 An error kept until another error replaces it outlives what it described. The status bar showed a failed connection under the tree the next connection had loaded. Clear an error when the operation it comes from succeeds, and drop the errors of an attempt that a newer one replaced.

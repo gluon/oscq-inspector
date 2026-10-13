@@ -9,6 +9,9 @@ members = [
 # One version for every crate and for the release tag, checked by ci/check-release-version.sh.
 [workspace.package]
 version = "0.1.1"
+authors = ["Julien Bayle"]
+license = "GPL-3.0-or-later"
+repository = "https://github.com/gluon/void-oscq"
 
 [workspace.dependencies]
 flume = { version = "0.12.0", default-features = false, features = ["async", "select"] }

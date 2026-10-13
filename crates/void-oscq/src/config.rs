@@ -1,5 +1,6 @@
 //! The single config file (PRD 9.7): window geometry, manual entries, last selected server,
-//! theme preference, pinned paths, and the OSC ports the user set. Nothing else.
+//! theme preference, pinned paths, the OSC ports the user set, and the preset slots. Nothing
+//! else.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -37,6 +38,8 @@ pub struct Config {
     /// OSC ports set by the user, per server `host:port`, for servers that do not advertise one:
     /// used in place of the port inferred from the HTTP port.
     pub osc_ports: BTreeMap<String, u16>,
+    /// Preset slots 1 to 16 that hold something (PRD 9.9).
+    pub presets: BTreeMap<usize, crate::presets::Preset>,
 }
 
 impl Config {

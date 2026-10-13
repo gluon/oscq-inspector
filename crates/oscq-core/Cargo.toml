@@ -1,6 +1,9 @@
 [package]
 name = "oscq-core"
 version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 edition = "2024"
 publish = false
 

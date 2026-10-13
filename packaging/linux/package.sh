@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Packs the Linux release binary, its .desktop file and its icon in a tarball. Run from the
-# workspace root after cargo build --release --locked -p void-oscq.
+# Packs the Linux release binary, its .desktop file, its icon and the license texts in a tarball.
+# Run from the workspace root after cargo build --release --locked -p void-oscq.
 # Arguments: version, output directory. Prints the path of the tarball.
 set -euo pipefail
 version="$1"
@@ -21,6 +21,7 @@ if ! command -v desktop-file-validate >/dev/null; then
     exit 1
 fi
 desktop-file-validate "$dir/void-oscq.desktop" >&2
+./packaging/licenses.sh "$dir/licenses"
 # The newest glibc symbol the binary needs: the oldest glibc it runs on.
 glibc=$(objdump -T "$dir/void-oscq" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
 echo "requires $glibc or newer" >&2

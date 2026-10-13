@@ -1,6 +1,9 @@
 [package]
 name = "void-oscq"
 version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 edition = "2024"
 publish = false
 
@@ -15,6 +18,7 @@ oscq-discovery = { version = "0.1.1", path = "../oscq-discovery" }
 rosc = "0.11.4"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["raw_value"] }
+time = { version = "0.3.55", features = ["local-offset"] }
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "fs"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

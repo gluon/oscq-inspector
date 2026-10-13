@@ -62,11 +62,14 @@ pub struct TreeState {
     /// Every node by full path, rebuilt on each structural change: a pushed value finds its node
     /// without walking the tree.
     pub paths: HashMap<String, tree::NodeIndex>,
+    /// Every node, the root included, counted on each structural change rather than per frame.
+    pub nodes: usize,
 }
 
 impl TreeState {
     fn reindex(&mut self) {
         self.paths = tree::index_paths(&self.root);
+        self.nodes = self.root.count();
     }
 
     pub fn node(&self, path: &str) -> Option<&Node> {
@@ -169,6 +172,12 @@ impl AppState {
 
     pub fn selected_entry(&self) -> Option<&ServerEntry> {
         self.selected.and_then(|id| self.entry(id))
+    }
+
+    /// Removes a server entry, its tree and traffic with it.
+    pub fn remove(&mut self, id: ServerId) -> Option<ServerEntry> {
+        let i = self.servers.iter().position(|e| e.server.id == id)?;
+        Some(self.servers.remove(i))
     }
 
     /// Adds a manual server, or returns the existing manual entry for the same `host:port`.

@@ -1,0 +1,33 @@
+Void OSCQ
+Copyright (C) 2026 Julien Bayle
+
+This program is free software: you can redistribute it and/or modify it under the terms of the
+GNU General Public License as published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without
+even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with this program, in the
+file LICENSE. If not, see <https://www.gnu.org/licenses/>.
+
+
+Additional permission under GNU GPL version 3 section 7
+
+The executable form of this program contains fonts compiled into it by the epaint_default_fonts
+crate, each under its own license, whose text is in the directory licenses/fonts:
+
+- Ubuntu Light, under the Ubuntu Font Licence 1.0 (UFL.txt);
+- Noto Emoji, under the SIL Open Font License 1.1 (OFL.txt);
+- Hack, under the MIT License and the Bitstream Vera License (Hack-Regular.txt);
+- the emoji icon font, under the MIT License (emoji-icon-font-mit-license.txt).
+
+If you modify this Program, or any covered work, by linking or combining it with these fonts (or a
+modified version of them), containing parts covered by the terms of the Ubuntu Font Licence 1.0,
+the SIL Open Font License 1.1, the MIT License or the Bitstream Vera License, the licensors of this
+Program grant you additional permission to convey the resulting work. This permission covers the
+Program as its licensors distribute it, the fonts already combined with it.
+
+The fonts remain under their own licenses, and their license texts must accompany any conveyed
+work that contains them.

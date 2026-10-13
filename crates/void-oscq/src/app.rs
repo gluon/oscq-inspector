@@ -11,15 +11,18 @@ use egui::{Color32, FontId, Key, Modifiers, RichText, TextFormat};
 use oscq_core::model::parse_rgba_hex;
 use oscq_core::osc::arg_from_text;
 use oscq_core::{
-    ArgType, Command, Event, OscPath, PortSource, ServerId, ServiceKind, TypeSignature, TypeTag,
+    ArgType, Command, Event, Origin, OscPath, PortSource, ServerId, ServiceKind, TypeSignature,
+    TypeTag,
 };
 use oscq_discovery::{ManualEntry, ManualHistory};
 use rosc::{OscColor, OscType};
 
 use crate::config::{self, Config, Theme, WindowGeometry};
 use crate::json_view::{self, Line, Token};
+use crate::presets;
 use crate::rate::{INTERVAL, RateLimiter};
 use crate::state::{AppState, ConnState, ServerEntry, WsState};
+use crate::style::{self, GRID, GROUP_GAP, ROW_H};
 use crate::traffic;
 use crate::tree::{self, Hit, NodeIndex, Row};
 use crate::widget::{self, WidgetKind};
@@ -70,6 +73,14 @@ enum Action {
     Disconnect(ServerId),
     /// The OSC port the user sets for a server whose port is inferred; `None` infers it again.
     SetOscPort(ServerId, Option<u16>),
+    /// Drops a manual entry, its history line and its saved OSC port (PRD 9.1).
+    RemoveManual(ServerId),
+    /// Pins or unpins a path of the selected server (PRD 9.8).
+    TogglePin(String),
+    /// Captures the selected server into a preset slot, 1 to 16 (PRD 9.9).
+    Capture(usize),
+    /// Recalls a preset slot against the selected server.
+    Recall(usize),
     Toggle(String),
     SelectPath(String),
     Send(SendReq, SendMode),
@@ -122,6 +133,9 @@ struct View {
     /// Methods on the rows drawn this frame, the visible part of the listen set (PRD 7.4).
     visible_methods: Vec<String>,
     traffic_filter: String,
+    traffic_dir: traffic::DirFilter,
+    /// Blocks of the traffic log shown open, by the time they were logged.
+    traffic_open: std::collections::HashSet<Instant>,
     manual_open: bool,
     manual_text: String,
     manual_error: Option<String>,
@@ -147,6 +161,8 @@ pub struct VoidApp {
     view: View,
     limiter: RateLimiter<SendReq>,
     started: Instant,
+    /// The wall clock time discovery began, as the server pane says it: "14:05".
+    searching_since: String,
     io_tx: flume::Sender<String>,
     io_rx: flume::Receiver<String>,
     owned: Option<Owned>,
@@ -210,7 +226,7 @@ impl VoidApp {
         config_dir: Option<PathBuf>,
     ) -> Self {
         apply_theme(ctx, config.theme);
-        calm_style(ctx);
+        style::apply(ctx);
         let history = ManualHistory::from_entries(
             config
                 .manual_entries
@@ -227,6 +243,7 @@ impl VoidApp {
             view: View::default(),
             limiter: RateLimiter::new(INTERVAL),
             started: Instant::now(),
+            searching_since: clock_time(std::time::SystemTime::now()),
             io_tx,
             io_rx,
             owned: None,
@@ -278,11 +295,29 @@ impl VoidApp {
 
         let mut actions = Vec::new();
         self.view.visible_methods.clear();
-        egui::Panel::left("servers")
+        // The side panes take what the centre leaves, so the centre keeps CENTRE_MIN whatever
+        // the window width and however the panes were dragged: the server pane first, leaving
+        // the work pane its default width, so that it is the one to narrow first; then the work
+        // pane, from what the server pane took.
+        let width = ui.available_width();
+        let servers_max = (width - style::CENTRE_MIN - style::WORK_DEFAULT).max(style::SERVERS_MIN);
+        let servers = egui::Panel::left("servers")
             .resizable(true)
-            .default_size(230.0)
-            .show(ui, |ui| self.server_pane(ui, &mut actions));
-        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui, &mut actions));
+            .default_size(56.0 * style::GRID)
+            .size_range(style::SERVERS_MIN..=servers_max)
+            .show(ui, |ui| self.server_pane(ui, &mut actions))
+            .response
+            .rect
+            .width();
+        let work_max = (width - servers - style::CENTRE_MIN).max(style::WORK_MIN);
+        egui::Panel::bottom("status")
+            .exact_size(style::ROW_H + 2.0 * style::GRID)
+            .show(ui, |ui| self.status_bar(ui));
+        egui::Panel::right("work")
+            .resizable(true)
+            .default_size(style::WORK_DEFAULT)
+            .size_range(style::WORK_MIN..=work_max)
+            .show(ui, |ui| self.work_pane(ui, &mut actions));
         egui::CentralPanel::default().show(ui, |ui| self.main_pane(ui, &mut actions));
         self.manual_modal(&ctx, &mut actions);
         self.about_modal(&ctx);
@@ -473,6 +508,80 @@ impl VoidApp {
                     port,
                 });
             }
+            Action::RemoveManual(id) => {
+                let Some(e) = self
+                    .state
+                    .entry(id)
+                    .filter(|e| e.server.origin == Origin::Manual)
+                else {
+                    return;
+                };
+                let key = e.key();
+                if let Ok(entry) = ManualEntry::parse(&key) {
+                    self.history.forget(&entry);
+                }
+                self.config.manual_entries =
+                    self.history.entries().map(ToString::to_string).collect();
+                self.config.osc_ports.remove(&key);
+                if self.config.last_selected.as_deref() == Some(key.as_str()) {
+                    self.config.last_selected = None;
+                }
+                let _ = self
+                    .backend
+                    .commands
+                    .send(Command::Disconnect { server_id: id });
+                self.state.remove(id);
+                if self.state.selected == Some(id) {
+                    self.state.selected = None;
+                    self.view.selected_path = None;
+                }
+                self.save_config(ctx);
+            }
+            Action::TogglePin(path) => {
+                let Some(key) = self.state.selected_entry().map(|e| e.key()) else {
+                    return;
+                };
+                let pins = self.config.pinned_paths.entry(key.clone()).or_default();
+                match pins.iter().position(|p| *p == path) {
+                    Some(i) => {
+                        pins.remove(i);
+                    }
+                    None => pins.push(path),
+                }
+                if pins.is_empty() {
+                    self.config.pinned_paths.remove(&key);
+                }
+                self.save_config(ctx);
+            }
+            Action::Capture(slot) => {
+                let Some(e) = self.state.selected_entry() else {
+                    return;
+                };
+                let Some(t) = e.tree.as_ref() else {
+                    self.view.note = Some(format!("Slot {slot:02}: no tree to capture"));
+                    return;
+                };
+                let key = e.key();
+                let pinned = self
+                    .config
+                    .pinned_paths
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_default();
+                let c = presets::capture(&key, &e.server.name, t, e.value_supported(), &pinned);
+                let scope = if pinned.is_empty() { "" } else { " pinned" };
+                let mut note = format!(
+                    "Slot {slot:02}: {} values of{scope} methods captured",
+                    c.preset.values.len()
+                );
+                if c.skipped > 0 {
+                    note.push_str(&format!(", {} without a value skipped", c.skipped));
+                }
+                self.view.note = Some(note);
+                self.config.presets.insert(slot, c.preset);
+                self.save_config(ctx);
+            }
+            Action::Recall(slot) => self.recall(slot),
             Action::Disconnect(id) => {
                 let _ = self
                     .backend
@@ -577,6 +686,61 @@ impl VoidApp {
         });
     }
 
+    /// Sends a preset slot to the selected server at once, as one block (PRD 9.9).
+    fn recall(&mut self, slot: usize) {
+        let Some(preset) = self.config.presets.get(&slot).cloned() else {
+            return;
+        };
+        let Some(e) = self.state.selected_entry() else {
+            return;
+        };
+        let id = e.server.id;
+        if let Some(reason) = e.send_blocked() {
+            self.view.note = Some(format!(
+                "Slot {slot:02} not recalled: cannot send: {reason}"
+            ));
+            return;
+        }
+        let Some(t) = e.tree.as_ref() else {
+            return;
+        };
+        let other = (preset.server != e.key()).then(|| preset.server_name.clone());
+        let r = presets::recall(&preset, t, e.value_supported());
+        let mut messages = Vec::with_capacity(r.messages.len());
+        for m in r.messages {
+            let req = SendReq {
+                server_id: id,
+                path: m.path,
+                signature: m.signature,
+                args: m.args,
+                readable: m.readable,
+            };
+            let refresh_after = req.readable && !self.value_pushed(&req);
+            self.mark_pending(&req);
+            messages.push(oscq_core::BlockMessage {
+                path: req.path,
+                signature: req.signature,
+                args: req.args,
+                refresh_after,
+            });
+        }
+        let mut note = format!("Slot {slot:02} recalled: {} sent", messages.len());
+        if r.unmatched > 0 {
+            note.push_str(&format!(", {} not found on this server", r.unmatched));
+        }
+        if let Some(name) = other {
+            note.push_str(&format!(" (captured on {name})"));
+        }
+        self.view.note = Some(note);
+        if !messages.is_empty() {
+            let _ = self.backend.commands.send(Command::SendBlock {
+                server_id: id,
+                label: format!("preset {slot:02}"),
+                messages,
+            });
+        }
+    }
+
     fn save_config(&self, ctx: &egui::Context) {
         let Some(dir) = self.config_dir.clone() else {
             return;
@@ -620,76 +784,204 @@ impl VoidApp {
     // ---------------------------------------------------------------- server pane
 
     fn server_pane(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        ui.heading("Servers");
-        ui.separator();
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, true])
-            .max_height(ui.available_height() - 70.0)
+        // As wide as the pane, whatever it holds: see `work_pane`.
+        ui.set_min_width(ui.available_width());
+        // The footer first, so the list above takes what remains.
+        egui::Panel::bottom("server_footer")
+            .show_separator_line(false)
             .show(ui, |ui| {
-                if self.state.servers.is_empty() {
+                ui.add_space(GRID);
+                // Wrapped, so About stays on screen in the narrowest pane.
+                ui.horizontal_wrapped(|ui| {
+                    let mut theme = self.config.theme;
+                    egui::ComboBox::from_id_salt("theme")
+                        .width(24.0 * GRID)
+                        .selected_text(match theme {
+                            Theme::System => "Theme: system",
+                            Theme::Dark => "Theme: dark",
+                            Theme::Light => "Theme: light",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut theme, Theme::System, "System");
+                            ui.selectable_value(&mut theme, Theme::Dark, "Dark");
+                            ui.selectable_value(&mut theme, Theme::Light, "Light");
+                        });
+                    if theme != self.config.theme {
+                        self.config.theme = theme;
+                        apply_theme(ui.ctx(), theme);
+                        self.save_config(ui.ctx());
+                    }
+                    if ui.button("About").clicked() {
+                        self.view.about_open = true;
+                    }
+                });
+                ui.add_space(GRID);
+            });
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.add_space(GRID);
+                let (manual, discovered): (Vec<&ServerEntry>, Vec<&ServerEntry>) = self
+                    .state
+                    .servers
+                    .iter()
+                    .partition(|e| e.server.origin == Origin::Manual);
+                style::section(ui, "Discovered");
+                if discovered.is_empty() {
                     let elapsed = self.started.elapsed();
                     if elapsed < DISCOVERY_HINT_AFTER {
                         ui.weak("Searching the network");
                         ui.ctx()
                             .request_repaint_after(DISCOVERY_HINT_AFTER - elapsed);
                     } else {
-                        ui.weak(
-                            "No OSCQuery server found. Use + manual for a host on a VPN, \
-                             a routed subnet or behind a firewall.",
-                        );
+                        // A time, not a running count: a count would repaint the window every
+                        // second while it is at rest.
+                        ui.weak(format!(
+                            "Searching since {}, none found. Use + manual for a host the \
+                             network does not show.",
+                            self.searching_since
+                        ));
                     }
                 }
-                for e in &self.state.servers {
-                    let selected = self.state.selected == Some(e.server.id);
-                    ui.horizontal(|ui| {
-                        status_dot(ui, dot_colour(e));
-                        let mut text = RichText::new(&e.server.name);
-                        if e.server.kind == ServiceKind::OscOnly || e.server.stale {
-                            text = text.weak();
+                for e in discovered {
+                    server_row(ui, e, self.state.selected, actions);
+                }
+                ui.add_space(GROUP_GAP);
+                style::section(ui, "Manual");
+                for e in manual {
+                    server_row(ui, e, self.state.selected, actions);
+                }
+                if ui.button("+ manual").clicked() {
+                    self.view.manual_open = true;
+                    self.view.manual_error = None;
+                }
+                if let Some(e) = self.state.selected_entry() {
+                    if e.conn == ConnState::Connected && ui.button("Disconnect").clicked() {
+                        actions.push(Action::Disconnect(e.server.id));
+                    }
+                    ui.add_space(GROUP_GAP);
+                    style::section(ui, "OSC destination");
+                    match &e.destination {
+                        Some(Ok(d)) => {
+                            let transport = match d.transport {
+                                oscq_core::OscTransport::Udp => "UDP",
+                                oscq_core::OscTransport::Tcp => "TCP",
+                            };
+                            ui.label(style::data(format!("{}:{} {transport}", d.host, d.port)));
+                            ui.weak(port_source_text(d.port_source));
+                            if d.port_source != PortSource::Advertised {
+                                osc_port_editor(ui, e.server.id, d, &mut self.view, actions);
+                            }
                         }
-                        let label = if e.server.kind == ServiceKind::OscOnly {
-                            ui.add_enabled(false, egui::Button::selectable(false, text))
-                                .on_disabled_hover_text("OSC only, no query support")
-                        } else {
-                            ui.add(egui::Button::selectable(selected, text))
-                        };
-                        let label = label.on_hover_text(server_tooltip(e));
-                        if label.clicked() {
-                            actions.push(Action::SelectServer(e.server.id));
+                        Some(Err(blocked)) => {
+                            ui.colored_label(
+                                ui.visuals().warn_fg_color,
+                                format!("{CANNOT_SEND}: {blocked}"),
+                            );
                         }
-                    });
-                    if e.server.kind == ServiceKind::OscOnly {
-                        ui.weak("    OSC only, no query support");
+                        None => {
+                            ui.weak("not known yet");
+                        }
                     }
                 }
             });
-        ui.separator();
-        if ui.button("+ manual").clicked() {
-            self.view.manual_open = true;
-            self.view.manual_error = None;
+    }
+
+    /// The working surface, whatever the tab: the pinned nodes, then the presets.
+    fn work_pane(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        // A side pane is drawn as wide as its content: without this, a pane holding little
+        // would be painted narrower than it was dragged, the rest of the window left blank, then
+        // spring back on release.
+        ui.set_min_width(ui.available_width());
+        ui.add_space(GRID);
+        style::section(ui, "Pinned");
+        let entry = self.state.selected_entry();
+        let pins: Vec<String> = entry
+            .and_then(|e| self.config.pinned_paths.get(&e.key()))
+            .cloned()
+            .unwrap_or_default();
+        match entry {
+            None => {
+                ui.weak("Select a server.");
+            }
+            Some(_) if pins.is_empty() => {
+                ui.weak("Right click a node in the tree to pin it here.");
+            }
+            Some(e) => {
+                let height = (ui.available_height() - 64.0 * GRID).max(4.0 * ROW_H);
+                egui::ScrollArea::vertical()
+                    .id_salt("pinned")
+                    .max_height(height)
+                    .auto_shrink([false, true])
+                    .show_rows(ui, ROW_H, pins.len(), |ui, range| {
+                        for path in &pins[range] {
+                            pinned_row(ui, e, path, &mut self.view, actions);
+                        }
+                    });
+            }
         }
-        ui.horizontal(|ui| {
-            let mut theme = self.config.theme;
-            egui::ComboBox::from_id_salt("theme")
-                .selected_text(match theme {
-                    Theme::System => "Theme: system",
-                    Theme::Dark => "Theme: dark",
-                    Theme::Light => "Theme: light",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut theme, Theme::System, "System");
-                    ui.selectable_value(&mut theme, Theme::Dark, "Dark");
-                    ui.selectable_value(&mut theme, Theme::Light, "Light");
-                });
-            if theme != self.config.theme {
-                self.config.theme = theme;
-                apply_theme(ui.ctx(), theme);
-                self.save_config(ui.ctx());
-            }
-            if ui.button("About").clicked() {
-                self.view.about_open = true;
-            }
-        });
+        ui.add_space(GROUP_GAP);
+        style::section(ui, "Presets");
+        let scope = if pins.is_empty() {
+            "every writable node"
+        } else {
+            "the pinned nodes"
+        };
+        // Rows of as many slots as the pane holds, four at most. Every cell has the same width,
+        // so plain rows line up as a grid would, and none runs past the edge of the pane.
+        const NUMBERS: [&str; presets::SLOTS] = [
+            "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14",
+            "15", "16",
+        ];
+        const RECALL_W: f32 = 8.0 * GRID;
+        const SET_W: f32 = 9.0 * GRID;
+        let cell = RECALL_W + SET_W;
+        let cols = (((ui.available_width() + GRID) / (cell + GRID)).floor() as usize).clamp(1, 4);
+        for (r, numbers) in NUMBERS.chunks(cols).enumerate() {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = GRID;
+                for (c, number) in numbers.iter().enumerate() {
+                    let slot = r * cols + c + 1;
+                    let held = self.config.presets.get(&slot);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        let recall = ui
+                            .add_enabled(
+                                held.is_some(),
+                                egui::Button::new(style::data(*number))
+                                    .min_size(egui::vec2(RECALL_W, style::CONTROL_H)),
+                            )
+                            // Hover texts are built only when shown: a frame builds none.
+                            .on_hover_ui(|ui| {
+                                if let Some(p) = held {
+                                    ui.label(format!(
+                                        "Recall: send {} values, captured on {}",
+                                        p.values.len(),
+                                        p.server_name
+                                    ));
+                                }
+                            })
+                            .on_disabled_hover_text("Empty");
+                        if recall.clicked() {
+                            actions.push(Action::Recall(slot));
+                        }
+                        if ui
+                            .add(
+                                egui::Button::new("set")
+                                    .small()
+                                    .min_size(egui::vec2(SET_W, style::CONTROL_H)),
+                            )
+                            .on_hover_ui(|ui| {
+                                ui.label(format!("Capture {scope} of this server"));
+                            })
+                            .clicked()
+                        {
+                            actions.push(Action::Capture(slot));
+                        }
+                    });
+                }
+            });
+        }
     }
 
     fn manual_modal(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
@@ -751,9 +1043,20 @@ impl VoidApp {
             return;
         }
         let response = egui::Modal::new(egui::Id::new("about")).show(ctx, |ui| {
-            ui.heading("Void OSCQ");
-            ui.label(format!("version {}", env!("CARGO_PKG_VERSION")));
-            ui.label("OSCQuery client: browse an address space, edit values, send OSC.");
+            for line in about_lines() {
+                match line {
+                    AboutLine::Title(t) => {
+                        ui.heading(t);
+                    }
+                    AboutLine::Text(t) => {
+                        ui.label(t);
+                    }
+                    AboutLine::Link(text, url) => {
+                        ui.hyperlink_to(style::data(text), url);
+                    }
+                }
+            }
+            ui.add_space(style::ITEM_GAP);
             if ui.button("Close").clicked() {
                 self.view.about_open = false;
             }
@@ -765,75 +1068,120 @@ impl VoidApp {
 
     // ---------------------------------------------------------------- status bar
 
-    fn status_bar(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        let view = &mut self.view;
-        ui.horizontal_wrapped(|ui| {
-            if let Some(e) = self.state.selected_entry() {
-                ui.strong(&e.server.name);
-                ui.label(conn_text(e));
-                match &e.destination {
+    /// One line in fixed zones: state, server, transport, node count, then the message (PRD 9.1).
+    /// Each zone is short; the details are on hover.
+    fn status_bar(&mut self, ui: &mut egui::Ui) {
+        let zone = |ui: &mut egui::Ui, width: f32, add: &mut dyn FnMut(&mut egui::Ui)| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(width, ROW_H),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.set_width(width);
+                    add(ui);
+                },
+            );
+        };
+        ui.horizontal_centered(|ui| {
+            ui.spacing_mut().item_spacing.x = GROUP_GAP;
+            let Some(e) = self.state.selected_entry() else {
+                ui.weak("No server selected");
+                if let Some(n) = &self.view.note {
+                    ui.add(egui::Label::new(RichText::new(n).weak()).truncate());
+                }
+                return;
+            };
+            // The message: the last error, or why nothing can be sent, or a note.
+            let message = error_text(e)
+                .map(|t| (t, ui.visuals().error_fg_color))
+                .or_else(|| match &e.conn {
+                    ConnState::Failed(r) => Some((r.clone(), ui.visuals().error_fg_color)),
+                    _ => None,
+                })
+                .or_else(|| {
+                    e.send_blocked()
+                        .filter(|_| e.conn == ConnState::Connected)
+                        .map(|r| (format!("not controllable: {r}"), ui.visuals().warn_fg_color))
+                })
+                .or_else(|| match values_text(e) {
+                    Some((t, true)) => Some((t, ui.visuals().warn_fg_color)),
+                    _ => None,
+                })
+                .or_else(|| {
+                    self.state
+                        .global_error
+                        .clone()
+                        .map(|g| (g, ui.visuals().error_fg_color))
+                })
+                .or_else(|| {
+                    self.view
+                        .note
+                        .clone()
+                        .map(|n| (n, ui.visuals().weak_text_color()))
+                });
+            // The zones narrow together when the window does, the message keeping some room:
+            // nothing runs past the edge of the window, the details stay on hover.
+            let gaps = 4.0 * GROUP_GAP;
+            let message_floor = if message.is_some() { 32.0 * GRID } else { 0.0 };
+            let scale =
+                ((ui.available_width() - gaps - message_floor) / (156.0 * GRID)).clamp(0.0, 1.0);
+            zone(ui, 36.0 * GRID * scale, &mut |ui| {
+                ui.spacing_mut().item_spacing.x = GRID;
+                status_dot(ui, dot_colour(e));
+                ui.add(egui::Label::new(state_text(e)).truncate())
+                    .on_hover_ui(|ui| {
+                        ui.label(conn_text(e));
+                        if let Some((v, _)) = values_text(e) {
+                            ui.label(v);
+                        }
+                    });
+            });
+            zone(ui, 40.0 * GRID * scale, &mut |ui| {
+                ui.add(egui::Label::new(RichText::new(&e.server.name).strong()).truncate())
+                    .on_hover_ui(|ui| {
+                        ui.label(server_tooltip(e));
+                    });
+            });
+            zone(ui, 52.0 * GRID * scale, &mut |ui| {
+                let text = match &e.destination {
                     Some(Ok(d)) => {
                         let transport = match d.transport {
                             oscq_core::OscTransport::Udp => "UDP",
                             oscq_core::OscTransport::Tcp => "TCP",
                         };
-                        ui.label(format!(
-                            "OSC {}:{} {transport}, {}",
-                            d.host,
-                            d.port,
-                            port_source_text(d.port_source)
-                        ));
-                        if d.port_source != PortSource::Advertised {
-                            osc_port_editor(ui, e.server.id, d, view, actions);
+                        format!("OSC {}:{} {transport}", d.host, d.port)
+                    }
+                    Some(Err(_)) => "OSC: cannot send".to_owned(),
+                    None => "OSC: not known yet".to_owned(),
+                };
+                ui.add(egui::Label::new(style::data(text)).truncate())
+                    .on_hover_ui(|ui| match &e.destination {
+                        Some(Ok(d)) => {
+                            ui.label(port_source_text(d.port_source));
+                            if e.host_info.as_ref().is_some_and(|h| h.query_ignored) {
+                                ui.label(
+                                    "HOST_INFO ignored by the server, defaults used: OSC and \
+                                     WebSocket on the HTTP address and port",
+                                );
+                            }
                         }
-                    }
-                    Some(Err(blocked)) => {
-                        ui.colored_label(
-                            ui.visuals().warn_fg_color,
-                            format!("{CANNOT_SEND}: {blocked}"),
-                        );
-                    }
-                    None => {}
-                }
-                if let Some(reason) = e.send_blocked().filter(|_| e.conn == ConnState::Connected) {
-                    ui.colored_label(
-                        ui.visuals().warn_fg_color,
-                        format!("not controllable: {reason}"),
-                    );
-                }
-                match values_text(e) {
-                    Some((text, true)) => {
-                        ui.colored_label(ui.visuals().warn_fg_color, text);
-                    }
-                    Some((text, false)) => {
-                        ui.label(text);
-                    }
-                    None => {}
-                }
-                if e.host_info.as_ref().is_some_and(|h| h.query_ignored) {
-                    ui.weak("HOST_INFO ignored by the server, defaults used")
-                        .on_hover_text(
-                            "The server answered the HOST_INFO query with its address space: \
-                             OSC and WebSocket are taken on the HTTP address and port.",
-                        );
-                }
+                        Some(Err(blocked)) => {
+                            ui.label(blocked.to_string());
+                        }
+                        None => {}
+                    });
+            });
+            zone(ui, 28.0 * GRID * scale, &mut |ui| {
                 if let Some(t) = &e.tree {
-                    ui.label(format!("{} nodes", t.root.count().saturating_sub(1)));
+                    let mut text = format!("{} nodes", t.nodes.saturating_sub(1));
                     if !t.diagnostics.is_empty() {
-                        ui.weak(format!("{} document warnings", t.diagnostics.len()));
+                        text.push_str(&format!(", {} warnings", t.diagnostics.len()));
                     }
+                    ui.add(egui::Label::new(text).truncate());
                 }
-                if let Some(text) = error_text(e) {
-                    ui.colored_label(ui.visuals().error_fg_color, text);
-                }
-            } else {
-                ui.weak("No server selected");
-            }
-            if let Some(g) = &self.state.global_error {
-                ui.colored_label(ui.visuals().error_fg_color, g);
-            }
-            if let Some(n) = &view.note {
-                ui.weak(n);
+            });
+            if let Some((text, colour)) = message {
+                ui.add(egui::Label::new(RichText::new(&text).color(colour)).truncate())
+                    .on_hover_text(text);
             }
         });
     }
@@ -845,26 +1193,43 @@ impl VoidApp {
             ui.centered_and_justified(|ui| ui.weak("Select a server, or use + manual"));
             return;
         };
-        ui.horizontal(|ui| {
+        ui.add_space(GRID);
+        // The toolbar wraps onto further lines rather than run under the right pane: every
+        // control, Refresh included, stays on screen whatever the width.
+        ui.horizontal_wrapped(|ui| {
+            ui.set_min_height(ROW_H);
+            let width = ui.available_width();
+            // A text field shrinks to what is left of the line instead of wrapping: wrap it.
+            let field_width = |ui: &mut egui::Ui, wanted: f32| {
+                let w = wanted.min(width);
+                if ui.available_width() < w {
+                    ui.end_row();
+                }
+                w
+            };
+            let w = field_width(ui, 36.0 * GRID);
             let filter = ui.add(
                 egui::TextEdit::singleline(&mut self.view.filter)
                     .id(egui::Id::new("filter"))
-                    .hint_text("Path filter  /")
-                    .desired_width(220.0),
+                    .font(egui::TextStyle::Monospace)
+                    .hint_text("filter  /")
+                    .desired_width(w),
             );
             if std::mem::take(&mut self.view.focus_filter) {
                 filter.request_focus();
             }
+            let w = field_width(ui, 28.0 * GRID);
             ui.add(
                 egui::TextEdit::singleline(&mut self.view.prefix)
-                    .hint_text("Root at path")
-                    .desired_width(160.0),
+                    .font(egui::TextStyle::Monospace)
+                    .hint_text("root at path")
+                    .desired_width(w),
             );
-            ui.separator();
+            ui.add_space(GROUP_GAP);
             ui.selectable_value(&mut self.view.tab, Tab::Tree, "Tree");
             ui.selectable_value(&mut self.view.tab, Tab::Json, "JSON");
             ui.selectable_value(&mut self.view.tab, Tab::Traffic, "Traffic");
-            ui.separator();
+            ui.add_space(GROUP_GAP);
             if ui
                 .button("Refresh")
                 .on_hover_text("Refresh the selected node, or the whole tree (F5)")
@@ -873,7 +1238,7 @@ impl VoidApp {
                 actions.push(self.refresh_action());
             }
         });
-        ui.separator();
+        ui.add_space(style::ITEM_GAP);
         let Some(entry) = self.state.entry(id) else {
             return;
         };
@@ -889,11 +1254,16 @@ impl VoidApp {
             }
             return;
         }
-        if entry.conn == ConnState::Connected && ui.small_button("Disconnect").clicked() {
-            actions.push(Action::Disconnect(id));
-        }
         match self.view.tab {
-            Tab::Tree => tree_tab(ui, entry, &mut self.view, actions),
+            Tab::Tree => {
+                let pins = self
+                    .config
+                    .pinned_paths
+                    .get(&entry.key())
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                tree_tab(ui, entry, pins, &mut self.view, actions)
+            }
             Tab::Json => json_tab(ui, entry, &mut self.view, actions),
             Tab::Traffic => {
                 let started = self.started;
@@ -1029,16 +1399,53 @@ fn error_text(e: &ServerEntry) -> Option<String> {
     })
 }
 
-/// PRD 6.2, no frame unless something changed. egui fades tooltips and scroll bars in over
-/// several frames, and asks for a frame on every frame until the pointer is perfectly still
-/// before a tooltip may show: a resting window drew a dozen frames after each pointer move. With
-/// no animation time, fades jump to their end; tooltips still wait their delay, measured from the
-/// last pointer move.
-fn calm_style(ctx: &egui::Context) {
-    ctx.all_styles_mut(|s| {
-        s.animation_time = 0.0;
-        s.interaction.show_tooltips_only_when_still = false;
-    });
+/// What the about box says, from the manifest so it cannot drift from the release: the name, the
+/// version, the author and his studio, the license when one is declared, the repository.
+enum AboutLine {
+    Title(&'static str),
+    Text(String),
+    Link(String, &'static str),
+}
+
+fn about_lines() -> Vec<AboutLine> {
+    let mut lines = vec![
+        AboutLine::Title("Void OSCQ"),
+        AboutLine::Text(format!("version {}", env!("CARGO_PKG_VERSION"))),
+        AboutLine::Text(format!("{}, Structure Void", env!("CARGO_PKG_AUTHORS"))),
+    ];
+    let license = env!("CARGO_PKG_LICENSE");
+    if !license.is_empty() {
+        lines.push(AboutLine::Text(format!("License {license}")));
+    }
+    let repository = env!("CARGO_PKG_REPOSITORY");
+    lines.push(AboutLine::Link(
+        repository.trim_start_matches("https://").to_owned(),
+        repository,
+    ));
+    lines
+}
+
+/// The offset of local time from UTC, read once by `capture_local_offset`.
+static LOCAL_OFFSET: std::sync::OnceLock<time::UtcOffset> = std::sync::OnceLock::new();
+
+/// Reads the local time offset. On Linux and macOS the system gives it only to a process with a
+/// single thread: call this first thing in `main`, before any thread starts.
+pub fn capture_local_offset() {
+    if let Ok(offset) = time::UtcOffset::current_local_offset() {
+        let _ = LOCAL_OFFSET.set(offset);
+    }
+}
+
+/// Hours and minutes of `at`, in local time, or in UTC, said so, when the local offset is unknown.
+fn clock_time(at: std::time::SystemTime) -> String {
+    let utc = time::OffsetDateTime::from(at);
+    match LOCAL_OFFSET.get() {
+        Some(offset) => {
+            let t = utc.to_offset(*offset);
+            format!("{:02}:{:02}", t.hour(), t.minute())
+        }
+        None => format!("{:02}:{:02} UTC", utc.hour(), utc.minute()),
+    }
 }
 
 fn apply_theme(ctx: &egui::Context, theme: Theme) {
@@ -1089,6 +1496,81 @@ fn values_text(e: &ServerEntry) -> Option<(String, bool)> {
     })
 }
 
+/// The connection state in a word or two, for the status bar; `conn_text` on hover.
+fn state_text(e: &ServerEntry) -> &'static str {
+    if e.server.stale {
+        return "stale";
+    }
+    match &e.conn {
+        ConnState::Idle => "discovered",
+        ConnState::Connecting => "connecting",
+        ConnState::Connected => match e.ws {
+            WsState::Live => "live",
+            WsState::Open => "connected, silent",
+            WsState::Absent => "connected",
+            WsState::Lost { .. } => "connected, socket lost",
+        },
+        ConnState::Failed(_) => "error",
+        ConnState::Disconnected => "disconnected",
+    }
+}
+
+/// A server in the list: its dot and name; a manual entry has its remove button. A discovered
+/// server has none: it would come back with the next announcement.
+fn server_row(
+    ui: &mut egui::Ui,
+    e: &ServerEntry,
+    selected: Option<ServerId>,
+    actions: &mut Vec<Action>,
+) {
+    ui.horizontal(|ui| {
+        ui.set_min_height(ROW_H);
+        ui.spacing_mut().item_spacing.x = GRID;
+        status_dot(ui, dot_colour(e));
+        let mut text = RichText::new(&e.server.name);
+        if e.server.kind == ServiceKind::OscOnly || e.server.stale {
+            text = text.weak();
+        }
+        let manual = e.server.origin == Origin::Manual;
+        // The remove button and the gap before it: reserved, or the panel grows every frame.
+        let remove_w = if manual { 8.0 * GRID } else { 0.0 };
+        let name_w = (ui.available_width() - remove_w).max(10.0 * GRID);
+        let label = if e.server.kind == ServiceKind::OscOnly {
+            ui.add_enabled(
+                false,
+                egui::Button::selectable(false, text)
+                    .right_text("")
+                    .truncate()
+                    .min_size(egui::vec2(name_w, style::CONTROL_H)),
+            )
+            .on_disabled_hover_text("OSC only, no query support")
+        } else {
+            ui.add(
+                egui::Button::selectable(selected == Some(e.server.id), text)
+                    .right_text("")
+                    .truncate()
+                    .min_size(egui::vec2(name_w, style::CONTROL_H)),
+            )
+        };
+        if label
+            .on_hover_ui(|ui| {
+                ui.label(server_tooltip(e));
+            })
+            .clicked()
+        {
+            actions.push(Action::SelectServer(e.server.id));
+        }
+        if manual
+            && ui
+                .small_button("x")
+                .on_hover_text("Remove this manual entry and its saved OSC port")
+                .clicked()
+        {
+            actions.push(Action::RemoveManual(e.server.id));
+        }
+    });
+}
+
 fn status_dot(ui: &mut egui::Ui, colour: Color32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
     ui.painter().circle_filled(rect.center(), 4.0, colour);
@@ -1128,7 +1610,13 @@ fn server_tooltip(e: &ServerEntry) -> String {
 
 // -------------------------------------------------------------------- tree tab
 
-fn tree_tab(ui: &mut egui::Ui, entry: &ServerEntry, view: &mut View, actions: &mut Vec<Action>) {
+fn tree_tab(
+    ui: &mut egui::Ui,
+    entry: &ServerEntry,
+    pinned: &[String],
+    view: &mut View,
+    actions: &mut Vec<Action>,
+) {
     let Some(t) = entry.tree.as_ref() else {
         return;
     };
@@ -1178,22 +1666,29 @@ fn tree_tab(ui: &mut egui::Ui, entry: &ServerEntry, view: &mut View, actions: &m
 
     keyboard(ui, t, &rows, view, actions);
 
-    let row_h = ui.spacing().interact_size.y + 2.0;
+    let row_h = ROW_H;
     let selected_pos = view.selected_path.as_ref().and_then(|p| {
         rows.iter()
             .position(|r| tree::node_at(&t.root, &r.index).is_some_and(|n| &n.full_path == p))
     });
-    let mut area = egui::ScrollArea::both().auto_shrink(false);
+    // Rows touch: the 24 px row holds its own margins.
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let mut area = egui::ScrollArea::vertical().auto_shrink(false);
     if std::mem::take(&mut view.scroll_to_selected)
         && let Some(pos) = selected_pos
     {
-        let spacing = ui.spacing().item_spacing.y;
-        let target = (pos as f32 * (row_h + spacing) - ui.available_height() / 2.0).max(0.0);
+        // Rows touch: the 24 px row holds its own margins.
+        let target = (pos as f32 * row_h - ui.available_height() / 2.0).max(0.0);
         area = area.vertical_scroll_offset(target);
     }
     let send_blocked = entry.send_blocked();
     let value_supported = entry.value_supported();
     area.show_rows(ui, row_h, rows.len(), |ui, range| {
+        // Measured inside the scroll area, whose bar takes part of the width.
+        // The visible width: a ui can be wider than what shows of it.
+        let visible = (ui.clip_rect().right() - ui.max_rect().left()).min(ui.available_width());
+        let cols = Columns::tree(visible);
+        ui.spacing_mut().item_spacing.y = 0.0;
         for i in range {
             let row = &rows[i];
             let Some(node) = tree::node_at(&t.root, &row.index) else {
@@ -1207,136 +1702,357 @@ fn tree_tab(ui: &mut egui::Ui, entry: &ServerEntry, view: &mut View, actions: &m
             if node.is_method() {
                 view.visible_methods.push(node.full_path.clone());
             }
-            ui.horizontal(|ui| {
-                ui.set_height(row_h);
-                tree_row(
-                    ui,
-                    entry,
-                    t,
-                    node,
-                    row,
-                    hit.as_ref(),
-                    send_blocked.as_deref(),
-                    value_supported,
-                    view,
-                    actions,
-                );
-            });
+            let label: egui::WidgetText = match &hit {
+                Some(h) => highlighted(ui, &node.full_path, &h.positions).into(),
+                None => style::data(leaf_name(node)).into(),
+            };
+            let cell = NameCell {
+                label,
+                depth: row.depth,
+                open: node
+                    .is_container()
+                    .then(|| t.expanded.contains(&node.full_path)),
+                pinned: pinned.contains(&node.full_path),
+                focusable: true,
+            };
+            node_row(
+                ui,
+                cols,
+                entry,
+                t,
+                node,
+                cell,
+                send_blocked.as_deref(),
+                value_supported,
+                view,
+                actions,
+            );
         }
     });
 }
 
+/// The three columns of a row: name, control, metadata (PRD 9.2), each a multiple of the grid.
+#[derive(Debug, Clone, Copy)]
+struct Columns {
+    name: f32,
+    control: f32,
+    meta: f32,
+}
+
+impl Columns {
+    fn snap(x: f32) -> f32 {
+        (x / GRID).floor() * GRID
+    }
+
+    /// The tree: the name close to its control, the metadata at the right edge. On a narrow
+    /// pane the name gives way first, down to NAME_FLOOR, then the metadata, down to the access
+    /// flags alone, then the name again: the widget is the tool and keeps its width, the name
+    /// gives its full path on hover.
+    fn tree(width: f32) -> Self {
+        let full_name = 40.0 * GRID;
+        let control = style::CONTROL_W;
+        if width >= full_name + control + style::META_W {
+            let name = Self::snap((width * 0.3).clamp(full_name, 72.0 * GRID));
+            let meta = style::META_W;
+            return Columns {
+                name,
+                control: Self::snap(width - name - meta),
+                meta,
+            };
+        }
+        let meta = if width >= style::NAME_FLOOR + control + style::META_W {
+            style::META_W
+        } else {
+            style::FLAGS_W
+        };
+        Columns {
+            name: Self::snap((width - control - meta).max(0.0)),
+            control,
+            meta,
+        }
+    }
+
+    /// The pinned panel, narrower: the name is the full path, the metadata only the flags.
+    fn pinned(width: f32) -> Self {
+        let meta = 10.0 * GRID;
+        let name = Self::snap((width * 0.4).max(24.0 * GRID));
+        let control = Self::snap((width - name - meta).max(24.0 * GRID));
+        Columns {
+            name,
+            control,
+            meta,
+        }
+    }
+}
+
+/// What the name column of a row holds.
+struct NameCell {
+    label: egui::WidgetText,
+    depth: usize,
+    /// `Some(open)` for a container, which gets its expander.
+    open: Option<bool>,
+    pinned: bool,
+    /// The row may take the keyboard focus of the selection (the tree, not the pinned panel).
+    focusable: bool,
+}
+
+/// A row of the tree or of the pinned panel: name, control, metadata, in three strict columns.
+/// The control column starts on the same vertical line on every row; the widget carries the
+/// value, a node without a widget shows its value there as text.
 #[allow(clippy::too_many_arguments)]
-fn tree_row(
+fn node_row(
     ui: &mut egui::Ui,
+    cols: Columns,
     entry: &ServerEntry,
     t: &crate::state::TreeState,
     node: &oscq_core::Node,
-    row: &Row,
-    hit: Option<&Hit>,
+    cell: NameCell,
     send_blocked: Option<&str>,
     value_supported: bool,
     view: &mut View,
     actions: &mut Vec<Action>,
 ) {
-    ui.add_space(row.depth as f32 * 14.0);
-    if node.is_container() {
-        let open = t.expanded.contains(&node.full_path);
-        if ui
-            .small_button(if open { "-" } else { "+" })
-            .on_hover_text(if open { "Collapse" } else { "Expand" })
-            .clicked()
-        {
-            actions.push(Action::Toggle(node.full_path.clone()));
-        }
-    } else {
-        ui.add_space(ui.spacing().interact_size.y);
+    let (row, _) = ui.allocate_exact_size(
+        egui::vec2(cols.name + cols.control + cols.meta, ROW_H),
+        egui::Sense::hover(),
+    );
+    let name_rect = egui::Rect::from_min_size(row.min, egui::vec2(cols.name, ROW_H));
+    let control_rect = egui::Rect::from_min_size(
+        egui::pos2(name_rect.right(), row.top()),
+        egui::vec2(cols.control, ROW_H),
+    );
+    let meta_rect = egui::Rect::from_min_size(
+        egui::pos2(control_rect.right(), row.top()),
+        egui::vec2(cols.meta, ROW_H),
+    );
+    let cell_ui =
+        |rect: egui::Rect, align: egui::Layout| egui::UiBuilder::new().max_rect(rect).layout(align);
+    let left = egui::Layout::left_to_right(egui::Align::Center);
+    // Guides: one thin line per ancestor level, so the eye follows the hierarchy.
+    let guide = ui.visuals().widgets.noninteractive.bg_stroke;
+    for level in 0..cell.depth {
+        let x = name_rect.left() + level as f32 * style::INDENT + style::INDENT / 2.0;
+        ui.painter().vline(
+            x.round() + 0.5,
+            name_rect.y_range(),
+            egui::Stroke::new(1.0, guide.color),
+        );
     }
     let selected = view.selected_path.as_deref() == Some(node.full_path.as_str());
-    let name: egui::WidgetText = match hit {
-        Some(h) => highlighted(ui, &node.full_path, &h.positions).into(),
-        None => leaf_name(node).into(),
-    };
-    let column = egui::vec2(
-        (260.0 - row.depth as f32 * 14.0).max(140.0),
-        ui.spacing().interact_size.y,
-    );
-    let label = ui
-        .allocate_ui_with_layout(
-            column,
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.set_min_size(column);
-                ui.add(egui::Button::selectable(selected, name).truncate())
-            },
-        )
-        .inner
-        .on_hover_text(&node.full_path);
-    if label.clicked() {
-        actions.push(Action::SelectPath(node.full_path.clone()));
+    // Each column is a child ui inside the row already allocated: none moves the row's cursor.
+    {
+        let ui = &mut ui.new_child(cell_ui(name_rect, left));
+        ui.set_clip_rect(name_rect.intersect(ui.clip_rect()));
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.add_space(cell.depth as f32 * style::INDENT);
+        match cell.open {
+            Some(open) => {
+                if ui
+                    .add_sized(
+                        egui::vec2(style::INDENT, style::CONTROL_H),
+                        egui::Button::new(style::data(if open { "-" } else { "+" })).frame(false),
+                    )
+                    .on_hover_text(if open { "Collapse" } else { "Expand" })
+                    .clicked()
+                {
+                    actions.push(Action::Toggle(node.full_path.clone()));
+                }
+            }
+            // The expander's place, so names of one level align; none in the pinned panel.
+            None if cell.focusable => ui.add_space(style::INDENT),
+            None => {}
+        }
+        let label = ui
+            .add(
+                egui::Button::selectable(selected, cell.label)
+                    .right_text("")
+                    .truncate()
+                    .min_size(egui::vec2(ui.available_width(), style::CONTROL_H)),
+            )
+            .on_hover_text(&node.full_path);
+        if label.clicked() {
+            actions.push(Action::SelectPath(node.full_path.clone()));
+        }
+        label.context_menu(|ui| {
+            if ui.button("Copy path").clicked() {
+                actions.push(Action::Copy(node.full_path.clone()));
+                ui.close();
+            }
+            if ui
+                .button(if cell.pinned { "Unpin" } else { "Pin" })
+                .clicked()
+            {
+                actions.push(Action::TogglePin(node.full_path.clone()));
+                ui.close();
+            }
+        });
     }
 
     let access = node.effective_access(value_supported);
     let p = widget::present(node, access, send_blocked);
     let pending = t.pending.get(&node.full_path);
-    if p.widget {
-        let focus = selected && std::mem::take(&mut view.focus_widget);
-        let edit = edit_widget(ui, node, pending, view, focus);
-        match &edit {
-            Some((_, SendMode::Drag)) => {
-                view.drag_open.insert(node.full_path.clone());
+    let shown = shown_value(t, node, p.value);
+    {
+        let ui = &mut ui.new_child(cell_ui(control_rect, left));
+        ui.set_clip_rect(control_rect.intersect(ui.clip_rect()));
+        // A slider and its numeric field fill the column, whatever its width; numeric fields
+        // have one width, so their right edges align from row to row.
+        ui.spacing_mut().slider_width =
+            (cols.control - 20.0 * GRID).clamp(12.0 * GRID, 64.0 * GRID);
+        ui.spacing_mut().interact_size.x = 16.0 * GRID;
+        if p.widget {
+            if widget::choose(node) == WidgetKind::Raw
+                && let Shown::Read(text) = &shown
+            {
+                ui.label(style::data(text.clone()));
             }
-            Some((_, SendMode::Final)) => {
-                view.drag_open.remove(&node.full_path);
+            let focus = cell.focusable && selected && std::mem::take(&mut view.focus_widget);
+            let edit = edit_widget(ui, node, pending, view, focus);
+            match &edit {
+                Some((_, SendMode::Drag)) => {
+                    view.drag_open.insert(node.full_path.clone());
+                }
+                Some((_, SendMode::Final)) => {
+                    view.drag_open.remove(&node.full_path);
+                }
+                None => {}
             }
-            None => {}
+            if let Some((args, mode)) = edit
+                && let (Some(path), Some(sig)) = (node.path.clone(), signature_of(node))
+            {
+                actions.push(Action::Send(
+                    SendReq {
+                        server_id: entry.server.id,
+                        path,
+                        signature: sig,
+                        args,
+                        readable: access.readable(),
+                    },
+                    mode,
+                ));
+            }
+        } else {
+            // No widget: the value is the control column's content.
+            match &shown {
+                Shown::Sent(text) => {
+                    ui.label(style::data(text.clone()).italics().weak());
+                }
+                Shown::Unavailable => {
+                    ui.weak("unavailable");
+                }
+                Shown::Read(text) => {
+                    ui.label(style::data(text.clone()));
+                }
+                Shown::Nothing => {}
+            }
+            // The node keeps the access its server declares; what is said is that nothing can
+            // be sent.
+            if let Some(reason) = &p.blocked {
+                ui.weak(CANNOT_SEND).on_hover_text(reason);
+            }
         }
-        if let Some((args, mode)) = edit
-            && let (Some(path), Some(sig)) = (node.path.clone(), signature_of(node))
+    }
+
+    {
+        let ui = &mut ui.new_child(cell_ui(
+            meta_rect,
+            egui::Layout::right_to_left(egui::Align::Center),
+        ));
+        ui.set_clip_rect(meta_rect.intersect(ui.clip_rect()));
         {
-            actions.push(Action::Send(
-                SendReq {
-                    server_id: entry.server.id,
-                    path,
-                    signature: sig,
-                    args,
-                    readable: access.readable(),
-                },
-                mode,
-            ));
+            ui.spacing_mut().item_spacing.x = style::ITEM_GAP;
+            if node.is_method() {
+                let flags = format!(
+                    "{}{}",
+                    if access.readable() { "r" } else { "" },
+                    if access.writable() { "w" } else { "" }
+                );
+                ui.label(style::data(flags).weak());
+                // Narrowed to the flags alone, the column holds nothing else.
+                if cols.meta >= style::META_W
+                    && let Some(tags) = &node.type_raw
+                {
+                    ui.add(egui::Label::new(style::data(tags).weak()).truncate());
+                }
+                if cols.meta >= style::META_W && matches!(shown, Shown::Sent(_)) {
+                    ui.label(style::data("sent").italics().weak())
+                        .on_hover_text(if p.value {
+                            "Sent, not yet confirmed by the server"
+                        } else {
+                            "Sent, not confirmed: this node cannot be read"
+                        });
+                }
+            }
         }
     }
-    match shown_value(t, node, p.value) {
-        Shown::Sent(text) => {
-            ui.label(RichText::new(format!("{text} (sent)")).italics().weak())
-                .on_hover_text(if p.value {
-                    "Sent, not yet confirmed by the server"
-                } else {
-                    "Sent, not confirmed: this node cannot be read"
-                });
+}
+
+/// A row of the pinned panel: the node at `path`, or the path marked absent when the server does
+/// not publish it.
+fn pinned_row(
+    ui: &mut egui::Ui,
+    e: &ServerEntry,
+    path: &str,
+    view: &mut View,
+    actions: &mut Vec<Action>,
+) {
+    let cols = Columns::pinned(ui.available_width());
+    let node = e.tree.as_ref().and_then(|t| t.node(path).map(|n| (t, n)));
+    match node {
+        Some((t, node)) => {
+            let cell = NameCell {
+                label: style::data(path).into(),
+                depth: 0,
+                open: None,
+                pinned: true,
+                focusable: false,
+            };
+            node_row(
+                ui,
+                cols,
+                e,
+                t,
+                node,
+                cell,
+                e.send_blocked().as_deref(),
+                e.value_supported(),
+                view,
+                actions,
+            );
         }
-        Shown::Unavailable => {
-            ui.weak("unavailable");
+        None => {
+            // The same columns as a present node: the path, then "absent" where a control goes.
+            let (row, _) = ui.allocate_exact_size(
+                egui::vec2(cols.name + cols.control + cols.meta, ROW_H),
+                egui::Sense::hover(),
+            );
+            let left = egui::Layout::left_to_right(egui::Align::Center);
+            let name_rect = egui::Rect::from_min_size(row.min, egui::vec2(cols.name, ROW_H));
+            let control_rect = egui::Rect::from_min_size(
+                egui::pos2(name_rect.right(), row.top()),
+                egui::vec2(cols.control, ROW_H),
+            );
+            let ui_at = |ui: &mut egui::Ui, rect| {
+                ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(left))
+            };
+            let label = ui_at(ui, name_rect)
+                .add(
+                    egui::Button::selectable(false, style::data(path).weak())
+                        .right_text("")
+                        .truncate()
+                        .min_size(egui::vec2(cols.name, style::CONTROL_H)),
+                )
+                .on_hover_text(path);
+            label.context_menu(|ui| {
+                if ui.button("Unpin").clicked() {
+                    actions.push(Action::TogglePin(path.to_owned()));
+                    ui.close();
+                }
+            });
+            ui_at(ui, control_rect)
+                .weak("absent")
+                .on_hover_text("Not in the tree of this server: not published, or not loaded yet");
         }
-        Shown::Read(text) => {
-            ui.label(text);
-        }
-        Shown::Nothing => {}
-    }
-    // The node keeps the access its server declares; what is said is that nothing can be sent.
-    if let Some(reason) = &p.blocked {
-        ui.weak(CANNOT_SEND).on_hover_text(reason);
-    }
-    if let Some(tags) = &node.type_raw {
-        ui.weak(RichText::new(tags).monospace());
-    }
-    if node.is_method() {
-        let flags = format!(
-            "{}{}",
-            if access.readable() { "r" } else { "" },
-            if access.writable() { "w" } else { "" }
-        );
-        ui.weak(RichText::new(flags).monospace());
     }
 }
 
@@ -1891,12 +2607,25 @@ fn traffic_tab(
     started: Instant,
     actions: &mut Vec<Action>,
 ) {
+    use traffic::DirFilter;
     ui.horizontal(|ui| {
+        ui.set_min_height(ROW_H);
         ui.add(
             egui::TextEdit::singleline(&mut view.traffic_filter)
+                .font(egui::TextStyle::Monospace)
                 .hint_text("filter path or type tags")
-                .desired_width(200.0),
+                .desired_width(48.0 * GRID),
         );
+        ui.spacing_mut().item_spacing.x = 0.0;
+        for (dir, text) in [
+            (DirFilter::All, "all"),
+            (DirFilter::In, "in"),
+            (DirFilter::Out, "out"),
+        ] {
+            ui.selectable_value(&mut view.traffic_dir, dir, text);
+        }
+        ui.spacing_mut().item_spacing.x = style::ITEM_GAP;
+        ui.add_space(GROUP_GAP);
         let mut paused = entry.traffic.paused();
         if ui.toggle_value(&mut paused, "Pause").changed() {
             entry.traffic.set_paused(paused);
@@ -1905,33 +2634,63 @@ fn traffic_tab(
             entry.traffic.clear();
         }
         if ui.button("Export").clicked() {
-            let view_records = entry.traffic.view(&view.traffic_filter);
+            let view_records = entry.traffic.view(&view.traffic_filter, view.traffic_dir);
             actions.push(Action::Save {
                 stem: "traffic",
                 ext: "txt",
                 contents: traffic::export(started, &view_records),
             });
         }
+        ui.add_space(GROUP_GAP);
         ui.weak(format!(
             "{} of max {} kept",
             entry.traffic.len(),
             traffic::CAPACITY
         ));
     });
-    ui.weak(
-        "time s  dir  path  type tags  arguments. Incoming values arrive over the WebSocket only.",
-    );
+    ui.add_space(style::ITEM_GAP);
     if entry.traffic.is_empty() {
-        ui.weak("No traffic yet. Every message sent, and every value received, is logged here.");
+        ui.weak("No traffic yet. Every message sent, and every value received over the WebSocket, is logged here.");
+        return;
     }
-    let records = entry.traffic.view(&view.traffic_filter);
+    // One line per record; a block opens to its messages, indented under it.
+    let records = entry.traffic.view(&view.traffic_filter, view.traffic_dir);
+    let mut lines: Vec<(Option<Instant>, String)> = Vec::with_capacity(records.len());
+    for r in &records {
+        if r.block.is_empty() {
+            lines.push((None, traffic::line(started, r)));
+        } else {
+            let open = view.traffic_open.contains(&r.at);
+            let mark = if open { "-" } else { "+" };
+            lines.push((Some(r.at), format!("{mark} {}", traffic::line(started, r))));
+            if open {
+                lines.extend(r.block.iter().map(|m| (None, traffic::block_line(m))));
+            }
+        }
+    }
     let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
     egui::ScrollArea::both()
         .auto_shrink(false)
         .stick_to_bottom(true)
-        .show_rows(ui, row_h, records.len(), |ui, range| {
-            for r in &records[range] {
-                ui.label(RichText::new(traffic::line(started, r)).monospace());
+        .show_rows(ui, row_h, lines.len(), |ui, range| {
+            for (block, text) in &lines[range] {
+                match block {
+                    Some(at) => {
+                        let r = ui.add(
+                            egui::Label::new(style::data(text.as_str()))
+                                .sense(egui::Sense::click()),
+                        );
+                        if r.on_hover_text("Click to show or hide the messages")
+                            .clicked()
+                            && !view.traffic_open.remove(at)
+                        {
+                            view.traffic_open.insert(*at);
+                        }
+                    }
+                    None => {
+                        ui.label(style::data(text.as_str()));
+                    }
+                }
             }
         });
 }
@@ -1985,12 +2744,14 @@ mod tests {
 
     impl Harness {
         fn frame(&mut self, events: Vec<egui::Event>) -> egui::FullOutput {
+            self.frame_sized(egui::vec2(1100.0, 700.0), events)
+        }
+
+        /// One frame in a window of `size`.
+        fn frame_sized(&mut self, size: egui::Vec2, events: Vec<egui::Event>) -> egui::FullOutput {
             let input = egui::RawInput {
                 events,
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1100.0, 700.0),
-                )),
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
                 ..egui::RawInput::default()
             };
             let app = &mut self.app;
@@ -2365,6 +3126,237 @@ mod tests {
             })
             .unwrap();
         id
+    }
+
+    /// A server at `host:port`, connected with `HOST_INFO` sending OSC to it and `doc` loaded.
+    fn controllable(h: &mut Harness, host: &str, port: u16, name: &str, doc: &str) -> ServerId {
+        let s = DiscoveredServer {
+            id: ServerId::next(),
+            kind: ServiceKind::OscQuery,
+            name: name.into(),
+            host: host.into(),
+            port,
+            addresses: Vec::new(),
+            origin: Origin::Manual,
+            stale: false,
+        };
+        let id = s.id;
+        h.events.send(Event::ServerFound(s)).unwrap();
+        h.frame(Vec::new());
+        h.app.act(&h.ctx.clone(), Action::SelectServer(id));
+        let (info, _) =
+            oscq_core::HostInfo::parse(br#"{"NAME":"x","EXTENSIONS":{"VALUE":true}}"#).unwrap();
+        let destination = info.osc_destination(host, port);
+        for event in [
+            Event::HostInfo {
+                server_id: id,
+                info,
+                destination,
+            },
+            Event::TreeLoaded {
+                server_id: id,
+                raw: Arc::from(doc),
+                report: parse_document(doc.as_bytes()).unwrap(),
+            },
+            Event::TransportState {
+                server_id: id,
+                state: oscq_core::TransportState::HttpOnly,
+            },
+        ] {
+            h.events.send(event).unwrap();
+        }
+        h.frame(Vec::new());
+        id
+    }
+
+    /// PRD 9.1: a manual entry is removed with its history line and its saved OSC port; a
+    /// discovered server has no remove button and is not removed.
+    #[test]
+    fn a_manual_entry_is_removed_with_its_osc_port_a_discovered_one_is_not() {
+        let mut h = harness_with(Config {
+            manual_entries: vec!["localhost:30339".into(), "10.0.0.2:2345".into()],
+            osc_ports: [("localhost:30339".to_owned(), 30338)].into(),
+            last_selected: Some("localhost:30339".into()),
+            ..Config::default()
+        });
+        let discovered = server();
+        let discovered_id = discovered.id;
+        h.events.send(Event::ServerFound(discovered)).unwrap();
+        let texts = drawn_texts(&h.frame(Vec::new()));
+        assert_eq!(
+            texts.iter().filter(|t| *t == "x").count(),
+            2,
+            "one remove button per manual entry, none for the discovered one: {texts:?}"
+        );
+        let local = h
+            .app
+            .state
+            .servers
+            .iter()
+            .find(|e| e.key() == "localhost:30339")
+            .unwrap()
+            .server
+            .id;
+        assert_eq!(h.app.state.selected, Some(local));
+        h.sent();
+
+        h.app.act(&h.ctx.clone(), Action::RemoveManual(local));
+        assert!(h.app.state.entry(local).is_none());
+        assert_eq!(h.app.state.selected, None);
+        assert_eq!(h.app.config.manual_entries, ["10.0.0.2:2345"]);
+        assert!(
+            h.app.config.osc_ports.is_empty(),
+            "its OSC port goes with it"
+        );
+        assert_eq!(h.app.config.last_selected, None);
+        assert!(matches!(
+            h.sent().as_slice(),
+            [Command::Disconnect { server_id }] if *server_id == local
+        ));
+        assert_eq!(h.app.history.len(), 1);
+
+        h.app
+            .act(&h.ctx.clone(), Action::RemoveManual(discovered_id));
+        assert!(
+            h.app.state.entry(discovered_id).is_some(),
+            "a discovered server stays: it would come back"
+        );
+        let texts = drawn_texts(&h.frame(Vec::new()));
+        assert_eq!(texts.iter().filter(|t| *t == "x").count(), 1);
+    }
+
+    /// PRD 9.8: nodes pinned from the tree are listed in their own panel, whatever the tree
+    /// shows, are listened to, and are kept per server in the config.
+    #[test]
+    fn pinned_nodes_stay_in_their_panel_and_persist_per_server() {
+        let mut h = harness();
+        let id = connected(&mut h, &flat_tree(30));
+        h.frame(Vec::new());
+        let ctx = h.ctx.clone();
+        for path in ["/p025", "/g/x"] {
+            h.app.act(&ctx, Action::TogglePin(path.into()));
+        }
+        let key = h.app.state.entry(id).unwrap().key();
+        assert_eq!(h.app.config.pinned_paths[&key], ["/p025", "/g/x"]);
+
+        // Another tab, and a tree rooted elsewhere: the pinned panel still shows both.
+        h.app.view.tab = Tab::Traffic;
+        h.app.view.prefix = "/g".into();
+        h.frame(Vec::new());
+        let texts = drawn_texts(&h.frame(Vec::new()));
+        for path in ["/p025", "/g/x"] {
+            assert!(
+                texts.iter().any(|t| t == path),
+                "{path} in the panel: {texts:?}"
+            );
+        }
+        let (listen, _) = listen_commands(&h.sent());
+        assert!(
+            listen.contains(&"/p025".to_owned()) && listen.contains(&"/g/x".to_owned()),
+            "pinned methods are listened to: {listen:?}"
+        );
+
+        let saved: Config = serde_json::from_slice(&h.app.config.to_bytes()).unwrap();
+        assert_eq!(saved.pinned_paths[&key], ["/p025", "/g/x"]);
+
+        h.app.act(&ctx, Action::TogglePin("/p025".into()));
+        h.app.act(&ctx, Action::TogglePin("/g/x".into()));
+        assert!(!h.app.config.pinned_paths.contains_key(&key), "none left");
+        let texts = drawn_texts(&h.frame(Vec::new()));
+        assert!(!texts.iter().any(|t| t == "/p025"));
+    }
+
+    /// PRD 9.9: capture then recall on the same server sends every captured value as one block;
+    /// captured with pins, only the pinned ones; recalled on another server, what matches is
+    /// sent and the rest is counted, without blocking. Slots are kept in the config.
+    #[test]
+    fn a_preset_is_captured_and_recalled_here_and_on_another_server() {
+        let mut h = harness();
+        let ctx = h.ctx.clone();
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{
+            "gain":{"FULL_PATH":"/gain","TYPE":"f","ACCESS":3,"VALUE":[0.5]},
+            "name":{"FULL_PATH":"/name","TYPE":"s","ACCESS":3,"VALUE":["kick"]},
+            "mute":{"FULL_PATH":"/mute","TYPE":"T","ACCESS":3,"VALUE":[false]},
+            "meter":{"FULL_PATH":"/meter","TYPE":"f","ACCESS":1,"VALUE":[0.1]}}}"#;
+        let a = controllable(&mut h, "127.0.0.1", 2345, "Max", doc);
+        h.sent();
+        h.app.act(&ctx, Action::Capture(3));
+        let preset = h.app.config.presets[&3].clone();
+        assert_eq!(preset.server, "127.0.0.1:2345");
+        assert_eq!(preset.values.len(), 3, "the writable methods, not /meter");
+
+        h.app.act(&ctx, Action::Recall(3));
+        let blocks: Vec<(String, Vec<String>)> = h
+            .sent()
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::SendBlock {
+                    server_id,
+                    label,
+                    messages,
+                } if server_id == a => Some((
+                    label,
+                    messages
+                        .iter()
+                        .map(|m| m.path.as_str().to_owned())
+                        .collect(),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            blocks,
+            [(
+                "preset 03".to_owned(),
+                vec!["/gain".to_owned(), "/mute".to_owned(), "/name".to_owned()]
+            )],
+            "one block holding every value"
+        );
+        let t = h.app.state.entry(a).unwrap().tree.as_ref().unwrap();
+        assert!(t.pending.contains_key("/gain"), "shown as sent until read");
+
+        // With a pin, the capture takes only the pinned node.
+        h.app.act(&ctx, Action::TogglePin("/name".into()));
+        h.app.act(&ctx, Action::Capture(4));
+        assert_eq!(h.app.config.presets[&4].values.len(), 1);
+
+        // Another server: /gain matches, /name has another type, /mute does not exist.
+        let other = r#"{"FULL_PATH":"/","CONTENTS":{
+            "gain":{"FULL_PATH":"/gain","TYPE":"f","ACCESS":3},
+            "name":{"FULL_PATH":"/name","TYPE":"i","ACCESS":3}}}"#;
+        let b = controllable(&mut h, "10.0.0.9", 9000, "Helper", other);
+        h.sent();
+        h.app.act(&ctx, Action::Recall(3));
+        let sent: Vec<Vec<String>> = h
+            .sent()
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::SendBlock {
+                    server_id,
+                    messages,
+                    ..
+                } if server_id == b => Some(
+                    messages
+                        .iter()
+                        .map(|m| m.path.as_str().to_owned())
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sent, [vec!["/gain".to_owned()]]);
+        let note = h.app.view.note.clone().unwrap();
+        assert!(
+            note.contains("1 sent") && note.contains("2 not found on this server"),
+            "{note}"
+        );
+        assert!(note.contains("captured on Max"), "{note}");
+
+        let saved: Config = serde_json::from_slice(&h.app.config.to_bytes()).unwrap();
+        assert_eq!(
+            saved.presets, h.app.config.presets,
+            "slots kept in the config"
+        );
     }
 
     /// Splits commands into listened and ignored paths, in order.
@@ -2828,6 +3820,358 @@ mod tests {
         texts
     }
 
+    /// Every text the frame drew, with its layout rectangle on screen and the clip it was drawn in.
+    fn drawn_text_rects(out: &egui::FullOutput) -> Vec<(String, egui::Rect, egui::Rect)> {
+        fn walk(
+            shape: &egui::Shape,
+            clip: egui::Rect,
+            out: &mut Vec<(String, egui::Rect, egui::Rect)>,
+        ) {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, clip, out)),
+                egui::Shape::Text(t) => out.push((
+                    t.galley.text().to_owned(),
+                    t.galley.rect.translate(t.pos.to_vec2()),
+                    clip,
+                )),
+                _ => {}
+            }
+        }
+        let mut texts = Vec::new();
+        for clipped in &out.shapes {
+            walk(&clipped.shape, clipped.clip_rect, &mut texts);
+        }
+        texts
+    }
+
+    /// The toolbar of the centre never runs off screen or under a side pane: from the narrowest
+    /// window up, with the side panes at their default width or dragged as wide as they go, each
+    /// of its controls is drawn once, whole, inside its clip and inside the window. Refresh above
+    /// all: with a server that never notifies, it is the only way to read a value again. The same
+    /// for the sixteen preset slots, and for every text along the bottom of the window: the
+    /// theme and About under the server list, the status bar and its message.
+    #[test]
+    fn every_toolbar_control_stays_on_screen_whatever_the_width() {
+        const CONTROLS: [&str; 6] = [
+            "filter  /",
+            "root at path",
+            "Tree",
+            "JSON",
+            "Traffic",
+            "Refresh",
+        ];
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
+        for width in [640.0, 720.0, 800.0, 960.0, 1100.0, 1440.0, 1920.0] {
+            for dragged in [false, true] {
+                let mut h = harness();
+                controllable(&mut h, "127.0.0.1", 2345, "S", doc);
+                h.app
+                    .config
+                    .pinned_paths
+                    .insert("127.0.0.1:2345".into(), vec!["/a".into()]);
+                h.app.view.note = Some("a note long enough to need the whole width ".repeat(4));
+                if dragged {
+                    // Both side panes as a previous session left them, wider than any window.
+                    for pane in ["servers", "work"] {
+                        h.ctx.data_mut(|d| {
+                            d.insert_persisted(
+                                egui::Id::new(pane),
+                                egui::PanelState {
+                                    outer_rect: egui::Rect::from_min_size(
+                                        egui::Pos2::ZERO,
+                                        egui::vec2(2000.0, 600.0),
+                                    ),
+                                },
+                            )
+                        });
+                    }
+                }
+                let size = egui::vec2(width, 600.0);
+                h.frame_sized(size, Vec::new());
+                let out = h.frame_sized(size, Vec::new());
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+                let drawn = drawn_text_rects(&out);
+                let whole = |text: &str, rect: &egui::Rect, clip: &egui::Rect| {
+                    assert!(
+                        // Half a pixel of slack: clip rectangles are rounded to the pixel.
+                        clip.intersect(screen).expand(0.5).contains_rect(*rect),
+                        "{text:?} at {rect:?} cut by {clip:?} at width {width}, panes dragged {dragged}"
+                    );
+                };
+                for control in CONTROLS {
+                    let found: Vec<_> = drawn.iter().filter(|(t, _, _)| t == control).collect();
+                    assert_eq!(
+                        found.len(),
+                        1,
+                        "{control:?} drawn once at width {width}, panes dragged {dragged}"
+                    );
+                    whole(control, &found[0].1, &found[0].2);
+                }
+                let slots: Vec<_> = drawn
+                    .iter()
+                    .filter(|(t, _, _)| {
+                        t == "set" || t.parse::<usize>().is_ok_and(|n| (1..=16).contains(&n))
+                    })
+                    .collect();
+                assert_eq!(
+                    slots.len(),
+                    2 * presets::SLOTS,
+                    "every slot at width {width}"
+                );
+                slots.iter().for_each(|(t, r, c)| whole(t, r, c));
+                // The access flags close each row on the right, of the tree and of the pinned
+                // panel: seen whole, the widget before them is on screen too.
+                let flags: Vec<_> = drawn.iter().filter(|(t, _, _)| t == "rw").collect();
+                assert_eq!(
+                    flags.len(),
+                    2,
+                    "the tree row and the pinned row at width {width}"
+                );
+                flags.iter().for_each(|(t, r, c)| whole(t, r, c));
+                let pinned: Vec<_> = drawn.iter().filter(|(t, _, _)| t == "/a").collect();
+                assert_eq!(pinned.len(), 1, "the pinned row at width {width}");
+                whole("/a", &pinned[0].1, &pinned[0].2);
+                let band = size.y - ROW_H - 2.0 * GRID;
+                let status: Vec<_> = drawn.iter().filter(|(_, r, _)| r.min.y >= band).collect();
+                assert!(
+                    status.len() >= 4,
+                    "the status bar drawn at width {width}: {status:?}"
+                );
+                status.iter().for_each(|(t, r, c)| whole(t, r, c));
+            }
+        }
+    }
+
+    /// The about box says the name, the version, the author and Structure Void, the license once
+    /// the manifest declares one, and links the repository, all read from the manifest.
+    #[test]
+    fn the_about_box_names_the_app_its_author_its_license_and_its_repository() {
+        let mut h = harness();
+        h.app.view.about_open = true;
+        // A modal is sized on its first frame and drawn on the next.
+        h.frame(Vec::new());
+        let texts = drawn_texts(&h.frame(Vec::new()));
+        let mut expected = vec![
+            "Void OSCQ".to_owned(),
+            format!("version {}", env!("CARGO_PKG_VERSION")),
+            "Julien Bayle, Structure Void".to_owned(),
+            "github.com/gluon/void-oscq".to_owned(),
+        ];
+        let license = env!("CARGO_PKG_LICENSE");
+        if !license.is_empty() {
+            expected.push(format!("License {license}"));
+        }
+        for e in &expected {
+            assert!(texts.contains(e), "{e:?} not in the about box: {texts:?}");
+        }
+        assert_eq!(
+            texts.iter().any(|t| t.starts_with("License ")),
+            !license.is_empty(),
+            "a license line exactly when the manifest declares one"
+        );
+    }
+
+    /// With no server found, the server pane says since when it has been searching, as a time
+    /// of day, so the text holds still: a running count would repaint the window at rest.
+    #[test]
+    fn with_no_server_found_the_pane_says_since_when_it_searches() {
+        let mut h = harness();
+        let texts = drawn_texts(&h.frame(Vec::new()));
+        let line = texts
+            .iter()
+            .find(|t| t.starts_with("Searching since "))
+            .unwrap_or_else(|| panic!("no search line: {texts:?}"));
+        assert!(line.contains("none found"), "{line}");
+        let time = line["Searching since ".len()..].split(',').next().unwrap();
+        let hm = time.trim_end_matches(" UTC");
+        assert!(
+            hm.len() == 5 && hm.as_bytes()[2] == b':' && hm.replace(':', "").parse::<u32>().is_ok(),
+            "a time of day, {time:?}"
+        );
+        // Start up, then rest: from then on, one frame and nothing asked for.
+        let (_, t, _) = h.frames_until_idle(20.0, &[]);
+        let (frames, _, causes) = h.frames_until_idle(t + 60.0, &[]);
+        assert_eq!(
+            (frames, causes.len()),
+            (1, 0),
+            "the line asks for no repaint: {causes:?}"
+        );
+        assert!(
+            causes.is_empty(),
+            "the line asks for no repaint: {causes:?}"
+        );
+    }
+
+    /// On a narrow tree the name gives way first, then the metadata down to the flags, then the
+    /// name again; the widget keeps its width throughout, and the columns never take more than
+    /// the width given while there is room for the widget and the flags.
+    #[test]
+    fn narrow_tree_columns_give_up_the_name_then_the_metadata_never_the_widget() {
+        let mut previous: Option<Columns> = None;
+        for w in (184..=700).rev().step_by(4).map(|w| w as f32) {
+            let c = Columns::tree(w);
+            assert!(
+                c.name + c.control + c.meta <= w + 0.5,
+                "{w}: columns wider than the pane"
+            );
+            assert!(c.control >= style::CONTROL_W, "{w}: the widget narrowed");
+            if c.meta < style::META_W {
+                assert_eq!(c.meta, style::FLAGS_W, "{w}");
+                assert!(
+                    w < style::NAME_FLOOR + style::CONTROL_W + style::META_W,
+                    "{w}: the metadata gave way while the name could"
+                );
+            }
+            if let Some(p) = previous
+                && p.meta == c.meta
+            {
+                assert!(
+                    c.name <= p.name && c.control <= p.control,
+                    "{w}: grew while narrowing"
+                );
+            }
+            previous = Some(c);
+        }
+        assert_eq!(Columns::tree(200.0).meta, style::FLAGS_W);
+        assert_eq!(Columns::tree(440.0).meta, style::META_W);
+    }
+
+    /// Where the panes' backgrounds were painted, left to right, along the line at `y`: the
+    /// spans of every rectangle filled with the panel colour that crosses it, merged.
+    fn painted_spans(out: &egui::FullOutput, fill: Color32, y: f32) -> Vec<(f32, f32)> {
+        fn walk(shape: &egui::Shape, fill: Color32, y: f32, spans: &mut Vec<(f32, f32)>) {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, fill, y, spans)),
+                egui::Shape::Rect(r) if r.fill == fill && r.rect.y_range().contains(y) => {
+                    spans.push((r.rect.min.x, r.rect.max.x))
+                }
+                _ => {}
+            }
+        }
+        let mut spans = Vec::new();
+        for clipped in &out.shapes {
+            walk(&clipped.shape, fill, y, &mut spans);
+        }
+        spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut merged: Vec<(f32, f32)> = Vec::new();
+        for (lo, hi) in spans {
+            match merged.last_mut() {
+                // A separator line, one pixel wide, is drawn between two panes, not filled.
+                Some(last) if lo <= last.1 + 1.5 => last.1 = last.1.max(hi),
+                _ => merged.push((lo, hi)),
+            }
+        }
+        merged
+    }
+
+    /// The handles of the side panes stop dead at their limits, and each pane follows its handle
+    /// whole: dragged past what the centre can give, past the pane's least width, and out of the
+    /// window on either side, with nothing pinned to fill the right pane. On every frame of the
+    /// drag the window is painted from edge to edge, the handle never passes its limit, and on
+    /// release the pane keeps the width it was dragged to.
+    #[test]
+    fn the_pane_handles_stop_dead_at_their_limits() {
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
+        for width in [640.0, 900.0, 1100.0, 1600.0] {
+            let mut h = harness();
+            controllable(&mut h, "127.0.0.1", 2345, "S", doc);
+            let size = egui::vec2(width, 600.0);
+            h.frame_sized(size, Vec::new());
+            h.frame_sized(size, Vec::new());
+            let ctx = h.ctx.clone();
+            let fill = ctx.global_style().visuals.panel_fill;
+            let y = 300.0;
+            let pointer = |x: f32| egui::pos2(x, y);
+            for pane in ["work", "servers"] {
+                // The handle's place, after checking the window is painted whole.
+                let edge = |out: &egui::FullOutput, when: &str| {
+                    let spans = painted_spans(out, fill, y);
+                    assert!(
+                        spans.len() == 1 && spans[0].0 <= 0.5 && spans[0].1 >= width - 0.5,
+                        "unpainted gaps {when}, {pane} handle, window {width}: painted {spans:?}"
+                    );
+                    ctx.read_response(egui::Id::new(pane).with("__resize"))
+                        .unwrap()
+                        .rect
+                        .center()
+                        .x
+                };
+                for targets in [
+                    vec![300.0, 100.0, 0.0, -200.0],
+                    vec![width - 100.0, width - 20.0, width + 200.0],
+                ] {
+                    let out = h.frame_sized(size, Vec::new());
+                    let start = edge(&out, "before the drag");
+                    h.frame_sized(size, vec![egui::Event::PointerMoved(pointer(start))]);
+                    h.frame_sized(
+                        size,
+                        vec![egui::Event::PointerButton {
+                            pos: pointer(start),
+                            button: egui::PointerButton::Primary,
+                            pressed: true,
+                            modifiers: Modifiers::NONE,
+                        }],
+                    );
+                    let servers = egui::PanelState::load(&h.ctx, egui::Id::new("servers"))
+                        .unwrap()
+                        .outer_rect
+                        .max
+                        .x;
+                    // The leftmost the handle may go, and the rightmost.
+                    let (lo, hi) = if pane == "work" {
+                        (
+                            (servers + style::CENTRE_MIN).min(width - style::WORK_MIN),
+                            width - style::WORK_MIN,
+                        )
+                    } else {
+                        (
+                            style::SERVERS_MIN,
+                            (width - style::CENTRE_MIN - style::WORK_DEFAULT)
+                                .max(style::SERVERS_MIN),
+                        )
+                    };
+                    let mut last = start;
+                    for x in &targets {
+                        let out = h.frame_sized(size, vec![egui::Event::PointerMoved(pointer(*x))]);
+                        last = edge(&out, &format!("dragging to {x}"));
+                        assert!(
+                            (lo - 0.5..=hi + 0.5).contains(&last),
+                            "{pane} handle at {last}, dragging to {x}, its range {lo}..{hi}, window {width}"
+                        );
+                    }
+                    if targets[targets.len() - 1] < 0.0 {
+                        assert!(
+                            (last - lo).abs() < 1.0,
+                            "{pane} dragged left stops at {last}, its limit {lo}, window {width}"
+                        );
+                    } else {
+                        assert!(
+                            (last - hi).abs() < 1.0,
+                            "{pane} dragged right stops at {last}, its limit {hi}, window {width}"
+                        );
+                    }
+                    let end = *targets.last().unwrap();
+                    h.frame_sized(
+                        size,
+                        vec![egui::Event::PointerButton {
+                            pos: pointer(end),
+                            button: egui::PointerButton::Primary,
+                            pressed: false,
+                            modifiers: Modifiers::NONE,
+                        }],
+                    );
+                    h.frame_sized(size, vec![egui::Event::PointerGone]);
+                    let out = h.frame_sized(size, Vec::new());
+                    let released = edge(&out, "after release");
+                    assert!(
+                        (released - last).abs() < 0.5,
+                        "{pane} handle went from {last} to {released} on release, window {width}"
+                    );
+                }
+            }
+        }
+    }
+
     /// A node's access is what its server declares, whatever the connection: when a reconnection
     /// fails, a read write node stays read write, explicit or inferred from `HOST_INFO`, and the
     /// row says nothing can be sent, with the reason, never "read only". The failure is said once.
@@ -2921,8 +4265,12 @@ mod tests {
         }
         let texts = drawn_texts(&h.frame(Vec::new()));
         assert!(!texts.iter().any(|t| t == "read only"), "{texts:?}");
-        assert_eq!(texts.iter().filter(|t| *t == CANNOT_SEND).count(), 2);
-        assert_eq!(texts.iter().filter(|t| *t == "rw").count(), 2);
+        assert_eq!(
+            texts.iter().filter(|t| *t == CANNOT_SEND).count(),
+            2,
+            "{texts:?}"
+        );
+        assert_eq!(texts.iter().filter(|t| *t == "rw").count(), 2, "{texts:?}");
         assert_eq!(
             texts
                 .iter()
@@ -3146,7 +4494,7 @@ mod tests {
         assert_eq!(values_text(e).unwrap().0, "values live over the WebSocket");
         assert!(
             e.traffic
-                .view("")
+                .view("", traffic::DirFilter::All)
                 .iter()
                 .any(|r| r.direction == oscq_core::Direction::In && r.path == "/g0/p0"),
             "logged as received"

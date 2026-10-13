@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds "Void OSCQ.app" from the aarch64 and x86_64 release builds, joined with lipo into one
-# universal binary, with its icon, ad hoc signed. Run on macOS from the workspace root, after:
+# universal binary, with its icon and the license texts, ad hoc signed. Run on macOS from the
+# workspace root, after:
 #   cargo build --release --locked -p void-oscq --target aarch64-apple-darwin
 #   cargo build --release --locked -p void-oscq --target x86_64-apple-darwin
 # Arguments: version, output directory. Prints the path of the bundle.
@@ -33,6 +34,8 @@ if ! file "$app/Contents/Resources/AppIcon.icns" | grep -q "Mac OS X icon"; then
     echo "FAIL: AppIcon.icns is not an icon file: $(file "$app/Contents/Resources/AppIcon.icns")"
     exit 1
 fi
+
+./packaging/licenses.sh "$app/Contents/Resources/licenses"
 
 # Ad hoc signature, no identity: Apple Silicon runs no unsigned code, and a bundle whose seal does
 # not match its content is reported as damaged. With it, macOS reports an unidentified developer,
