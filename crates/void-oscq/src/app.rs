@@ -143,6 +143,9 @@ struct View {
     osc_port_text: String,
     osc_port_shown: Option<(ServerId, u16)>,
     about_open: bool,
+    /// The macOS application menu's About item opens the about box.
+    #[cfg(target_os = "macos")]
+    about_menu_installed: bool,
     note: Option<String>,
     geometry_dirty_since: Option<Instant>,
 }
@@ -285,6 +288,13 @@ impl VoidApp {
                 "first frame {:.1} ms after launch",
                 t.elapsed().as_secs_f64() * 1000.0
             );
+        }
+        #[cfg(target_os = "macos")]
+        if !self.view.about_menu_installed {
+            self.view.about_menu_installed = crate::macos_menu::install(&ctx);
+        }
+        if ctx.data_mut(|d| d.remove_temp::<bool>(about_request_id())) == Some(true) {
+            self.view.about_open = true;
         }
         self.drain(&ctx);
         self.flush_limiter(&ctx);
@@ -812,7 +822,7 @@ impl VoidApp {
                         self.save_config(ui.ctx());
                     }
                     if ui.button("About").clicked() {
-                        self.view.about_open = true;
+                        request_about(ui.ctx());
                     }
                 });
                 ui.add_space(GRID);
@@ -1397,6 +1407,17 @@ fn error_text(e: &ServerEntry) -> Option<String> {
         Some(p) => format!("{p}: {}", err.message),
         None => err.message.clone(),
     })
+}
+
+fn about_request_id() -> egui::Id {
+    egui::Id::new("about_requested")
+}
+
+/// Opens the about box on the next frame of `ctx`. The macOS application menu's About item calls
+/// it, outside any frame.
+pub fn request_about(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.insert_temp(about_request_id(), true));
+    ctx.request_repaint();
 }
 
 /// What the about box says, from the manifest so it cannot drift from the release: the name, the
@@ -3942,33 +3963,74 @@ mod tests {
         }
     }
 
-    /// The about box says the name, the version, the author and Structure Void, the license once
-    /// the manifest declares one, and links the repository, all read from the manifest.
+    /// The about box draws its six pieces of information, each found by its text among what the
+    /// frame painted, whole, inside the window, inside its clip and not transparent: the name, the
+    /// version, Julien Bayle, Structure Void, the license and the repository. It is opened as both
+    /// its entries open it, the About button and the macOS application menu: `request_about`.
+    /// A box that opens empty, or without any one of them, fails.
     #[test]
-    fn the_about_box_names_the_app_its_author_its_license_and_its_repository() {
+    fn the_about_box_draws_its_six_pieces_of_information() {
         let mut h = harness();
-        h.app.view.about_open = true;
-        // A modal is sized on its first frame and drawn on the next.
-        h.frame(Vec::new());
-        let texts = drawn_texts(&h.frame(Vec::new()));
-        let mut expected = vec![
-            "Void OSCQ".to_owned(),
-            format!("version {}", env!("CARGO_PKG_VERSION")),
-            "Julien Bayle, Structure Void".to_owned(),
-            "github.com/gluon/void-oscq".to_owned(),
-        ];
+        let size = egui::vec2(1100.0, 700.0);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        request_about(&h.ctx);
+        // The request is taken on the next frame; a modal is sized on its first frame and
+        // drawn on the one after.
+        let mut out = h.frame(Vec::new());
+        for _ in 0..3 {
+            out = h.frame(Vec::new());
+        }
+        assert!(h.app.view.about_open, "the request opened the box");
+        let mut drawn: Vec<(String, egui::Rect, egui::Rect, f32)> = Vec::new();
+        fn walk(
+            shape: &egui::Shape,
+            clip: egui::Rect,
+            out: &mut Vec<(String, egui::Rect, egui::Rect, f32)>,
+        ) {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, clip, out)),
+                egui::Shape::Text(t) => out.push((
+                    t.galley.text().to_owned(),
+                    t.galley.rect.translate(t.pos.to_vec2()),
+                    clip,
+                    t.opacity_factor,
+                )),
+                _ => {}
+            }
+        }
+        for clipped in &out.shapes {
+            walk(&clipped.shape, clipped.clip_rect, &mut drawn);
+        }
         let license = env!("CARGO_PKG_LICENSE");
-        if !license.is_empty() {
-            expected.push(format!("License {license}"));
-        }
-        for e in &expected {
-            assert!(texts.contains(e), "{e:?} not in the about box: {texts:?}");
-        }
         assert_eq!(
-            texts.iter().any(|t| t.starts_with("License ")),
-            !license.is_empty(),
-            "a license line exactly when the manifest declares one"
+            license, "GPL-3.0-or-later",
+            "the manifest declares the license"
         );
+        let version = format!("version {}", env!("CARGO_PKG_VERSION"));
+        let license_line = format!("License {license}");
+        let six: [(&str, &str); 6] = [
+            ("the name", "Void OSCQ"),
+            ("the version", &version),
+            ("the author", "Julien Bayle"),
+            ("the studio", "Structure Void"),
+            ("the license", &license_line),
+            ("the repository", "github.com/gluon/void-oscq"),
+        ];
+        for (what, text) in six {
+            let found: Vec<_> = drawn.iter().filter(|(t, ..)| t.contains(text)).collect();
+            assert!(
+                !found.is_empty(),
+                "{what}, {text:?}, is not drawn: {:?}",
+                drawn.iter().map(|d| &d.0).collect::<Vec<_>>()
+            );
+            for (t, rect, clip, opacity) in found {
+                assert!(
+                    clip.intersect(screen).expand(0.5).contains_rect(*rect),
+                    "{what}, {t:?}, at {rect:?}, cut by {clip:?}"
+                );
+                assert!(*opacity > 0.0, "{what}, {t:?}, drawn transparent");
+            }
+        }
     }
 
     /// With no server found, the server pane says since when it has been searching, as a time

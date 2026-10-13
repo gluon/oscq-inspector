@@ -59,6 +59,11 @@ Case: the work pane with nothing pinned, on the human's Mac, 2026-10-13.
 
 `time::UtcOffset::current_local_offset` fails on Linux and macOS as soon as the process has a second thread. Read it first thing in `main`, before the async runtime or the window start.
 
+On macOS, winit gives the application a default menu whose first item, "About" and the process name, opens the system's standard about panel, not anything the application draws. That panel reads the bundle: run outside one, with `cargo run`, it shows a generic folder icon and the process name. A test of the application's own about box says nothing of it. Point the item at the application's box.
+Case: "the about box is empty" on the human's Mac, 2026-10-13, while the box drawn by the application passed its test.
+
+A test of a window opened by setting its state directly does not cover the way a user opens it. Open it as the user's entries do.
+
 ## Status display
 
 An error kept until another error replaces it outlives what it described. The status bar showed a failed connection under the tree the next connection had loaded. Clear an error when the operation it comes from succeeds, and drop the errors of an attempt that a newer one replaced.

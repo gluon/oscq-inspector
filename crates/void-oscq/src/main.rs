@@ -7,6 +7,8 @@ mod app;
 mod config;
 mod icon;
 mod json_view;
+#[cfg(target_os = "macos")]
+mod macos_menu;
 mod presets;
 mod rate;
 mod state;
