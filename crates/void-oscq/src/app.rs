@@ -937,58 +937,89 @@ impl VoidApp {
         } else {
             "the pinned nodes"
         };
-        // Rows of as many slots as the pane holds, four at most. Every cell has the same width,
-        // so plain rows line up as a grid would, and none runs past the edge of the pane.
+        // Each slot names its two actions, Recall and Capture, and shows whether it holds
+        // anything: a held slot on a tinted ground, its number plain, Recall on; an empty slot,
+        // its number faint, Recall off. Rows of as many slots as the pane holds, two at most.
         const NUMBERS: [&str; presets::SLOTS] = [
             "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14",
             "15", "16",
         ];
-        const RECALL_W: f32 = 8.0 * GRID;
-        const SET_W: f32 = 9.0 * GRID;
-        let cell = RECALL_W + SET_W;
-        let cols = (((ui.available_width() + GRID) / (cell + GRID)).floor() as usize).clamp(1, 4);
+        let (number_w, recall_w, capture_w) = (6.0 * GRID, 12.0 * GRID, 14.0 * GRID);
+        let cell = number_w + recall_w + capture_w;
+        let cols = (((ui.available_width() + GRID) / (cell + GRID)).floor() as usize).clamp(1, 2);
+        let held_fill = ui.visuals().selection.bg_fill.gamma_multiply(0.35);
         for (r, numbers) in NUMBERS.chunks(cols).enumerate() {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = GRID;
                 for (c, number) in numbers.iter().enumerate() {
                     let slot = r * cols + c + 1;
                     let held = self.config.presets.get(&slot);
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 0.0;
-                        let recall = ui
-                            .add_enabled(
-                                held.is_some(),
-                                egui::Button::new(style::data(*number))
-                                    .min_size(egui::vec2(RECALL_W, style::CONTROL_H)),
-                            )
-                            // Hover texts are built only when shown: a frame builds none.
-                            .on_hover_ui(|ui| {
-                                if let Some(p) = held {
-                                    ui.label(format!(
-                                        "Recall: send {} values, captured on {}",
-                                        p.values.len(),
-                                        p.server_name
-                                    ));
-                                }
-                            })
-                            .on_disabled_hover_text("Empty");
-                        if recall.clicked() {
-                            actions.push(Action::Recall(slot));
-                        }
-                        if ui
-                            .add(
-                                egui::Button::new("set")
-                                    .small()
-                                    .min_size(egui::vec2(SET_W, style::CONTROL_H)),
-                            )
-                            .on_hover_ui(|ui| {
-                                ui.label(format!("Capture {scope} of this server"));
-                            })
-                            .clicked()
-                        {
-                            actions.push(Action::Capture(slot));
-                        }
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::vec2(cell, style::CONTROL_H),
+                        egui::Sense::hover(),
+                    );
+                    if held.is_some() {
+                        ui.painter().rect_filled(rect, 2.0, held_fill);
+                    }
+                    let ui = &mut ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(rect)
+                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                    );
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    let n = style::data(*number);
+                    // Hover texts are built only when shown: a frame builds none.
+                    ui.add_sized(
+                        egui::vec2(number_w, style::CONTROL_H),
+                        egui::Label::new(if held.is_some() { n } else { n.weak() }),
+                    )
+                    .on_hover_ui(|ui| {
+                        ui.label(match held {
+                            Some(p) => format!(
+                                "Slot {number}: {} values, captured on {}",
+                                p.values.len(),
+                                p.server_name
+                            ),
+                            None => format!("Slot {number}: empty"),
+                        });
                     });
+                    let recall = ui
+                        .add_enabled(
+                            held.is_some(),
+                            egui::Button::new(RichText::new("Recall").small())
+                                .min_size(egui::vec2(recall_w, style::CONTROL_H)),
+                        )
+                        .on_hover_ui(|ui| {
+                            if let Some(p) = held {
+                                ui.label(format!(
+                                    "Send its {} values to this server",
+                                    p.values.len()
+                                ));
+                            }
+                        })
+                        .on_disabled_hover_text("Empty: Capture first");
+                    if recall.clicked() {
+                        actions.push(Action::Recall(slot));
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new("Capture").small())
+                                .min_size(egui::vec2(capture_w, style::CONTROL_H)),
+                        )
+                        .on_hover_ui(|ui| {
+                            ui.label(format!(
+                                "Store {scope} of this server in this slot{}",
+                                if held.is_some() {
+                                    ", replacing what it holds"
+                                } else {
+                                    ""
+                                }
+                            ));
+                        })
+                        .clicked()
+                    {
+                        actions.push(Action::Capture(slot));
+                    }
                 }
             });
         }
@@ -1204,42 +1235,19 @@ impl VoidApp {
             return;
         };
         ui.add_space(GRID);
-        // The toolbar wraps onto further lines rather than run under the right pane: every
-        // control, Refresh included, stays on screen whatever the width.
+        // The tabs and Refresh first, then the filter and the root fields sharing what the line
+        // has left. The fields go to a line of their own only when that is less than their
+        // least widths: on a wide window everything holds on one line; on a narrow one nothing
+        // runs under the right pane.
         ui.horizontal_wrapped(|ui| {
             ui.set_min_height(ROW_H);
             let width = ui.available_width();
-            // A text field shrinks to what is left of the line instead of wrapping: wrap it.
-            let field_width = |ui: &mut egui::Ui, wanted: f32| {
-                let w = wanted.min(width);
-                if ui.available_width() < w {
-                    ui.end_row();
-                }
-                w
-            };
-            let w = field_width(ui, 36.0 * GRID);
-            let filter = ui.add(
-                egui::TextEdit::singleline(&mut self.view.filter)
-                    .id(egui::Id::new("filter"))
-                    .font(egui::TextStyle::Monospace)
-                    .hint_text("filter  /")
-                    .desired_width(w),
-            );
-            if std::mem::take(&mut self.view.focus_filter) {
-                filter.request_focus();
-            }
-            let w = field_width(ui, 28.0 * GRID);
-            ui.add(
-                egui::TextEdit::singleline(&mut self.view.prefix)
-                    .font(egui::TextStyle::Monospace)
-                    .hint_text("root at path")
-                    .desired_width(w),
-            );
-            ui.add_space(GROUP_GAP);
             ui.selectable_value(&mut self.view.tab, Tab::Tree, "Tree");
             ui.selectable_value(&mut self.view.tab, Tab::Json, "JSON");
             ui.selectable_value(&mut self.view.tab, Tab::Traffic, "Traffic");
-            ui.add_space(GROUP_GAP);
+            // Groups apart by GROUP_GAP, the item spacing included.
+            let gap = ui.spacing().item_spacing.x;
+            ui.add_space(GROUP_GAP - gap);
             if ui
                 .button("Refresh")
                 .on_hover_text("Refresh the selected node, or the whole tree (F5)")
@@ -1247,6 +1255,36 @@ impl VoidApp {
             {
                 actions.push(self.refresh_action());
             }
+            ui.add_space(GROUP_GAP - gap);
+            let (filter_min, root_min) = (22.0 * GRID, 18.0 * GRID);
+            // In a wrapping layout `available_width` is the whole line's: what is left of it is
+            // from the cursor to the right edge.
+            let mut room = ui.max_rect().right() - ui.cursor().min.x;
+            if room < filter_min + gap + root_min + GRID {
+                ui.end_row();
+                room = width;
+            }
+            // Three parts to the filter, two to the root, each within its least and most width.
+            // A grid step of slack: two fields filling the line exactly would wrap on rounding.
+            let share = (room - gap - GRID).max(0.0).floor();
+            let filter_w = (share * 0.6).clamp(filter_min.min(share), 64.0 * GRID);
+            let root_w = (share - filter_w).clamp(root_min.min(share), 48.0 * GRID);
+            let filter = ui.add(
+                egui::TextEdit::singleline(&mut self.view.filter)
+                    .id(egui::Id::new("filter"))
+                    .font(egui::TextStyle::Monospace)
+                    .hint_text("filter  /")
+                    .desired_width(filter_w),
+            );
+            if std::mem::take(&mut self.view.focus_filter) {
+                filter.request_focus();
+            }
+            ui.add(
+                egui::TextEdit::singleline(&mut self.view.prefix)
+                    .font(egui::TextStyle::Monospace)
+                    .hint_text("root at path")
+                    .desired_width(root_w),
+            );
         });
         ui.add_space(style::ITEM_GAP);
         let Some(entry) = self.state.entry(id) else {
@@ -1724,7 +1762,14 @@ fn tree_tab(
                 view.visible_methods.push(node.full_path.clone());
             }
             let label: egui::WidgetText = match &hit {
-                Some(h) => highlighted(ui, &node.full_path, &h.positions).into(),
+                // The expander's place and the button's padding come off the name column.
+                Some(h) => hit_label(
+                    ui,
+                    &node.full_path,
+                    &h.positions,
+                    cols.name - style::INDENT - 2.0 * ui.spacing().button_padding.x,
+                )
+                .into(),
                 None => style::data(leaf_name(node)).into(),
             };
             let cell = NameCell {
@@ -2008,8 +2053,7 @@ fn node_row(
     }
 }
 
-/// A row of the pinned panel: the node at `path`, or the path marked absent when the server does
-/// not publish it.
+/// A row of the pinned panel: its cells, then a button that unpins it.
 fn pinned_row(
     ui: &mut egui::Ui,
     e: &ServerEntry,
@@ -2017,7 +2061,32 @@ fn pinned_row(
     view: &mut View,
     actions: &mut Vec<Action>,
 ) {
-    let cols = Columns::pinned(ui.available_width());
+    // The row, then its unpin button at the right: unpinning needs no right click.
+    let unpin_w = 6.0 * GRID;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        pinned_cells(ui, e, path, ui.available_width() - unpin_w, view, actions);
+        if ui
+            .add(egui::Button::new("\u{d7}").min_size(egui::vec2(unpin_w, style::CONTROL_H)))
+            .on_hover_text("Unpin")
+            .clicked()
+        {
+            actions.push(Action::TogglePin(path.to_owned()));
+        }
+    });
+}
+
+/// The cells of a pinned row: the node as the tree draws it, its full path for a name, or the
+/// path marked absent when the server does not have it.
+fn pinned_cells(
+    ui: &mut egui::Ui,
+    e: &ServerEntry,
+    path: &str,
+    width: f32,
+    view: &mut View,
+    actions: &mut Vec<Action>,
+) {
+    let cols = Columns::pinned(width);
     let node = e.tree.as_ref().and_then(|t| t.node(path).map(|n| (t, n)));
     match node {
         Some((t, node)) => {
@@ -2122,24 +2191,63 @@ fn signature_of(node: &oscq_core::Node) -> Option<TypeSignature> {
     }
 }
 
-fn highlighted(ui: &egui::Ui, text: &str, positions: &[u32]) -> LayoutJob {
-    let mut job = LayoutJob::default();
-    let normal = TextFormat {
-        color: ui.visuals().text_color(),
-        ..TextFormat::default()
+/// A filter hit as its row shows it: its name first, then the path of its container, cut from
+/// the left when the column is short, so that the nearest containers, which tell apart hits of the
+/// same name, stay in sight ("normalized  .../param/fader"). The matched characters are marked
+/// wherever they show; the full path is on hover.
+fn hit_label(ui: &egui::Ui, full_path: &str, positions: &[u32], width: f32) -> LayoutJob {
+    let font = egui::FontId::new(style::DATA, egui::FontFamily::Monospace);
+    // Monospace: every character, the ellipsis included, is as wide as the others.
+    let char_w = ui.fonts_mut(|f| f.glyph_width(&font, 'm')).max(1.0);
+    let columns = (width / char_w).floor().max(0.0) as usize;
+    let chars: Vec<char> = full_path.chars().collect();
+    let cut = chars.iter().rposition(|c| *c == '/').unwrap_or(0);
+    let name: String = chars[cut + 1..].iter().collect();
+    let parent: String = chars[..cut].iter().collect();
+    let gap = "  ";
+    let room = columns.saturating_sub(name.chars().count() + gap.len());
+    // The parent's characters shown, as an index into `chars`, and whether its head is cut.
+    let (from, cut_head) = if parent.chars().count() <= room {
+        (0, false)
+    } else if room >= 2 {
+        // Room for the ellipsis and at least one character; whole segments where possible.
+        let keep = room - 1;
+        let start = cut - keep;
+        let start = chars[start..cut]
+            .iter()
+            .position(|c| *c == '/')
+            .map_or(start, |i| start + i);
+        (start, true)
+    } else {
+        (cut, true)
     };
-    let strong = TextFormat {
-        color: ui.visuals().strong_text_color(),
-        underline: egui::Stroke::new(1.0, ui.visuals().strong_text_color()),
-        ..TextFormat::default()
-    };
-    for (i, c) in text.chars().enumerate() {
-        let f = if positions.binary_search(&(i as u32)).is_ok() {
-            strong.clone()
+    let color = ui.visuals().text_color();
+    let weak = ui.visuals().weak_text_color();
+    let strong = ui.visuals().strong_text_color();
+    let format = |c: egui::Color32, marked: bool| TextFormat {
+        font_id: font.clone(),
+        color: if marked { strong } else { c },
+        underline: if marked {
+            egui::Stroke::new(1.0, strong)
         } else {
-            normal.clone()
-        };
-        job.append(&c.to_string(), 0.0, f);
+            egui::Stroke::NONE
+        },
+        ..TextFormat::default()
+    };
+    let marked = |i: usize| positions.binary_search(&(i as u32)).is_ok();
+    let mut job = LayoutJob::default();
+    for (i, c) in chars.iter().enumerate().skip(cut + 1) {
+        job.append(&c.to_string(), 0.0, format(color, marked(i)));
+    }
+    if parent.is_empty() || (cut_head && from >= cut) {
+        return job;
+    }
+    job.append(gap, 0.0, format(weak, false));
+    if cut_head {
+        job.append("\u{2026}", 0.0, format(weak, false));
+    }
+    for (i, c) in chars.iter().enumerate().take(cut).skip(from) {
+        job.append(&c.to_string(), 0.0, format(weak, marked(i)));
     }
     job
 }
@@ -3865,12 +3973,313 @@ mod tests {
         texts
     }
 
+    /// What the frame shows of each text: the characters of the glyphs laid out, an elided
+    /// text's ellipsis included, not the text it was given, which `Galley::text` returns whole.
+    /// With where it was drawn and its clip.
+    fn shown_texts(out: &egui::FullOutput) -> Vec<(String, egui::Rect, egui::Rect)> {
+        fn walk(
+            shape: &egui::Shape,
+            clip: egui::Rect,
+            out: &mut Vec<(String, egui::Rect, egui::Rect)>,
+        ) {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, clip, out)),
+                egui::Shape::Text(t) => {
+                    let shown: String = t
+                        .galley
+                        .rows
+                        .iter()
+                        .flat_map(|r| r.glyphs.iter().map(|g| g.chr))
+                        .collect();
+                    out.push((shown, t.galley.rect.translate(t.pos.to_vec2()), clip));
+                }
+                _ => {}
+            }
+        }
+        let mut texts = Vec::new();
+        for clipped in &out.shapes {
+            walk(&clipped.shape, clipped.clip_rect, &mut texts);
+        }
+        texts
+    }
+
+    /// A click at the centre of `rect`: pointer moved there, pressed, released.
+    fn click(h: &mut Harness, rect: egui::Rect, button: egui::PointerButton) {
+        let p = rect.center();
+        h.frame(vec![egui::Event::PointerMoved(p)]);
+        for pressed in [true, false] {
+            h.frame(vec![egui::Event::PointerButton {
+                pos: p,
+                button,
+                pressed,
+                modifiers: Modifiers::NONE,
+            }]);
+        }
+        h.frame(vec![egui::Event::PointerGone]);
+    }
+
+    /// The place of the only drawn text equal to `text`.
+    fn place(out: &egui::FullOutput, text: &str) -> egui::Rect {
+        let found: Vec<_> = drawn_text_rects(out)
+            .into_iter()
+            .filter(|(t, _, _)| t == text)
+            .collect();
+        assert_eq!(found.len(), 1, "{text:?} drawn once");
+        found[0].1
+    }
+
+    /// On a wide window the side panes keep their width, the centre takes the rest, and the
+    /// toolbar holds on one line: the three tabs, Refresh, the filter and the root fields side by
+    /// side, frame after frame.
+    #[test]
+    fn the_toolbar_holds_one_line_on_a_wide_window() {
+        const CONTROLS: [&str; 6] = [
+            "Tree",
+            "JSON",
+            "Traffic",
+            "Refresh",
+            "filter  /",
+            "root at path",
+        ];
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
+        for width in [1000.0, 1100.0, 1440.0, 1800.0, 2560.0, 3840.0] {
+            let mut h = harness();
+            controllable(&mut h, "127.0.0.1", 2345, "S", doc);
+            h.app
+                .config
+                .pinned_paths
+                .insert("127.0.0.1:2345".into(), vec!["/a".into()]);
+            let size = egui::vec2(width, 900.0);
+            let mut out = h.frame_sized(size, Vec::new());
+            for _ in 0..50 {
+                out = h.frame_sized(size, Vec::new());
+            }
+            for (pane, expected) in [("servers", 56.0 * GRID), ("work", style::WORK_DEFAULT)] {
+                let w = egui::PanelState::load(&h.ctx, egui::Id::new(pane))
+                    .unwrap()
+                    .outer_rect
+                    .width();
+                assert!(
+                    (w - expected).abs() < 0.5,
+                    "the {pane} pane {w} px wide, not {expected}, window {width}"
+                );
+            }
+            let rows: Vec<f32> = CONTROLS.iter().map(|c| place(&out, c).center().y).collect();
+            let (top, bottom) = rows
+                .iter()
+                .fold((f32::MAX, f32::MIN), |(a, b), y| (a.min(*y), b.max(*y)));
+            assert!(
+                bottom - top < ROW_H / 2.0,
+                "the toolbar on more than one line at {width}: {:?}",
+                CONTROLS.iter().zip(&rows).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// A window of 900 points, a Retina screen's 1800 pixels: the centre holds the tabs and
+    /// Refresh on one line and the two fields together on the next, never three lines.
+    #[test]
+    fn at_900_points_the_toolbar_takes_two_lines_the_fields_together() {
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
+        let mut h = harness();
+        controllable(&mut h, "127.0.0.1", 2345, "S", doc);
+        let size = egui::vec2(900.0, 700.0);
+        h.frame_sized(size, Vec::new());
+        let out = h.frame_sized(size, Vec::new());
+        let y = |c: &str| place(&out, c).center().y;
+        for c in ["JSON", "Traffic", "Refresh"] {
+            assert!((y(c) - y("Tree")).abs() < 2.0, "{c} beside Tree");
+        }
+        assert!(
+            (y("filter  /") - y("root at path")).abs() < 2.0,
+            "the two fields on one line"
+        );
+        assert!(
+            y("filter  /") - y("Tree") < 1.5 * ROW_H,
+            "the fields on the line right after the tabs"
+        );
+    }
+
+    /// In filter mode a hit shows its name first, then the containers nearest to it: two hits of
+    /// one name under long common containers, told apart only by their parents, stay distinct on
+    /// screen, each label whole inside its clip.
+    #[test]
+    fn filter_hits_of_one_name_in_different_containers_stay_distinct() {
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{"vdmx":{"FULL_PATH":"/vdmx","CONTENTS":{
+            "layers":{"FULL_PATH":"/vdmx/layers","CONTENTS":{
+            "layer_one":{"FULL_PATH":"/vdmx/layers/layer_one","CONTENTS":{
+            "effects":{"FULL_PATH":"/vdmx/layers/layer_one/effects","CONTENTS":{
+            "fader":{"FULL_PATH":"/vdmx/layers/layer_one/effects/fader","CONTENTS":{
+              "normalized":{"FULL_PATH":"/vdmx/layers/layer_one/effects/fader/normalized","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}},
+            "gain":{"FULL_PATH":"/vdmx/layers/layer_one/effects/gain","CONTENTS":{
+              "normalized":{"FULL_PATH":"/vdmx/layers/layer_one/effects/gain/normalized","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}
+            }}}}}}}}}}"#;
+        for width in [900.0, 1100.0, 1800.0] {
+            let mut h = harness();
+            controllable(&mut h, "127.0.0.1", 2345, "S", doc);
+            // Not itself the start of a hit's label: the field's text is not taken for a hit.
+            h.app.view.filter = "rmalized".into();
+            let size = egui::vec2(width, 700.0);
+            h.frame_sized(size, Vec::new());
+            let out = h.frame_sized(size, Vec::new());
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            let hits: Vec<_> = shown_texts(&out)
+                .into_iter()
+                .filter(|(t, _, _)| t.starts_with("normalized"))
+                .collect();
+            assert_eq!(hits.len(), 2, "two hits, named first, at {width}: {hits:?}");
+            assert_ne!(
+                hits[0].0, hits[1].0,
+                "the two hits look the same on screen at {width}"
+            );
+            for (t, r, c) in &hits {
+                assert!(
+                    c.intersect(screen).expand(0.5).contains_rect(*r),
+                    "{t:?} cut by its clip at {width}"
+                );
+            }
+        }
+    }
+
+    /// A pinned node is unpinned from the pinned panel by the button on its row, as from the
+    /// tree by its menu; the context menu of the panel row unpins too.
+    #[test]
+    fn a_pinned_node_is_unpinned_from_its_panel() {
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]},"b":{"FULL_PATH":"/b","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
+        let mut h = harness();
+        controllable(&mut h, "127.0.0.1", 2345, "S", doc);
+        let key = "127.0.0.1:2345".to_owned();
+        h.app
+            .config
+            .pinned_paths
+            .insert(key.clone(), vec!["/a".into()]);
+        let out = h.frame(Vec::new());
+        click(&mut h, place(&out, "\u{d7}"), egui::PointerButton::Primary);
+        assert!(
+            !h.app.config.pinned_paths.contains_key(&key),
+            "unpinned by its button"
+        );
+        // And by the menu of the row, the other way in.
+        h.app
+            .config
+            .pinned_paths
+            .insert(key.clone(), vec!["/b".into()]);
+        let out = h.frame(Vec::new());
+        let label = place(&out, "/b");
+        click(&mut h, label, egui::PointerButton::Secondary);
+        let out = h.frame(Vec::new());
+        click(&mut h, place(&out, "Unpin"), egui::PointerButton::Primary);
+        assert!(
+            !h.app.config.pinned_paths.contains_key(&key),
+            "unpinned by its menu"
+        );
+    }
+
+    /// Each preset slot names its two actions, and a slot holding values is told from an empty
+    /// one at a glance: tinted ground and plain number against a faint one. Capture stores, Recall
+    /// sends, and an empty slot's Recall does nothing.
+    #[test]
+    fn preset_slots_name_their_actions_and_show_what_they_hold() {
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
+        let mut h = harness();
+        controllable(&mut h, "127.0.0.1", 2345, "S", doc);
+        let out = h.frame(Vec::new());
+        let texts = drawn_texts(&out);
+        for action in ["Recall", "Capture"] {
+            assert_eq!(
+                texts.iter().filter(|t| *t == action).count(),
+                presets::SLOTS,
+                "{action} on every slot"
+            );
+        }
+        // The Capture of slot 01: on the row of "01", the nearest to its right.
+        let one = place(&out, "01");
+        let capture = drawn_text_rects(&out)
+            .into_iter()
+            .filter(|(t, r, _)| t == "Capture" && (r.center().y - one.center().y).abs() < 2.0)
+            .map(|(_, r, _)| r)
+            .filter(|r| r.left() > one.right())
+            .min_by(|a, b| a.left().total_cmp(&b.left()))
+            .unwrap();
+        click(&mut h, capture, egui::PointerButton::Primary);
+        assert!(
+            h.app.config.presets.contains_key(&1),
+            "Capture stored slot 01"
+        );
+        let out = h.frame(Vec::new());
+        // Held and empty, told apart: the tint behind the slot and the colour of its number.
+        let fill = h
+            .ctx
+            .global_style()
+            .visuals
+            .selection
+            .bg_fill
+            .gamma_multiply(0.35);
+        let tinted = |r: egui::Rect| {
+            painted_spans(&out, fill, r.center().y)
+                .iter()
+                .any(|(lo, hi)| *lo <= r.center().x && r.center().x <= *hi)
+        };
+        let (one, two) = (place(&out, "01"), place(&out, "02"));
+        assert!(tinted(one), "the held slot 01 is tinted");
+        assert!(!tinted(two), "the empty slot 02 is not");
+        let colour = |text: &str| {
+            fn walk(shape: &egui::Shape, text: &str, out: &mut Vec<Color32>) {
+                match shape {
+                    egui::Shape::Vec(s) => s.iter().for_each(|s| walk(s, text, out)),
+                    egui::Shape::Text(t) if t.galley.text() == text => {
+                        let c = t.galley.job.sections[0].format.color;
+                        out.push(if c == Color32::PLACEHOLDER {
+                            t.fallback_color
+                        } else {
+                            c
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            let mut found = Vec::new();
+            out.shapes
+                .iter()
+                .for_each(|c| walk(&c.shape, text, &mut found));
+            found[0]
+        };
+        assert_ne!(
+            colour("01"),
+            colour("02"),
+            "a held number reads apart from an empty one"
+        );
+        // Recall: slot 01 sends, the empty slot 02 does nothing.
+        let recall_of = |out: &egui::FullOutput, row: egui::Rect| {
+            drawn_text_rects(out)
+                .into_iter()
+                .filter(|(t, r, _)| t == "Recall" && (r.center().y - row.center().y).abs() < 2.0)
+                .map(|(_, r, _)| r)
+                .filter(|r| r.left() > row.right())
+                .min_by(|a, b| a.left().total_cmp(&b.left()))
+                .unwrap()
+        };
+        h.app.view.note = None;
+        click(&mut h, recall_of(&out, two), egui::PointerButton::Primary);
+        assert_eq!(h.app.view.note, None, "an empty slot recalls nothing");
+        click(&mut h, recall_of(&out, one), egui::PointerButton::Primary);
+        assert!(
+            h.app
+                .view
+                .note
+                .as_deref()
+                .is_some_and(|n| n.starts_with("Slot 01 recalled")),
+            "{:?}",
+            h.app.view.note
+        );
+    }
+
     /// The toolbar of the centre never runs off screen or under a side pane: from the narrowest
     /// window up, with the side panes at their default width or dragged as wide as they go, each
     /// of its controls is drawn once, whole, inside its clip and inside the window. Refresh above
     /// all: with a server that never notifies, it is the only way to read a value again. The same
-    /// for the sixteen preset slots, and for every text along the bottom of the window: the
-    /// theme and About under the server list, the status bar and its message.
+    /// for the sixteen preset slots, the unpin button, and every text along the bottom of the
+    /// window: the theme and About under the server list, the status bar and its message.
     #[test]
     fn every_toolbar_control_stays_on_screen_whatever_the_width() {
         const CONTROLS: [&str; 6] = [
@@ -3882,7 +4291,9 @@ mod tests {
             "Refresh",
         ];
         let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
-        for width in [640.0, 720.0, 800.0, 960.0, 1100.0, 1440.0, 1920.0] {
+        for width in [
+            640.0, 720.0, 800.0, 960.0, 1100.0, 1440.0, 1920.0, 2560.0, 3840.0,
+        ] {
             for dragged in [false, true] {
                 let mut h = harness();
                 controllable(&mut h, "127.0.0.1", 2345, "S", doc);
@@ -3931,13 +4342,15 @@ mod tests {
                 let slots: Vec<_> = drawn
                     .iter()
                     .filter(|(t, _, _)| {
-                        t == "set" || t.parse::<usize>().is_ok_and(|n| (1..=16).contains(&n))
+                        t == "Recall"
+                            || t == "Capture"
+                            || t.parse::<usize>().is_ok_and(|n| (1..=16).contains(&n))
                     })
                     .collect();
                 assert_eq!(
                     slots.len(),
-                    2 * presets::SLOTS,
-                    "every slot at width {width}"
+                    3 * presets::SLOTS,
+                    "every slot, its number and its two buttons, at width {width}"
                 );
                 slots.iter().for_each(|(t, r, c)| whole(t, r, c));
                 // The access flags close each row on the right, of the tree and of the pinned
@@ -3952,6 +4365,9 @@ mod tests {
                 let pinned: Vec<_> = drawn.iter().filter(|(t, _, _)| t == "/a").collect();
                 assert_eq!(pinned.len(), 1, "the pinned row at width {width}");
                 whole("/a", &pinned[0].1, &pinned[0].2);
+                let unpin: Vec<_> = drawn.iter().filter(|(t, _, _)| t == "\u{d7}").collect();
+                assert_eq!(unpin.len(), 1, "the unpin button at width {width}");
+                whole("unpin", &unpin[0].1, &unpin[0].2);
                 let band = size.y - ROW_H - 2.0 * GRID;
                 let status: Vec<_> = drawn.iter().filter(|(_, r, _)| r.min.y >= band).collect();
                 assert!(

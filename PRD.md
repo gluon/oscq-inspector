@@ -273,7 +273,7 @@ One window. No modal dialogs except the manual connection entry and the about bo
 
 ```
 +--------------+---------------------------------------------+-------------+
-| DISCOVERED   | [filter /] [root at]   Tree JSON Traffic  F5 | PINNED      |
+| DISCOVERED   | Tree JSON Traffic  Refresh  [filter /] [root] | PINNED      |
 |  . Helper    +---------------------------------------------+  master 0.5 |
 | MANUAL       | name            | control           |  meta |  opacity    |
 |  . Max     x | - composition   |                   |       |             |
@@ -289,7 +289,7 @@ One window. No modal dialogs except the manual connection entry and the about bo
 
 Left, the server pane: discovered servers, then manual entries, two groups apart, each server with a status dot (discovered, connecting, connected, websocket live, stale, error). A manual entry has a remove button; a discovered one has none, since it comes back. Removing a manual entry drops its saved OSC port. Below the list, the OSC destination of the selected server and, when its port is not advertised, the OSC port field (7.2). With no server found, it says since when it has been searching, as a time of day: a running count would repaint the window at rest. Then `+ manual`, the theme and the about box: the name, the version, Julien Bayle, Structure Void, the license, and a link to the repository, sober, imitating no system window. On macOS the application menu's About item opens the same box. Multiple servers may be connected at once; the centre shows the selected one.
 
-Centre: a toolbar over the address space: the filter, the root box, three tabs and no more, and Refresh. With a server that never notifies, Refresh is the only way to read a value again.
+Centre: a toolbar over the address space: three tabs and no more, Refresh, then the filter and the root box sharing what the line has left. With a server that never notifies, Refresh is the only way to read a value again. On a wide window the side panes keep their width, the centre takes the rest and the toolbar holds on one line; the two fields go to a line of their own, together, only when the line leaves them less than their least widths.
 
 Right: the pinned nodes (9.8) and the presets (9.9), visible whatever the tab and whatever the tree shows.
 
@@ -311,7 +311,7 @@ Visual system, applied everywhere:
 - Per row, three strict columns. Name: the leaf name, indented 16 px per level, with thin vertical guides for each ancestor level. Control: the editing widget, which carries the value; a node with no widget shows its value as text in the same column; every control starts on one vertical line whatever its type. Metadata, right aligned and quiet: a "sent" mark while a sent value is unconfirmed (9.6), the type tags and the access flags. One value per row: no value text beside a widget. Full path on hover.
 - Right click on a row: copy its full path, pin or unpin it (9.8).
 - A path prefix box at the top of the pane that reroots the display at any container, matching the reference app's behaviour.
-- Fuzzy filter over full paths, matching live, with matched characters highlighted. Filtering must never trigger a network request.
+- Fuzzy filter over full paths, matching live, with matched characters highlighted. Filtering must never trigger a network request. A hit shows its name first, then the path of its container cut from the left when the column is short, so that the nearest containers, which tell apart hits of one name, stay in sight; the full path on hover.
 - Keyboard: arrows to move, right and left to expand and collapse, enter to focus the widget, escape to leave it, `/` to focus the filter, `cmd/ctrl+c` to copy the full path.
 
 ### 9.3 Editing widgets by type
@@ -361,11 +361,11 @@ A single config file in the OS standard config directory, written atomically on 
 
 ### 9.8 Pinned nodes
 
-The working surface. A node is pinned or unpinned from the tree, by right click. Pinned nodes of the selected server are listed in a panel of their own, with the same name, control and metadata columns as the tree, the name being the full path, and stay visible whatever the tree shows: collapsed containers, a filter, another root, another tab. The set is kept per server `host:port` in the config. Pinned methods are listened to (7.4) as visible rows are. A pinned path the server does not publish is listed as absent, not dropped.
+The working surface. A node is pinned or unpinned from the tree, by right click, and unpinned from the panel, by the button at the end of its row or by right click. Pinned nodes of the selected server are listed in a panel of their own, with the same name, control and metadata columns as the tree, the name being the full path, and stay visible whatever the tree shows: collapsed containers, a filter, another root, another tab. The set is kept per server `host:port` in the config. Pinned methods are listened to (7.4) as visible rows are. A pinned path the server does not publish is listed as absent, not dropped.
 
 ### 9.9 Presets
 
-Sixteen slots, for debugging, not for performance: one click captures, one click recalls, no confirmation.
+Sixteen slots, for debugging, not for performance: one click captures, one click recalls, no confirmation. Each slot names its two actions, **Recall** and **Capture**; a slot holding values is told from an empty one at a glance, on a tinted ground, its number plain, Recall on; an empty slot has a faint number and Recall off.
 
 - Capture takes every writable method of the loaded tree of the selected server or, when nodes of that server are pinned, only the pinned ones. No selection interface: the pinned set states the scope. A method's value is the value sent and not yet confirmed if there is one, else the value read; a method with neither, or with an impulse, nil or array argument, is skipped, and the count says so.
 - A slot records the server it came from (`host:port` and name), each method's path, type tags and arguments.

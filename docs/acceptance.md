@@ -130,17 +130,22 @@ Setup: the synthetic server of section 3 running, Max 9 with its patch as in sec
    Expected: the manual entries under **Manual**, each with an **x**; a discovered server has none.
 4. Right click `/g0/p0`, **Pin**; the same for `/g0/p1` and `/g0/p2`. Collapse `/g0`, open the **JSON** tab.
    Expected: the three nodes in **Pinned** on the right, with their widgets, whatever the tree or the tab shows. Moving a pinned widget sends, as in the tree.
-5. Set the three pinned values to 0.1, 0.2, 0.3. In **Presets**, click **set** on slot 01.
-   Expected: a note "Slot 01: 3 values of pinned methods captured". The number 01 becomes clickable.
-6. Move the three values elsewhere, then click **01**.
+5. Set the three pinned values to 0.1, 0.2, 0.3. In **Presets**, click **Capture** on slot 01.
+   Expected: a note "Slot 01: 3 values of pinned methods captured". Slot 01 turns tinted, its number plain, its **Recall** on; the other slots stay plain, numbers faint, **Recall** off.
+6. Move the three values elsewhere, then click **Recall** on slot 01.
    Expected: the three widgets back to 0.1, 0.2, 0.3 at once, with no confirmation. The **Traffic** tab shows one line, its time then `out preset 01  (3 messages)`; clicking it lists the three messages.
 7. In **Traffic**, click **in**, then **out**, then **all**.
    Expected: **in** shows only values received, **out** only what was sent, **all** both.
 8. Right click a node, **Copy path**, and paste it somewhere.
    Expected: its full path.
+   Then click the **×** at the end of the row of `/g0/p2` in **Pinned**.
+   Expected: `/g0/p2` leaves the panel; pin it again from the tree.
+   Type `p1` in the filter.
+   Expected: each hit named first, `p1  /g0`, `p10  /g0`, `p100  /g1`, the containers after the name; the full path on hover.
+   On a window of 1000 points or more (2000 pixels on a Retina screen), the toolbar holds on one line.
 9. Quit and open again, select the synthetic server.
    Expected: the three pinned nodes and slot 01 still there.
-10. Select Max 9, click **01**.
+10. Select Max 9, click **Recall** on slot 01.
    Expected: nothing sent, the note says "Slot 01 recalled: 0 sent, 3 not found on this server (captured on ...)". Nothing blocks.
 11. Click the **x** of Max 9's manual entry, then **+ manual** `localhost:30339` again.
    Expected: the entry leaves the list at once; added again, its OSC port is inferred from the HTTP port, 30339: the port set earlier was forgotten with the entry.
