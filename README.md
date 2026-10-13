@@ -62,8 +62,8 @@ If Windows Defender Firewall asks whether to allow Void OSCQ on networks, allow 
 The artifact holds `void-oscq-VERSION-linux-x86_64.tar.gz`. Unpack it and run the binary:
 
 ```
-tar -xzf void-oscq-0.1.1-linux-x86_64.tar.gz
-cd void-oscq-0.1.1-linux-x86_64
+tar -xzf void-oscq-0.2.0-linux-x86_64.tar.gz
+cd void-oscq-0.2.0-linux-x86_64
 ./void-oscq
 ```
 
@@ -167,19 +167,24 @@ cargo test --release -p void-oscq --test budgets_binary -- --ignored --nocapture
 The workflow `.github/workflows/release.yml` builds the three artifacts on a tag `v*`, and on any push that changes the packaging. The scripts are in `packaging/`. A tag must equal the workspace version:
 
 ```
-git tag v0.1.1
-git push origin v0.1.1
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
-## Changes since v0.1.1
+## Version history
 
-- **Interface rework**: a 4 px grid and one type scale; a tree in three columns, name, widget, type tags and flags, with indentation guides; the widget holds the value; monospace for data; a one line status bar in fixed zones, details on hover; the OSC port field moved to the server pane.
-- **Server list**: discovered and manual servers apart; a manual entry can be removed, with the OSC port set for it.
-- **Pinned nodes**, kept per server.
-- **Sixteen preset slots**, captured and recalled in one click, kept in the config.
-- **Traffic**: filter by direction, a preset recall as one block; right click a row to copy its full path.
+### 0.2.0
 
-## Changes from v0.1.0 to v0.1.1
+- **Interface rework**: a 4 px grid and one type scale; a tree in three columns, name, widget, type tags and flags, with indentation guides; the widget holds the value; monospace for data; a one line status bar in fixed zones, details on hover.
+- **Narrow windows**: down to the 640 px minimum, no control leaves the screen. The toolbar wraps, Refresh included; the side panes narrow in turn and their handles stop at their limits; a narrow tree gives up the name, then the metadata down to the access flags, never the widget.
+- **Server list**: discovered and manual servers apart; a manual entry can be removed, with the OSC port set for it; the OSC destination and the OSC port field, still correctable when the server does not advertise its port, are in the server pane; with no server found, it says since when it has been searching.
+- **Pinned nodes**, kept per server, visible whatever the tree shows.
+- **Sixteen preset slots**, captured and recalled in one click, kept in the config; a recall on another server sends what matches and counts the rest.
+- **Traffic**: filter by direction; a preset recall logged as one block; right click a row to copy its full path.
+- **About box**: name, version, Julien Bayle, Structure Void, license, repository link, from the About button and, on macOS, from the application menu.
+- **License**: GPL-3.0-or-later, with an additional permission for the fonts compiled into the application. Every artifact carries the license texts; the Windows artifact holds the `.exe` and a `licenses` folder.
+
+### 0.1.1
 
 - **Application icon** on the three systems: the macOS `.icns` in the bundle, the Windows executable's icon, the Linux `.png` named by the `.desktop` file, and the window and the Dock while the app runs.
 - **Version in the macOS bundle**: both version keys of `Info.plist` carry the release version, checked against the tag by the release workflow.
@@ -188,6 +193,10 @@ git push origin v0.1.1
 - **Errors that no longer hold are cleared**: an error disappears once the same operation succeeds, and a failed connection is said once.
 - **Access is the server's**: when the connection fails, nodes keep the access the server declared; writable nodes say "cannot send", with the reason, never "read only". The same for a server declaring OSC over TCP.
 - **Release workflow**: `actions/upload-artifact` v7, no Node 20 deprecation warning.
+
+### 0.1.0
+
+- First release: discovery over Bonjour and manual entries, the address space as a tree, values read and sent with widgets fitting their types, values live over the WebSocket where the server pushes them, the JSON and Traffic tabs. Unsigned artifacts for macOS (universal), Windows and Linux.
 
 ## Status
 
@@ -201,7 +210,8 @@ git push origin v0.1.1
 - v0.1.1: done, merged, tag `v0.1.1`. The tagged run 38269010531 built the three artifacts; on the human's Mac the app installed, showed its icon and 0.1.1 in the Finder, connected to Max 9 with the OSC port read from the config, and its sends moved the fader.
 - Cleanup: done, merged. A reload that leaves the rows on screen is locked to send no `LISTEN` or `IGNORE`; the PRD says the repository is public; docs/acceptance.md states the known limit of WebSocket interoperability.
 - M6, interface rework, server list, pinned nodes, presets, traffic filter: done, merged. Checked by the human on the Mac: the three real binary tests pass, cold start 91.5 to 105.7 ms, memory 97.8 MB, no repaint at rest. Headless tests lock the removal of a manual entry with its OSC port, the pinned panel across tabs and per server, a capture and recall on the same server and on another, and the traffic direction filter. The look waits on the human, docs/acceptance.md section 5. After the human's review: the toolbar, Refresh included, on screen at any window width; the pane handles stop dead at their limits; the narrow tree keeps the widget and gives up the name, then the metadata; the discovery line says since when it searches; the about box names the author, Structure Void, the license and the repository. License GPL-3.0-or-later, with an additional permission for the bundled fonts, after the dependency audit recorded in docs/decisions.md; every release artifact carries the license texts.
-- About fix: on branch `void/about-fix`. On macOS the application menu's About item opened the system's panel, empty outside a bundle; it now opens the application's own about box, whose six pieces of information a test checks one by one on screen.
+- About fix: done, merged. On macOS the application menu's About item opened the system's panel, empty outside a bundle; it now opens the application's own about box, whose six pieces of information a test checks one by one on screen. Checked by the human on the Mac: the six shown by both paths, the menu and the button.
+- v0.2.0: on branch `void/v0-2-0`. The three crates at 0.2.0; `ci/release-version.sh` refuses `v0.1.1` and accepts `v0.2.0`. The tag is the human's.
 
 Backlog:
 
