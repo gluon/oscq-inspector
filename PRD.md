@@ -1,6 +1,6 @@
 # Void OSCQ: Product Requirements Document
 
-Status: v1 spec, locked for implementation. Amended on 2026-10-09 with the human's rulings on the M0 protocol discrepancies, see `docs/protocol-notes.md` section 10. Amended on 2026-10-12 with the human's rulings after M5: "cannot send" in place of "read only" (sections 3, 7.2, 9.6), the user's OSC port (7.2, 9.6, 9.7).
+Status: v1 spec, locked for implementation. Amended on 2026-10-09 with the human's rulings on the M0 protocol discrepancies, see `docs/protocol-notes.md` section 10. Amended on 2026-10-12 with the human's rulings after M5: "cannot send" in place of "read only" (sections 3, 7.2, 9.6), the user's OSC port (7.2, 9.6, 9.7). Amended on 2026-10-13 for milestone M6: visual system, server list, pinned nodes, presets, traffic direction filter (sections 3, 9, 14, 17).
 Audience: the engineer (human or agent) implementing the app from scratch.
 Name: `void-oscq`, final. Binary `void-oscq`, app display name "Void OSCQ", repository `gluon/void-oscq`, public since 2026-10-12. The crate name `void-oscq` was free on crates.io at the time of writing; verify again before any publication.
 
@@ -32,8 +32,9 @@ Do not build these. They are listed so that the temptation is answered once.
 - No MIDI of any kind.
 - No OSCQuery server mode. The app is a client. Publishing an address space is what Vidvox OSCQuery Helper does.
 - No mobile or tablet build, no web UI, no remote control of this app by another app.
-- No theming system beyond one dark theme and one light theme following the OS setting.
-- No session or preset persistence beyond the small set described in section 9.7.
+- No theming system beyond one dark theme and one light theme, following the OS setting by default, either one forceable.
+- No session persistence beyond the small set described in section 9.7. Pinned nodes (9.8) and the sixteen preset slots (9.9) are in scope since M6; nothing beyond them.
+- No hiding of read only nodes (kept in reserve), no widget layout editor, no mapping or controller building.
 - No plugin system, no embedded scripting language, no automation or sequencing.
 - No code signing or notarisation in v1. The CI produces unsigned artifacts.
 - No OSC sending to a server whose `HOST_INFO` declares `OSC_TRANSPORT` `TCP`. The proposal defines no OSC over TCP framing. Its nodes keep the access the server declares; the writable ones say "cannot send", with the reason displayed. They are never shown as read only.
@@ -271,28 +272,42 @@ One window. No modal dialogs except the manual connection entry and the about bo
 ### 9.1 Layout
 
 ```
-+----------------+-------------------------------------------------------+
-| Servers        | Path filter  [________________]  [Tree|JSON|Traffic]   |
-| (discovered)   +-------------------------------------------------------+
-|  . VDMX        |  /composition                                         |
-|  . Helper      |    /composition/master      [====|====] 0.50  f  rw    |
-|  . Max         |    /composition/clear       [ send ]           T  w    |
-|                |  /layer1                                              |
-| [+ manual]     |    /layer1/opacity          [=======|=] 0.82  f  rw    |
-+----------------+-------------------------------------------------------+
-| server status, OSC destination, transport state, node count            |
-+------------------------------------------------------------------------+
++--------------+---------------------------------------------+-------------+
+| DISCOVERED   | [filter /] [root at]   Tree JSON Traffic  F5 | PINNED      |
+|  . Helper    +---------------------------------------------+  master 0.5 |
+| MANUAL       | name            | control           |  meta |  opacity    |
+|  . Max     x | - composition   |                   |       |             |
+|              | | master        | [====|====] 0.500 | f  rw | PRESETS     |
+| [+ manual]   | | clear         | [ send ]          | I   w | 01 02 03 04 |
+|              | - layer1        |                   |       | 05 06 07 08 |
+| OSC PORT     | | opacity       | [=======|=] 0.820 | f  rw | ...         |
+|  30338 [Set] |                                             |             |
++--------------+---------------------------------------------+-------------+
+| state | server | transport | nodes | message                              |
++--------------------------------------------------------------------------+
 ```
 
-Left: discovered and manually added servers, each with a status dot (discovered, connecting, connected, websocket live, stale, error). Multiple servers may be connected at once; the right pane shows the selected one.
+Left, the server pane: discovered servers, then manual entries, two groups apart, each server with a status dot (discovered, connecting, connected, websocket live, stale, error). A manual entry has a remove button; a discovered one has none, since it comes back. Removing a manual entry drops its saved OSC port. Below the list, the OSC destination of the selected server and, when its port is not advertised, the OSC port field (7.2). Then `+ manual`, the theme and the about box. Multiple servers may be connected at once; the centre shows the selected one.
 
-Right: a tab bar over the address space. Three tabs, no more.
+Centre: a tab bar over the address space. Three tabs, no more.
+
+Right: the pinned nodes (9.8) and the presets (9.9), visible whatever the tab and whatever the tree shows.
+
+Bottom: the status bar, one line in fixed zones: connection state, server, transport (OSC destination, values live or on refresh only), node count, then the last error or note. Each zone is short; the details are on hover.
+
+Visual system, applied everywhere:
+
+- A 4 px base grid. Every size, margin and gap is a multiple of 4 px: rows 24 px, tree indentation 16 px per level, gaps between groups 16 px, inside a group 4 or 8 px.
+- One type scale: 11, 13 and 15 px for the interface, 12 px monospace for data. Data, meaning paths, values, type tags, access flags, traffic and JSON, is monospace; the interface around it is proportional.
+- Groups are told apart by space, not by rules. Elements that belong together sit close: a node's name is next to its control, not at the far side of the window.
+- The theme follows the OS by default; dark or light can be forced; the choice is kept (9.7).
 
 ### 9.2 Tree tab
 
 - Virtualised rendering. Only visible rows are laid out, using `egui`'s row range primitives. Expanding a container with five thousand children must not stall a frame.
 - Lazy loading. Fetch a subtree when its container is first expanded, not at connection time, unless the whole document arrived in the root GET, which is the common case. Handle both.
-- Per row: path leaf name, an editing widget, the current value, the type tags, and the access flags. Full path on hover.
+- Per row, three strict columns. Name: the leaf name, indented 16 px per level, with thin vertical guides for each ancestor level. Control: the editing widget, which carries the value; a node with no widget shows its value as text in the same column; every control starts on one vertical line whatever its type. Metadata, right aligned and quiet: a "sent" mark while a sent value is unconfirmed (9.6), the type tags and the access flags. One value per row: no value text beside a widget. Full path on hover.
+- Right click on a row: copy its full path, pin or unpin it (9.8).
 - A path prefix box at the top of the pane that reroots the display at any container, matching the reference app's behaviour.
 - Fuzzy filter over full paths, matching live, with matched characters highlighted. Filtering must never trigger a network request.
 - Keyboard: arrows to move, right and left to expand and collapse, enter to focus the widget, escape to leave it, `/` to focus the filter, `cmd/ctrl+c` to copy the full path.
@@ -316,7 +331,7 @@ Chosen from `TYPE`, `RANGE` and `EXTENDED_TYPE`:
 | `ff` or `fff` | grouped drag values on one row |
 | anything else | read only display of the value, plus a raw argument entry field |
 
-Write only nodes show the widget with no value readout. Read only nodes show the value with no widget. Never show an editable widget that cannot send. Widgets clamp on `RANGE` only, never on `CLIPMODE`.
+The widget carries the value: no separate value readout beside it. Write only nodes show the widget holding the last value sent, marked "sent" in the metadata column. Read only nodes show the value with no widget. Never show an editable widget that cannot send. Widgets clamp on `RANGE` only, never on `CLIPMODE`.
 
 Sending policy: continuous widgets send while dragging, rate limited to one message per 8 ms per path, with the final value always sent on release. Text and numeric fields send on commit.
 
@@ -326,7 +341,7 @@ The raw document for the currently selected subtree, syntax coloured, with a cop
 
 ### 9.5 Traffic tab
 
-A timestamped log of OSC in and out for the selected server. Columns: time, direction, path, type tags, arguments. A filter box, a pause button, a clear button, and an export to text file button. Bounded ring buffer of 10000 entries, oldest dropped.
+A timestamped log of OSC in and out for the selected server. Columns: time, direction, path, type tags, arguments. A filter box on text, a direction filter (all, in, out), a pause button, a clear button, and an export to text file button. Bounded ring buffer of 10000 entries, oldest dropped. A preset recall (9.9) is one entry, a block naming the slot and the number of messages, which opens to show each message.
 
 ### 9.6 Feedback and honesty
 
@@ -340,7 +355,20 @@ The UI must never imply state it has not observed. Specifically:
 
 ### 9.7 Persistence
 
-A single config file in the OS standard config directory, written atomically on change. It contains: window size and position, manual server entries, last selected server, theme preference, pinned paths, and the OSC ports set by the user per server (`osc_ports`, 7.2). Nothing else. No database.
+A single config file in the OS standard config directory, written atomically on change. It contains: window size and position, manual server entries, last selected server, theme preference, pinned paths per server (`pinned_paths`, 9.8), the OSC ports set by the user per server (`osc_ports`, 7.2), and the sixteen preset slots (`presets`, 9.9). Nothing else. No database.
+
+### 9.8 Pinned nodes
+
+The working surface. A node is pinned or unpinned from the tree, by right click. Pinned nodes of the selected server are listed in a panel of their own, with the same name, control and metadata columns as the tree, the name being the full path, and stay visible whatever the tree shows: collapsed containers, a filter, another root, another tab. The set is kept per server `host:port` in the config. Pinned methods are listened to (7.4) as visible rows are. A pinned path the server does not publish is listed as absent, not dropped.
+
+### 9.9 Presets
+
+Sixteen slots, for debugging, not for performance: one click captures, one click recalls, no confirmation.
+
+- Capture takes every writable method of the loaded tree of the selected server or, when nodes of that server are pinned, only the pinned ones. No selection interface: the pinned set states the scope. A method's value is the value sent and not yet confirmed if there is one, else the value read; a method with neither, or with an impulse, nil or array argument, is skipped, and the count says so.
+- A slot records the server it came from (`host:port` and name), each method's path, type tags and arguments.
+- Recall sends every captured value to the selected server at once, as separate messages to the OSC destination (7.5), shown in the traffic log as one block (9.5). Against another server, or a server whose tree changed, it sends what matches, a writable method at the same path with the same type tags, and reports the rest as a short count. It never blocks.
+- Slots are kept in the config (9.7).
 
 ## 10. Performance budgets
 
@@ -427,6 +455,9 @@ Done when: a value changed inside VDMX or Helper updates in the app without user
 **M5, release.** README, acceptance checklist, tagged build, three unsigned artifacts.
 Done when: the artifacts from a tagged CI run launch and connect on all three platforms.
 
+**M6, interface rework and working surface.** The visual system of 9.1, the three column tree of 9.2, the one line status bar, the server list with removable manual entries and the OSC port field in the server pane, pinned nodes (9.8), presets (9.9), the traffic direction filter and the right click copy of a path. Every budget of section 10 still holds, measured again with the real binary tests.
+Done when: every section 10 budget is met with the real binary tests passing; headless tests lock the removal of a manual entry, the pinned panel, a capture and recall cycle including a recall against another server, and the traffic direction filter; CI is green; the human has looked at the window on the Mac.
+
 ## 15. Conventions
 
 - Branches: `void/<topic>`. Never commit to `main` directly. Never merge, the human merges.
@@ -446,4 +477,4 @@ Specifically, you cannot prove anything that depends on the human's machine, the
 Answer before M3 if possible, neither blocks M0 to M2.
 
 1. Should a connected server's address space be exportable to a JSON file for offline inspection, or is the JSON tab's save button enough.
-2. Pinned nodes, a small panel of paths kept visible across subtree navigation, is currently planned as a config field only. Should it get a dedicated pane in v1 or wait.
+2. Pinned nodes, a small panel of paths kept visible across subtree navigation, is currently planned as a config field only. Should it get a dedicated pane in v1 or wait. Answered on 2026-10-13: a dedicated panel, in M6 (9.8).
