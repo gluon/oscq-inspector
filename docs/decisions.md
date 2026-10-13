@@ -201,4 +201,6 @@ Measured in the container described above, release build, commit `5e00643`; the 
 | Idle repaints, zero | 0 frames and 0 events in 10 s, twice, real binary | | Met |
 | Cold start, under 300 ms | 152.8 to 191.2 ms over five launches, real binary | | Met |
 | Resident memory with 5000 nodes, under 150 MB | 168.5 MB with wgpu's default backends, 148.5 MB with `WGPU_BACKEND=vulkan` | 165.5 and 165.6 MB, default backends | Not proven here: software rendering, as before; the verdict is the human's Mac, 105.4 MB on `main` |
-| Release binary size, macOS aarch64, under 25 MB | | | Not proven here: macOS CI on the pushed commit |
+| Release binary size, macOS aarch64, under 25 MB | 23 919 024 bytes, 22.8 MB, macOS CI run 38361375095 on `1ff5362` | | Met |
+
+On the macOS CI machine, same runs: slider to UDP p95 1.535 ms, frame p95 2.14 ms, parse p95 21.9 ms, idle 0.60 % and 0 frames in 10 s, resident memory 108.0 MB (107.3 MB on `main`, run 38351600593). Cold start there, from `main` to the first frame, 320.5 to 569.1 ms on `1ff5362` and 289.1 to 449.7 ms on `44838c0`, against 180.6 to 242.3 ms on `main`. That machine does not separate the rework from its own noise: commit `4382f98`, which changes only PRD.md and builds the same binary as `main`, gave 252.2 to 313.3 ms; `main` itself gave 310.3 to 408.9 ms in run 38213988527 and 258.1 to 407.9 ms in run 38261187890. The first frame is logged before any of the new interface is drawn. Not proven here, as at M4: the cold start verdict is the human's Mac.
