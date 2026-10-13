@@ -1,6 +1,6 @@
 # Void OSCQ: Product Requirements Document
 
-Status: v1 spec, locked for implementation. Amended on 2026-10-09 with the human's rulings on the M0 protocol discrepancies, see `docs/protocol-notes.md` section 10. Amended on 2026-10-12 with the human's rulings after M5: "cannot send" in place of "read only" (sections 3, 7.2, 9.6), the user's OSC port (7.2, 9.6, 9.7). Amended on 2026-10-13 for milestone M6: visual system, server list, pinned nodes, presets, traffic direction filter (sections 3, 9, 14, 17). Amended again on 2026-10-13, after the human found Refresh off screen: the toolbar and the narrow window rule (9.1). Then the narrow tree, the pane handles, the discovery line and the about box (9.1).
+Status: v1 spec, locked for implementation. Amended on 2026-10-09 with the human's rulings on the M0 protocol discrepancies, see `docs/protocol-notes.md` section 10. Amended on 2026-10-12 with the human's rulings after M5: "cannot send" in place of "read only" (sections 3, 7.2, 9.6), the user's OSC port (7.2, 9.6, 9.7). Amended on 2026-10-13 for milestone M6: visual system, server list, pinned nodes, presets, traffic direction filter (sections 3, 9, 14, 17). Amended again on 2026-10-13, after the human found Refresh off screen: the toolbar and the narrow window rule (9.1). Then the narrow tree, the pane handles, the discovery line and the about box (9.1). Amended for v0.2.2: the filter path only on ambiguity, Writable only, the folding preset section, the light theme (sections 3, 9.1, 9.2, 9.7, 9.9).
 Audience: the engineer (human or agent) implementing the app from scratch.
 Name: `void-oscq`, final. Binary `void-oscq`, app display name "Void OSCQ", repository `gluon/void-oscq`, public since 2026-10-12. The crate name `void-oscq` was free on crates.io at the time of writing; verify again before any publication.
 
@@ -34,7 +34,7 @@ Do not build these. They are listed so that the temptation is answered once.
 - No mobile or tablet build, no web UI, no remote control of this app by another app.
 - No theming system beyond one dark theme and one light theme, following the OS setting by default, either one forceable.
 - No session persistence beyond the small set described in section 9.7. Pinned nodes (9.8) and the sixteen preset slots (9.9) are in scope since M6; nothing beyond them.
-- No hiding of read only nodes (kept in reserve), no widget layout editor, no mapping or controller building.
+- No widget layout editor, no mapping or controller building. Hiding read only nodes, kept in reserve at M6, is in scope since v0.2.2 (9.2).
 - No plugin system, no embedded scripting language, no automation or sequencing.
 - No code signing or notarisation in v1. The CI produces unsigned artifacts.
 - No OSC sending to a server whose `HOST_INFO` declares `OSC_TRANSPORT` `TCP`. The proposal defines no OSC over TCP framing. Its nodes keep the access the server declares; the writable ones say "cannot send", with the reason displayed. They are never shown as read only.
@@ -289,7 +289,7 @@ One window. No modal dialogs except the manual connection entry and the about bo
 
 Left, the server pane: discovered servers, then manual entries, two groups apart, each server with a status dot (discovered, connecting, connected, websocket live, stale, error). A manual entry has a remove button; a discovered one has none, since it comes back. Removing a manual entry drops its saved OSC port. Below the list, the OSC destination of the selected server and, when its port is not advertised, the OSC port field (7.2). With no server found, it says since when it has been searching, as a time of day: a running count would repaint the window at rest. Then `+ manual`, the theme and the about box: the name, the version, Julien Bayle, Structure Void, the license, and a link to the repository, sober, imitating no system window. On macOS the application menu's About item opens the same box. Multiple servers may be connected at once; the centre shows the selected one.
 
-Centre: a toolbar over the address space: three tabs and no more, Refresh, then the filter and the root box sharing what the line has left. With a server that never notifies, Refresh is the only way to read a value again. On a wide window the side panes keep their width, the centre takes the rest and the toolbar holds on one line; the two fields go to a line of their own, together, only when the line leaves them less than their least widths.
+Centre: a toolbar over the address space: three tabs and no more, Refresh, Writable only (9.2), then the filter and the root box sharing what the line has left. With a server that never notifies, Refresh is the only way to read a value again. On a wide window, 1100 points or more, the side panes keep their width, the centre takes the rest and the toolbar holds on one line; the two fields go to a line of their own, together, only when the line leaves them less than their least widths.
 
 Right: the pinned nodes (9.8) and the presets (9.9), visible whatever the tab and whatever the tree shows.
 
@@ -302,7 +302,7 @@ Visual system, applied everywhere:
 - A 4 px base grid. Every size, margin and gap is a multiple of 4 px: rows 24 px, tree indentation 16 px per level, gaps between groups 16 px, inside a group 4 or 8 px.
 - One type scale: 11, 13 and 15 px for the interface, 12 px monospace for data. Data, meaning paths, values, type tags, access flags, traffic and JSON, is monospace; the interface around it is proportional.
 - Groups are told apart by space, not by rules. Elements that belong together sit close: a node's name is next to its control, not at the far side of the window.
-- The theme follows the OS by default; dark or light can be forced; the choice is kept (9.7).
+- The theme follows the OS by default; dark or light can be forced; the choice is kept (9.7). The light theme is toned so that its hierarchy reads as the dark one's: each control stands out from the panel, and text from its ground, at least as much as in the dark theme, which is egui's own.
 
 ### 9.2 Tree tab
 
@@ -311,7 +311,8 @@ Visual system, applied everywhere:
 - Per row, three strict columns. Name: the leaf name, indented 16 px per level, with thin vertical guides for each ancestor level. Control: the editing widget, which carries the value; a node with no widget shows its value as text in the same column; every control starts on one vertical line whatever its type. Metadata, right aligned and quiet: a "sent" mark while a sent value is unconfirmed (9.6), the type tags and the access flags. One value per row: no value text beside a widget. Full path on hover.
 - Right click on a row: copy its full path, pin or unpin it (9.8).
 - A path prefix box at the top of the pane that reroots the display at any container, matching the reference app's behaviour.
-- Fuzzy filter over full paths, matching live, with matched characters highlighted. Filtering must never trigger a network request. A hit shows its name first, then the path of its container cut from the left when the column is short, so that the nearest containers, which tell apart hits of one name, stay in sight; the full path on hover.
+- Fuzzy filter over full paths, matching live, with matched characters highlighted. Filtering must never trigger a network request. A hit shows its name, and only when another hit carries the same name in another container, the path of its own container after it, cut from the left when the column is short, so that the nearest containers, which tell those hits apart, stay in sight; otherwise the name takes the whole column. The full path on hover.
+- Writable only, a check box in the toolbar: the tree, and the filter's hits, leave out the methods that cannot be written and the containers whose children are all left out; a container whose children are not loaded stays. The status bar says how many nodes are hidden. Pinned nodes stay in their panel whatever their access. The setting is kept (9.7).
 - Keyboard: arrows to move, right and left to expand and collapse, enter to focus the widget, escape to leave it, `/` to focus the filter, `cmd/ctrl+c` to copy the full path.
 
 ### 9.3 Editing widgets by type
@@ -357,7 +358,7 @@ The UI must never imply state it has not observed. Specifically:
 
 ### 9.7 Persistence
 
-A single config file in the OS standard config directory, written atomically on change. It contains: window size and position, manual server entries, last selected server, theme preference, pinned paths per server (`pinned_paths`, 9.8), the OSC ports set by the user per server (`osc_ports`, 7.2), and the sixteen preset slots (`presets`, 9.9). Nothing else. No database.
+A single config file in the OS standard config directory, written atomically on change. It contains: window size and position, manual server entries, last selected server, theme preference, pinned paths per server (`pinned_paths`, 9.8), the OSC ports set by the user per server (`osc_ports`, 7.2), the sixteen preset slots (`presets`, 9.9), whether the tree shows writable nodes only (`hide_read_only`, 9.2), and whether the preset section is open (`presets_open`, 9.9). Nothing else. No database.
 
 ### 9.8 Pinned nodes
 
@@ -365,7 +366,7 @@ The working surface. A node is pinned or unpinned from the tree, by right click,
 
 ### 9.9 Presets
 
-Sixteen slots, for debugging, not for performance: one click captures, one click recalls, no confirmation. Each slot names its two actions, **Recall** and **Capture**; a slot holding values is told from an empty one at a glance, on a tinted ground, its number plain, Recall on; an empty slot has a faint number and Recall off.
+Sixteen slots, for debugging, not for performance: one click captures, one click recalls, no confirmation. The section is folded to its header until opened, the pinned panel taking the room; open or folded, it stays so (9.7). Each slot names its two actions, **Recall** and **Capture**; a slot holding values is told from an empty one at a glance, on a tinted ground, its number plain, Recall on; an empty slot has a faint number and Recall off.
 
 - Capture takes every writable method of the loaded tree of the selected server or, when nodes of that server are pinned, only the pinned ones. No selection interface: the pinned set states the scope. A method's value is the value sent and not yet confirmed if there is one, else the value read; a method with neither, or with an impulse, nil or array argument, is skipped, and the count says so.
 - A slot records the server it came from (`host:port` and name), each method's path, type tags and arguments.

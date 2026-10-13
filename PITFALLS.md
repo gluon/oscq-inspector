@@ -70,6 +70,12 @@ Case: the v0.2.1 toolbar, 2026-10-13.
 `Galley::text()` returns the text a label was given, whole, even when egui elides it on screen. A test comparing what the user sees must read the glyphs laid out (`galley.rows`, each glyph's `chr`).
 Case: a filter test that kept passing with labels cut to the same text on screen, 2026-10-13.
 
+egui fills buttons and text fields with `weak_bg_fill` but slider rails and checkbox boxes with `bg_fill`, both from the same widget state. Retoning a theme through one of them leaves the other widgets as they were.
+Case: the v0.2.2 light theme, white buttons and fields over grey rails, 2026-10-13.
+
+An unselected `toggle_value` is drawn with no frame, like a plain label: nothing tells a user it can be clicked. A `checkbox` shows its state either way.
+Case: the "Writable only" control, under Xvfb, 2026-10-13.
+
 ## Status display
 
 An error kept until another error replaces it outlives what it described. The status bar showed a failed connection under the tree the next connection had loaded. Clear an error when the operation it comes from succeeds, and drop the errors of an attempt that a newer one replaced.

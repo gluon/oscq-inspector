@@ -130,7 +130,7 @@ Setup: the synthetic server of section 3 running, Max 9 with its patch as in sec
    Expected: the manual entries under **Manual**, each with an **x**; a discovered server has none.
 4. Right click `/g0/p0`, **Pin**; the same for `/g0/p1` and `/g0/p2`. Collapse `/g0`, open the **JSON** tab.
    Expected: the three nodes in **Pinned** on the right, with their widgets, whatever the tree or the tab shows. Moving a pinned widget sends, as in the tree.
-5. Set the three pinned values to 0.1, 0.2, 0.3. In **Presets**, click **Capture** on slot 01.
+5. Set the three pinned values to 0.1, 0.2, 0.3. The preset section is folded: click **+ PRESETS** to open it. Then click **Capture** on slot 01.
    Expected: a note "Slot 01: 3 values of pinned methods captured". Slot 01 turns tinted, its number plain, its **Recall** on; the other slots stay plain, numbers faint, **Recall** off.
 6. Move the three values elsewhere, then click **Recall** on slot 01.
    Expected: the three widgets back to 0.1, 0.2, 0.3 at once, with no confirmation. The **Traffic** tab shows one line, its time then `out preset 01  (3 messages)`; clicking it lists the three messages.
@@ -142,7 +142,13 @@ Setup: the synthetic server of section 3 running, Max 9 with its patch as in sec
    Expected: `/g0/p2` leaves the panel; pin it again from the tree.
    Type `p1` in the filter.
    Expected: each hit named first, `p1  /g0`, `p10  /g0`, `p100  /g1`, the containers after the name; the full path on hover.
-   On a window of 1000 points or more (2000 pixels on a Retina screen), the toolbar holds on one line.
+   On a window of 1100 points or more (2200 pixels on a Retina screen), the toolbar holds on one line.
+   Type `fader/` in the filter, on Max 9's tree.
+   Expected: the hits by their names alone, no container path: they are all in one container.
+   Check **Writable only** in the toolbar, clear the filter.
+   Expected: Max 9's tree without `longname`, `shortname`, `type`, `min`, `max` and the other read only metadata; the status bar says how many nodes are hidden. Quit and open again: still checked.
+   Switch **Theme** to light.
+   Expected: buttons and fields white and edged, sliders on a firm grey rail, text dark: an editable value stands out from a read only one as clearly as in the dark theme.
 9. Quit and open again, select the synthetic server.
    Expected: the three pinned nodes and slot 01 still there.
 10. Select Max 9, click **Recall** on slot 01.
