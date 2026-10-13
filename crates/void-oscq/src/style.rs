@@ -19,6 +19,14 @@ pub const ITEM_GAP: f32 = 2.0 * GRID;
 pub const META_W: f32 = 30.0 * GRID;
 /// Sliders, text fields and dropdowns in the control column.
 pub const CONTROL_W: f32 = 40.0 * GRID;
+/// The least width the central pane keeps, whatever the window and however the side panes were
+/// dragged: its toolbar fits on wrapped lines. The narrowest window, 640, leaves it this much.
+pub const CENTRE_MIN: f32 = 44.0 * GRID;
+/// The server pane narrows down to this when the window does.
+pub const SERVERS_MIN: f32 = 40.0 * GRID;
+/// The work pane never narrows below its default width: four preset slots to a row, and the
+/// pinned rows whole.
+pub const WORK_MIN: f32 = 76.0 * GRID;
 
 /// The type scale: 11, 13 and 15 px for the interface, 12 px monospace for data.
 pub const SMALL: f32 = 11.0;

@@ -43,6 +43,15 @@ Case: the M6 metadata column, 0 of the expected `rw` labels drawn, because a hea
 A side panel sized by its content grows a little on every frame when a child asks for `available_width()` plus anything more. The server pane widened by 3 px a frame: the remove button needed 28 px and 24 were reserved for it.
 Case: same session.
 
+A row laid out with `Ui::horizontal` does not wrap: past the width of its pane it runs on, under the next pane, clipped, with no error. A toolbar sized on a 1100 px window lost its last controls on a narrower one. Use `horizontal_wrapped`, and a text field, which shrinks to the end of the line rather than wrap, needs `end_row` first when the line is short.
+Case: Refresh and the Tree tab out of sight on the human's Mac after the M6 rework, 2026-10-13.
+
+Side panes left at egui's default size range take what they want and the central pane gets the rest, down to nothing when they are dragged wide. Give each a range computed per frame from the window width, the second from what the first actually took.
+Case: same day.
+
+`TextShape::visual_bounding_rect` is the bounds of the tessellated glyphs: in a headless frame it is a sliver, not the text. To test where a text lies on screen, use `galley.rect` moved by the shape's `pos`.
+Case: the toolbar visibility test, 2026-10-13.
+
 ## Status display
 
 An error kept until another error replaces it outlives what it described. The status bar showed a failed connection under the tree the next connection had loaded. Clear an error when the operation it comes from succeeds, and drop the errors of an attempt that a newer one replaced.

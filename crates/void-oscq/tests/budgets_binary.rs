@@ -253,6 +253,41 @@ struct Idle {
 }
 
 impl Idle {
+    /// The input events that reached the window during the idle window, by kind, as each frame
+    /// logged them: a pointer move, a key, a focus change.
+    fn inputs(&self) -> std::collections::BTreeMap<&str, usize> {
+        let mut inputs: std::collections::BTreeMap<&str, usize> = Default::default();
+        for f in &self.frames {
+            let list = f
+                .split("inputs=[")
+                .nth(1)
+                .and_then(|r| r.split(']').next())
+                .unwrap_or_default();
+            for kind in list.split(", ").filter(|k| !k.is_empty()) {
+                *inputs.entry(kind.trim_matches('"')).or_default() += 1;
+            }
+        }
+        inputs
+    }
+
+    /// An idle window that received input did not measure idle: each input event costs frames
+    /// and CPU, three frames at least. Fails as an invalid measurement, never as a budget overrun.
+    fn assert_valid(&self) {
+        let inputs = self.inputs();
+        if inputs.is_empty() {
+            return;
+        }
+        let kinds: Vec<String> = inputs.iter().map(|(k, n)| format!("{n} {k}")).collect();
+        panic!(
+            "invalid measurement, not a budget overrun: {} input events reached the window \
+             during the {} s idle window ({}). Keep the pointer outside the window, touch \
+             nothing, and run again.",
+            inputs.values().sum::<usize>(),
+            IDLE_WINDOW.as_secs(),
+            kinds.join(", ")
+        );
+    }
+
     /// What woke the window, so that one failing run names the cause.
     fn print(&self) {
         println!(
@@ -265,18 +300,7 @@ impl Idle {
         for (n, cause) in causes(&self.frames) {
             println!("  {n} frames asked for by: {cause}");
         }
-        let mut inputs: std::collections::BTreeMap<&str, usize> = Default::default();
-        for f in &self.frames {
-            let list = f
-                .split("inputs=[")
-                .nth(1)
-                .and_then(|r| r.split(']').next())
-                .unwrap_or_default();
-            for kind in list.split(", ").filter(|k| !k.is_empty()) {
-                *inputs.entry(kind.trim_matches('"')).or_default() += 1;
-            }
-        }
-        for (kind, n) in inputs {
+        for (kind, n) in self.inputs() {
             println!("  {n} input events {kind}");
         }
         let mut kinds: std::collections::BTreeMap<&str, usize> = Default::default();
@@ -339,6 +363,7 @@ fn real_binary_does_not_repaint_when_idle() {
     launch.settle();
     let idle = launch.idle();
     idle.print();
+    idle.assert_valid();
     assert!(idle.frames.is_empty(), "the window repaints when idle");
 }
 
@@ -409,6 +434,7 @@ fn real_binary_budgets() {
         memory as f64 / 1_048_576.0
     );
     assert_eq!(listens, LISTENS);
+    idle.assert_valid();
     assert!(idle.cpu < 1.0, "idle CPU");
     assert!(idle.frames.is_empty(), "idle repaints");
     assert!(memory < 150 * 1_048_576, "resident memory");

@@ -292,16 +292,27 @@ impl VoidApp {
 
         let mut actions = Vec::new();
         self.view.visible_methods.clear();
-        egui::Panel::left("servers")
+        // The side panes take what the centre leaves, so the centre keeps CENTRE_MIN whatever
+        // the window width and however the panes were dragged: the server pane first, leaving
+        // the work pane its least width, then the work pane, from what the server pane took.
+        let width = ui.available_width();
+        let servers_max = (width - style::CENTRE_MIN - style::WORK_MIN).max(style::SERVERS_MIN);
+        let servers = egui::Panel::left("servers")
             .resizable(true)
             .default_size(56.0 * style::GRID)
-            .show(ui, |ui| self.server_pane(ui, &mut actions));
+            .size_range(style::SERVERS_MIN..=servers_max)
+            .show(ui, |ui| self.server_pane(ui, &mut actions))
+            .response
+            .rect
+            .width();
+        let work_max = (width - servers - style::CENTRE_MIN).max(style::WORK_MIN);
         egui::Panel::bottom("status")
             .exact_size(style::ROW_H + 2.0 * style::GRID)
             .show(ui, |ui| self.status_bar(ui));
         egui::Panel::right("work")
             .resizable(true)
-            .default_size(72.0 * style::GRID)
+            .default_size(style::WORK_MIN)
+            .size_range(style::WORK_MIN..=work_max)
             .show(ui, |ui| self.work_pane(ui, &mut actions));
         egui::CentralPanel::default().show(ui, |ui| self.main_pane(ui, &mut actions));
         self.manual_modal(&ctx, &mut actions);
@@ -774,7 +785,8 @@ impl VoidApp {
             .show_separator_line(false)
             .show(ui, |ui| {
                 ui.add_space(GRID);
-                ui.horizontal(|ui| {
+                // Wrapped, so About stays on screen in the narrowest pane.
+                ui.horizontal_wrapped(|ui| {
                     let mut theme = self.config.theme;
                     egui::ComboBox::from_id_salt("theme")
                         .width(24.0 * GRID)
@@ -899,22 +911,30 @@ impl VoidApp {
         } else {
             "the pinned nodes"
         };
-        // Four rows of four slots. Every cell has the same width, so plain rows line up as a grid
-        // would, without its per frame bookkeeping.
+        // Rows of as many slots as the pane holds, four at most. Every cell has the same width,
+        // so plain rows line up as a grid would, and none runs past the edge of the pane.
         const NUMBERS: [&str; presets::SLOTS] = [
             "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14",
             "15", "16",
         ];
-        for (r, numbers) in NUMBERS.chunks(4).enumerate() {
+        const RECALL_W: f32 = 8.0 * GRID;
+        const SET_W: f32 = 9.0 * GRID;
+        let cell = RECALL_W + SET_W;
+        let cols = (((ui.available_width() + GRID) / (cell + GRID)).floor() as usize).clamp(1, 4);
+        for (r, numbers) in NUMBERS.chunks(cols).enumerate() {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = GRID;
                 for (c, number) in numbers.iter().enumerate() {
-                    let slot = r * 4 + c + 1;
+                    let slot = r * cols + c + 1;
                     let held = self.config.presets.get(&slot);
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
                         let recall = ui
-                            .add_enabled(held.is_some(), egui::Button::new(style::data(*number)))
+                            .add_enabled(
+                                held.is_some(),
+                                egui::Button::new(style::data(*number))
+                                    .min_size(egui::vec2(RECALL_W, style::CONTROL_H)),
+                            )
                             // Hover texts are built only when shown: a frame builds none.
                             .on_hover_ui(|ui| {
                                 if let Some(p) = held {
@@ -930,7 +950,11 @@ impl VoidApp {
                             actions.push(Action::Recall(slot));
                         }
                         if ui
-                            .small_button("set")
+                            .add(
+                                egui::Button::new("set")
+                                    .small()
+                                    .min_size(egui::vec2(SET_W, style::CONTROL_H)),
+                            )
                             .on_hover_ui(|ui| {
                                 ui.label(format!("Capture {scope} of this server"));
                             })
@@ -1039,61 +1063,6 @@ impl VoidApp {
                 }
                 return;
             };
-            zone(ui, 36.0 * GRID, &mut |ui| {
-                ui.spacing_mut().item_spacing.x = GRID;
-                status_dot(ui, dot_colour(e));
-                ui.add(egui::Label::new(state_text(e)).truncate())
-                    .on_hover_ui(|ui| {
-                        ui.label(conn_text(e));
-                        if let Some((v, _)) = values_text(e) {
-                            ui.label(v);
-                        }
-                    });
-            });
-            zone(ui, 40.0 * GRID, &mut |ui| {
-                ui.add(egui::Label::new(RichText::new(&e.server.name).strong()).truncate())
-                    .on_hover_ui(|ui| {
-                        ui.label(server_tooltip(e));
-                    });
-            });
-            zone(ui, 52.0 * GRID, &mut |ui| {
-                let text = match &e.destination {
-                    Some(Ok(d)) => {
-                        let transport = match d.transport {
-                            oscq_core::OscTransport::Udp => "UDP",
-                            oscq_core::OscTransport::Tcp => "TCP",
-                        };
-                        format!("OSC {}:{} {transport}", d.host, d.port)
-                    }
-                    Some(Err(_)) => "OSC: cannot send".to_owned(),
-                    None => "OSC: not known yet".to_owned(),
-                };
-                ui.add(egui::Label::new(style::data(text)).truncate())
-                    .on_hover_ui(|ui| match &e.destination {
-                        Some(Ok(d)) => {
-                            ui.label(port_source_text(d.port_source));
-                            if e.host_info.as_ref().is_some_and(|h| h.query_ignored) {
-                                ui.label(
-                                    "HOST_INFO ignored by the server, defaults used: OSC and \
-                                     WebSocket on the HTTP address and port",
-                                );
-                            }
-                        }
-                        Some(Err(blocked)) => {
-                            ui.label(blocked.to_string());
-                        }
-                        None => {}
-                    });
-            });
-            zone(ui, 28.0 * GRID, &mut |ui| {
-                if let Some(t) = &e.tree {
-                    let mut text = format!("{} nodes", t.nodes.saturating_sub(1));
-                    if !t.diagnostics.is_empty() {
-                        text.push_str(&format!(", {} warnings", t.diagnostics.len()));
-                    }
-                    ui.label(text);
-                }
-            });
             // The message: the last error, or why nothing can be sent, or a note.
             let message = error_text(e)
                 .map(|t| (t, ui.visuals().error_fg_color))
@@ -1122,6 +1091,67 @@ impl VoidApp {
                         .clone()
                         .map(|n| (n, ui.visuals().weak_text_color()))
                 });
+            // The zones narrow together when the window does, the message keeping some room:
+            // nothing runs past the edge of the window, the details stay on hover.
+            let gaps = 4.0 * GROUP_GAP;
+            let message_floor = if message.is_some() { 32.0 * GRID } else { 0.0 };
+            let scale =
+                ((ui.available_width() - gaps - message_floor) / (156.0 * GRID)).clamp(0.0, 1.0);
+            zone(ui, 36.0 * GRID * scale, &mut |ui| {
+                ui.spacing_mut().item_spacing.x = GRID;
+                status_dot(ui, dot_colour(e));
+                ui.add(egui::Label::new(state_text(e)).truncate())
+                    .on_hover_ui(|ui| {
+                        ui.label(conn_text(e));
+                        if let Some((v, _)) = values_text(e) {
+                            ui.label(v);
+                        }
+                    });
+            });
+            zone(ui, 40.0 * GRID * scale, &mut |ui| {
+                ui.add(egui::Label::new(RichText::new(&e.server.name).strong()).truncate())
+                    .on_hover_ui(|ui| {
+                        ui.label(server_tooltip(e));
+                    });
+            });
+            zone(ui, 52.0 * GRID * scale, &mut |ui| {
+                let text = match &e.destination {
+                    Some(Ok(d)) => {
+                        let transport = match d.transport {
+                            oscq_core::OscTransport::Udp => "UDP",
+                            oscq_core::OscTransport::Tcp => "TCP",
+                        };
+                        format!("OSC {}:{} {transport}", d.host, d.port)
+                    }
+                    Some(Err(_)) => "OSC: cannot send".to_owned(),
+                    None => "OSC: not known yet".to_owned(),
+                };
+                ui.add(egui::Label::new(style::data(text)).truncate())
+                    .on_hover_ui(|ui| match &e.destination {
+                        Some(Ok(d)) => {
+                            ui.label(port_source_text(d.port_source));
+                            if e.host_info.as_ref().is_some_and(|h| h.query_ignored) {
+                                ui.label(
+                                    "HOST_INFO ignored by the server, defaults used: OSC and \
+                                     WebSocket on the HTTP address and port",
+                                );
+                            }
+                        }
+                        Some(Err(blocked)) => {
+                            ui.label(blocked.to_string());
+                        }
+                        None => {}
+                    });
+            });
+            zone(ui, 28.0 * GRID * scale, &mut |ui| {
+                if let Some(t) = &e.tree {
+                    let mut text = format!("{} nodes", t.nodes.saturating_sub(1));
+                    if !t.diagnostics.is_empty() {
+                        text.push_str(&format!(", {} warnings", t.diagnostics.len()));
+                    }
+                    ui.add(egui::Label::new(text).truncate());
+                }
+            });
             if let Some((text, colour)) = message {
                 ui.add(egui::Label::new(RichText::new(&text).color(colour)).truncate())
                     .on_hover_text(text);
@@ -1137,23 +1167,36 @@ impl VoidApp {
             return;
         };
         ui.add_space(GRID);
-        ui.horizontal(|ui| {
+        // The toolbar wraps onto further lines rather than run under the right pane: every
+        // control, Refresh included, stays on screen whatever the width.
+        ui.horizontal_wrapped(|ui| {
             ui.set_min_height(ROW_H);
+            let width = ui.available_width();
+            // A text field shrinks to what is left of the line instead of wrapping: wrap it.
+            let field_width = |ui: &mut egui::Ui, wanted: f32| {
+                let w = wanted.min(width);
+                if ui.available_width() < w {
+                    ui.end_row();
+                }
+                w
+            };
+            let w = field_width(ui, 36.0 * GRID);
             let filter = ui.add(
                 egui::TextEdit::singleline(&mut self.view.filter)
                     .id(egui::Id::new("filter"))
                     .font(egui::TextStyle::Monospace)
                     .hint_text("filter  /")
-                    .desired_width(36.0 * GRID),
+                    .desired_width(w),
             );
             if std::mem::take(&mut self.view.focus_filter) {
                 filter.request_focus();
             }
+            let w = field_width(ui, 28.0 * GRID);
             ui.add(
                 egui::TextEdit::singleline(&mut self.view.prefix)
                     .font(egui::TextStyle::Monospace)
                     .hint_text("root at path")
-                    .desired_width(28.0 * GRID),
+                    .desired_width(w),
             );
             ui.add_space(GROUP_GAP);
             ui.selectable_value(&mut self.view.tab, Tab::Tree, "Tree");
@@ -2608,12 +2651,14 @@ mod tests {
 
     impl Harness {
         fn frame(&mut self, events: Vec<egui::Event>) -> egui::FullOutput {
+            self.frame_sized(egui::vec2(1100.0, 700.0), events)
+        }
+
+        /// One frame in a window of `size`.
+        fn frame_sized(&mut self, size: egui::Vec2, events: Vec<egui::Event>) -> egui::FullOutput {
             let input = egui::RawInput {
                 events,
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1100.0, 700.0),
-                )),
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
                 ..egui::RawInput::default()
             };
             let app = &mut self.app;
@@ -3680,6 +3725,118 @@ mod tests {
             walk(&clipped.shape, &mut texts);
         }
         texts
+    }
+
+    /// Every text the frame drew, with its layout rectangle on screen and the clip it was drawn in.
+    fn drawn_text_rects(out: &egui::FullOutput) -> Vec<(String, egui::Rect, egui::Rect)> {
+        fn walk(
+            shape: &egui::Shape,
+            clip: egui::Rect,
+            out: &mut Vec<(String, egui::Rect, egui::Rect)>,
+        ) {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, clip, out)),
+                egui::Shape::Text(t) => out.push((
+                    t.galley.text().to_owned(),
+                    t.galley.rect.translate(t.pos.to_vec2()),
+                    clip,
+                )),
+                _ => {}
+            }
+        }
+        let mut texts = Vec::new();
+        for clipped in &out.shapes {
+            walk(&clipped.shape, clipped.clip_rect, &mut texts);
+        }
+        texts
+    }
+
+    /// The toolbar of the centre never runs off screen or under a side pane: from the narrowest
+    /// window up, with the side panes at their default width or dragged as wide as they go, each
+    /// of its controls is drawn once, whole, inside its clip and inside the window. Refresh above
+    /// all: with a server that never notifies, it is the only way to read a value again. The same
+    /// for the sixteen preset slots, and for every text along the bottom of the window: the
+    /// theme and About under the server list, the status bar and its message.
+    #[test]
+    fn every_toolbar_control_stays_on_screen_whatever_the_width() {
+        const CONTROLS: [&str; 6] = [
+            "filter  /",
+            "root at path",
+            "Tree",
+            "JSON",
+            "Traffic",
+            "Refresh",
+        ];
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
+        for width in [640.0, 720.0, 800.0, 960.0, 1100.0, 1440.0, 1920.0] {
+            for dragged in [false, true] {
+                let mut h = harness();
+                controllable(&mut h, "127.0.0.1", 2345, "S", doc);
+                h.app
+                    .config
+                    .pinned_paths
+                    .insert("127.0.0.1:2345".into(), vec!["/a".into()]);
+                h.app.view.note = Some("a note long enough to need the whole width ".repeat(4));
+                if dragged {
+                    // Both side panes as a previous session left them, wider than any window.
+                    for pane in ["servers", "work"] {
+                        h.ctx.data_mut(|d| {
+                            d.insert_persisted(
+                                egui::Id::new(pane),
+                                egui::PanelState {
+                                    outer_rect: egui::Rect::from_min_size(
+                                        egui::Pos2::ZERO,
+                                        egui::vec2(2000.0, 600.0),
+                                    ),
+                                },
+                            )
+                        });
+                    }
+                }
+                let size = egui::vec2(width, 600.0);
+                h.frame_sized(size, Vec::new());
+                let out = h.frame_sized(size, Vec::new());
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+                let drawn = drawn_text_rects(&out);
+                let whole = |text: &str, rect: &egui::Rect, clip: &egui::Rect| {
+                    assert!(
+                        clip.intersect(screen).contains_rect(*rect),
+                        "{text:?} at {rect:?} cut by {clip:?} at width {width}, panes dragged {dragged}"
+                    );
+                };
+                for control in CONTROLS {
+                    let found: Vec<_> = drawn.iter().filter(|(t, _, _)| t == control).collect();
+                    assert_eq!(
+                        found.len(),
+                        1,
+                        "{control:?} drawn once at width {width}, panes dragged {dragged}"
+                    );
+                    whole(control, &found[0].1, &found[0].2);
+                }
+                let slots: Vec<_> = drawn
+                    .iter()
+                    .filter(|(t, _, _)| {
+                        t == "set" || t.parse::<usize>().is_ok_and(|n| (1..=16).contains(&n))
+                    })
+                    .collect();
+                assert_eq!(
+                    slots.len(),
+                    2 * presets::SLOTS,
+                    "every slot at width {width}"
+                );
+                slots.iter().for_each(|(t, r, c)| whole(t, r, c));
+                let pinned: Vec<_> = drawn.iter().filter(|(t, _, _)| t == "/a").collect();
+                assert_eq!(pinned.len(), 1, "the pinned row at width {width}");
+                whole("/a", &pinned[0].1, &pinned[0].2);
+                let band = size.y - ROW_H - 2.0 * GRID;
+                let status: Vec<_> = drawn.iter().filter(|(_, r, _)| r.min.y >= band).collect();
+                assert!(
+                    status.len() >= 4,
+                    "the status bar drawn at width {width}: {status:?}"
+                );
+                status.iter().for_each(|(t, r, c)| whole(t, r, c));
+            }
+        }
     }
 
     /// A node's access is what its server declares, whatever the connection: when a reconnection
