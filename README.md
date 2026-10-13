@@ -11,7 +11,7 @@ The product specification is [PRD.md](PRD.md).
 ## What it does
 
 - **Finds servers.** OSCQuery servers advertised on the network (Bonjour, `_oscjson._tcp`) appear on the left. Devices that only speak OSC, with no OSCQuery (`_osc._udp`), are listed greyed out, so you know they are there. A server that does not advertise, or sits behind a VPN or a router, is added by hand with `+ manual` and its `host:port`; the last ten are remembered, each removable. Discovered and manual servers are listed apart.
-- **Shows the address space.** A tree of every container and method, fast with thousands of nodes. A filter box finds paths by fuzzy matching, each hit by its name, with its container when another hit has the same name elsewhere; a prefix box roots the tree at any container. **Writable only** leaves out what cannot be written, such as the metadata Max publishes for each parameter.
+- **Shows the address space.** A tree of every container and method, fast with thousands of nodes. A filter box finds paths by fuzzy matching, each hit by its name, with its container when another hit has the same name elsewhere; a prefix box roots the tree at any container. **Writable** leaves out what cannot be written, such as the metadata Max publishes for each parameter.
 - **Shows the values, and says where they come from.** Each method shows its value in its widget, as the server reported it. A value you sent but the server has not confirmed is marked "sent". The status bar says whether values are live, pushed by the server over its WebSocket, or on refresh only.
 - **Edits values with a widget that fits the type.** Sliders for numbers with a range, drag values without one, toggles, buttons for impulses, dropdowns for lists of values, text fields, colour pickers. The OSC goes to the address and port the server gives in its `HOST_INFO`, coerced to the types it declares. When the server does not give its OSC port, the app infers it from the HTTP port, as the protocol says; when that is wrong, as with Max 9, you set the right port for that server and it is kept.
 - **Keeps your controls at hand.** Pin nodes from the tree: they stay in the pinned panel whatever the tree shows, per server, across restarts.
@@ -176,7 +176,7 @@ git push origin v0.2.2
 ### 0.2.2
 
 - **Filter**: a hit's container path shown only when another hit carries the same name in another container; otherwise the name alone.
-- **Writable only**, a check box in the toolbar: the tree and the filter leave out the nodes that cannot be written, and the containers left with none; the status bar counts them; the setting is kept.
+- **Writable**, a check box in the toolbar: the tree and the filter leave out the nodes that cannot be written, and the containers left with none; the status bar counts them; the setting is kept.
 - **Presets** folded until opened, the pinned panel taking the room; kept open or folded.
 - **Light theme** toned: buttons and fields white and edged, rails a firm grey, text darker; controls stand out from the panel at least as much as in the dark theme.
 
@@ -227,7 +227,8 @@ git push origin v0.2.2
 - About fix: done, merged. On macOS the application menu's About item opened the system's panel, empty outside a bundle; it now opens the application's own about box, whose six pieces of information a test checks one by one on screen. Checked by the human on the Mac: the six shown by both paths, the menu and the button.
 - v0.2.0: done, merged, tagged and released; the three artifacts complete with their license texts, installed on the human's Mac.
 - v0.2.1: done, merged, tagged. Checked by the human on the Mac: the toolbar on one line, the unpin button, Recall and Capture apart, a held slot seen.
-- v0.2.2: on branch `void/v0-2-2`. The filter path only on ambiguity, Writable only with its count, the folding preset section, the toned light theme. The three crates at 0.2.2. The tag is the human's.
+- v0.2.2: done, merged, tagged. The filter path only on ambiguity, Writable only with its count, the folding preset section, the toned light theme. Checked by the human on the Mac: Max 9's tree from 35 nodes to 6 with the count, no path without ambiguity, the presets folded by default, both settings kept, the light theme.
+- After v0.2.2: on branch `void/toolbar-label`. The check box labelled Writable, the toolbar on one line from 1060 points.
 
 Backlog:
 
