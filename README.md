@@ -20,7 +20,7 @@ Systems:
 
 - **macOS**: tested by hand.
 - **Linux**: built, tested and started in CI under Xvfb, a virtual display.
-- **Windows**: built and tested without its window in CI, never started. It is not verified at runtime until a release is built by the workflow that starts it, after 0.2.2.
+- **Windows**: built and tested without its window in CI; since 0.2.3, every release build unzips the packed executable and starts it, and fails unless it draws its first frame. Never tried by hand.
 
 ## What it does
 
@@ -76,8 +76,8 @@ If Windows Defender Firewall asks whether to allow Void OSCQ on networks, allow 
 Download `void-oscq-VERSION-linux-x86_64.tar.gz`, unpack it and run the binary:
 
 ```
-tar -xzf void-oscq-0.2.2-linux-x86_64.tar.gz
-cd void-oscq-0.2.2-linux-x86_64
+tar -xzf void-oscq-0.2.3-linux-x86_64.tar.gz
+cd void-oscq-0.2.3-linux-x86_64
 ./void-oscq
 ```
 
@@ -211,6 +211,6 @@ cargo test --release -p void-oscq --test budgets_binary -- --ignored --nocapture
 The workflow `.github/workflows/release.yml` builds and starts the three artifacts on a tag `v*`, and on any push that changes the packaging. On a tag it then creates a draft GitHub Release holding the three files, with the version's section of [CHANGELOG.md](CHANGELOG.md) as its notes; the draft is published by hand once [docs/acceptance.md](docs/acceptance.md) has passed. The scripts are in `packaging/`. A tag must equal the workspace version, and CHANGELOG.md must have a section for it:
 
 ```
-git tag v0.2.2
-git push origin v0.2.2
+git tag v0.2.3
+git push origin v0.2.3
 ```

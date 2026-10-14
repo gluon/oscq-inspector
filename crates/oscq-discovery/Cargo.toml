@@ -10,7 +10,7 @@ publish = false
 [dependencies]
 flume.workspace = true
 mdns-sd = "0.21.5"
-oscq-core = { version = "0.2.2", path = "../oscq-core" }
+oscq-core = { version = "0.2.3", path = "../oscq-core" }
 thiserror = "2.0.21"
 tracing = "0.1.44"
 

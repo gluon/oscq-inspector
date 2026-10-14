@@ -8,7 +8,7 @@ members = [
 
 # One version for every crate and for the release tag, checked by ci/check-release-version.sh.
 [workspace.package]
-version = "0.2.2"
+version = "0.2.3"
 authors = ["Julien Bayle"]
 license = "GPL-3.0-or-later"
 repository = "https://github.com/gluon/void-oscq"
