@@ -1,12 +1,26 @@
 # Void OSCQ
 
-Void OSCQ is a desktop application for macOS, Windows and Linux that connects to OSCQuery servers. OSCQuery is a protocol by which an application publishes its OSC address space, the list of everything it can be controlled with, as JSON over HTTP. Void OSCQ finds those servers on the local network, shows their address space as a tree, shows each value, keeps the values live when the server pushes them, and lets you change them: every change is sent as an OSC message.
+Void OSCQ is a desktop application for macOS, Windows and Linux that connects to OSCQuery servers. OSCQuery is a protocol by which an application publishes its OSC address space, the list of everything it can be controlled with, as JSON over HTTP. Void OSCQ finds those servers on the local network, shows their address space as a tree, shows each value, and lets you change them: every change is sent as an OSC message. It keeps the values live when a server pushes them over its WebSocket, but none of the three servers it was tested with pushes its values: only the synthetic server of this repository does, so live updates are proven against it alone.
 
 It is meant for people who build or debug OSC setups: checking what a server really publishes, driving it by hand, and watching the messages that go out and come back.
 
-Copyright (C) 2026 Julien Bayle, Structure Void. Void OSCQ is free software under the GNU General Public License, version 3 or any later version ([LICENSE](LICENSE)), with an additional permission for the fonts compiled into the application ([LICENSE-EXCEPTION](LICENSE-EXCEPTION)). The fonts keep their own licenses, in [licenses/fonts](licenses/fonts).
+**Download**: the [Releases page](https://github.com/gluon/void-oscq/releases), one file per system, free, unsigned. See [Download and first launch](#download-and-first-launch) for opening an unsigned app the first time. Changes between versions are in [CHANGELOG.md](CHANGELOG.md).
 
-The product specification is [PRD.md](PRD.md).
+## Tested with
+
+| Server | What it does | What it does not do |
+| --- | --- | --- |
+| Vidvox [OSCQuery Helper](https://github.com/Vidvox/VVOSCQueryProtocol) | advertised over Bonjour, gives its OSC port; values sent reach its OSC target | declares every node write only, so no value can be read back; no `LISTEN` over its WebSocket, nothing pushed |
+| Max 9, which serves OSCQuery natively | values read and sent, with the OSC port set by hand | listens on the same machine only, `localhost:30339`; no Bonjour; does not say its OSC port, 30338 by default; ignores the `HOST_INFO` query; accepts the WebSocket and never sends anything on it |
+| The synthetic server of this repository | 5000 methods, values pushed over its WebSocket | a test server, not a real application |
+
+Not tested: VDMX, ossia and any other server. Reports of how the app behaves with them are welcome, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Systems:
+
+- **macOS**: tested by hand.
+- **Linux**: built, tested and started in CI under Xvfb, a virtual display.
+- **Windows**: built and tested without its window in CI, never started. It is not verified at runtime until a release is built by the workflow that starts it, after 0.2.2.
 
 ## What it does
 
@@ -28,13 +42,13 @@ The product specification is [PRD.md](PRD.md).
 
 ## Download and first launch
 
-Releases are built by GitHub Actions on each version tag, workflow **Release**. Open the run of the tag, scroll to **Artifacts**, and download the one for your system. GitHub hands every artifact as a zip: unzip it first.
+Each version is on the [Releases page](https://github.com/gluon/void-oscq/releases), with one file per system. The apps are not signed: your system warns you the first time you open one, and the steps below get past that warning once.
 
-Every artifact carries the license texts: the GNU GPL, its additional permission and the licenses of the bundled fonts, in a `licenses` folder, inside `Void OSCQ.app/Contents/Resources` on macOS.
+Every download carries the license texts: the GNU GPL, its additional permission and the licenses of the bundled fonts, in a `licenses` folder, inside `Void OSCQ.app/Contents/Resources` on macOS.
 
 ### macOS 12 or later, Apple Silicon or Intel
 
-The artifact holds `void-oscq-VERSION-macos-universal.zip`. Unzip it to get **Void OSCQ.app**, and move it to your Applications folder.
+Download `void-oscq-VERSION-macos-universal.zip`. Unzip it to get **Void OSCQ.app**, and move it to your Applications folder.
 
 The app is not signed by an identified developer, so macOS stops it the first time:
 
@@ -48,7 +62,7 @@ The first time the app looks for servers, macOS asks whether Void OSCQ may find 
 
 ### Windows 10 or later, 64 bit
 
-The artifact holds `void-oscq-VERSION-windows-x86_64.exe` and a `licenses` folder. The `.exe` is the whole application: no installer, put it where you like.
+Download `void-oscq-VERSION-windows-x86_64.zip` and unzip it: a folder holding `void-oscq-VERSION-windows-x86_64.exe` and a `licenses` folder. The `.exe` is the whole application: no installer, put it where you like.
 
 The program is not signed, so Windows SmartScreen stops it the first time:
 
@@ -59,7 +73,7 @@ If Windows Defender Firewall asks whether to allow Void OSCQ on networks, allow 
 
 ### Linux, x86_64
 
-The artifact holds `void-oscq-VERSION-linux-x86_64.tar.gz`. Unpack it and run the binary:
+Download `void-oscq-VERSION-linux-x86_64.tar.gz`, unpack it and run the binary:
 
 ```
 tar -xzf void-oscq-0.2.2-linux-x86_64.tar.gz
@@ -84,6 +98,36 @@ What the system needs to run it: X11 or Wayland, `libxkbcommon-x11-0` on X11, an
 - **Presets.** **+ PRESETS** opens the section, folded until then. **Capture** on a slot stores the values of the writable nodes, the pinned ones only when nodes are pinned; **Recall** sends them back, all at once, logged as one block in the Traffic tab. Recalled on another server, only the nodes at the same path with the same type are sent; the status bar counts those not found. No confirmation either way: a capture replaces the slot.
 - **Setting the OSC port.** When the server does not advertise its OSC port, the server pane shows "port inferred from the HTTP port" under **OSC destination**, and an OSC port field. Type the port the server receives OSC on, then **Set OSC port** or Enter: the server pane says "port set by the user", sends go there, and the port is kept for that server in the config, used again at every connection and after a restart. **Infer OSC port** goes back to the HTTP port and forgets the setting. A port the server advertises is not editable and always wins, even over a port set earlier: the setting fills a silence of the server, it never contradicts what the server declares.
 - Settings are saved in your system's configuration folder, in `void-oscq/config.json`: window size and place, manual entries, the last selected server, the theme, pinned paths, the OSC ports you set, the preset slots. JSON and traffic exports go to `void-oscq/exports/` beside it.
+
+## License
+
+Copyright (C) 2026 Julien Bayle, Structure Void. Void OSCQ is free software under the GNU General Public License, version 3 or any later version ([LICENSE](LICENSE)), with an additional permission for the fonts compiled into the application ([LICENSE-EXCEPTION](LICENSE-EXCEPTION)). The fonts keep their own licenses, in [licenses/fonts](licenses/fonts).
+
+## Status
+
+Latest published version: 0.2.2, tagged on 2026-10-13. Checked by hand on a Mac against Max 9; earlier versions also against OSCQuery Helper on a local network. What each check proved is recorded in [docs/acceptance.md](docs/acceptance.md), under "Acceptance record".
+
+Backlog:
+
+- Acceptance against a real server that notifies over its WebSocket (VDMX, ossia): a value changed inside it updates in the app without user action. Neither OSCQuery Helper nor Max 9 notifies; the synthetic server is the only proof so far. The known limit and what lifts it are in [docs/acceptance.md](docs/acceptance.md).
+- Real captured documents from VDMX and ossia, as test fixtures. OSCQuery Helper and Max 9 are captured.
+- OSC sent over the WebSocket, opt in per server, for servers that accept it; OSC goes over UDP only.
+
+## Documents in this repository
+
+This README is the manual. The documents below are the project's working files, left visible on purpose so the reasoning behind the code can be read. They are not user documentation, and some of them describe intent rather than the shipped application:
+
+- [PRD.md](PRD.md): the specification the application was built from, written for whoever implements it. Not the manual: where it and the application differ, the application and this README are right.
+- [docs/decisions.md](docs/decisions.md): one line per decision taken while building, with its reason.
+- [docs/protocol-notes.md](docs/protocol-notes.md): what the OSCQuery proposal says, checked against its sources, and what real servers do.
+- [PITFALLS.md](PITFALLS.md): traps met while building, each with the case that produced it.
+- [docs/acceptance.md](docs/acceptance.md): the manual checks run before each release, and the record of what they proved.
+- [CLAUDE.md](CLAUDE.md): working instructions given to the coding agents that work on this repository, in French. Not documentation.
+- [tests/fixtures/README.md](tests/fixtures/README.md): the test inputs and where each one comes from.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Build from source
 
@@ -150,7 +194,7 @@ cargo run -p oscq-core --example synthetic_server -- --port 5678 --stream 2
 
 ### Performance budgets
 
-PRD 10, on a release build. In process, also run in CI:
+The limits the application is held to, against the synthetic server: window visible under 300 ms after start, a 5000 node document parsed under 150 ms, a frame while scrolling it under 8 ms at p95, under 1 percent of one core at rest with 50 values listened to, no repaint at rest, under 2 ms from a slider to its UDP packet, under 150 MB resident with 5000 nodes, a macOS binary under 25 MB. The measures are in [docs/decisions.md](docs/decisions.md). On a release build. In process, also run in CI:
 
 ```
 cargo test --release --workspace -- --ignored budget_ --nocapture --test-threads=1
@@ -164,74 +208,9 @@ cargo test --release -p void-oscq --test budgets_binary -- --ignored --nocapture
 
 ### Release
 
-The workflow `.github/workflows/release.yml` builds the three artifacts on a tag `v*`, and on any push that changes the packaging. The scripts are in `packaging/`. A tag must equal the workspace version:
+The workflow `.github/workflows/release.yml` builds and starts the three artifacts on a tag `v*`, and on any push that changes the packaging. On a tag it then creates a draft GitHub Release holding the three files, with the version's section of [CHANGELOG.md](CHANGELOG.md) as its notes; the draft is published by hand once [docs/acceptance.md](docs/acceptance.md) has passed. The scripts are in `packaging/`. A tag must equal the workspace version, and CHANGELOG.md must have a section for it:
 
 ```
 git tag v0.2.2
 git push origin v0.2.2
 ```
-
-## Version history
-
-### 0.2.2
-
-- **Filter**: a hit's container path shown only when another hit carries the same name in another container; otherwise the name alone.
-- **Writable**, a check box in the toolbar: the tree and the filter leave out the nodes that cannot be written, and the containers left with none; the status bar counts them; the setting is kept.
-- **Presets** folded until opened, the pinned panel taking the room; kept open or folded.
-- **Light theme** toned: buttons and fields white and edged, rails a firm grey, text darker; controls stand out from the panel at least as much as in the dark theme.
-
-### 0.2.1
-
-- **Filter**: each hit named first, then the path of its container, cut from the left when the column is short: hits of one name in different containers stay told apart.
-- **Toolbar**: the tabs and Refresh first, then the filter and root fields sharing the rest of the line; on a window of 1000 points or more it holds on one line, and the side panes keep their width.
-- **Unpinning from the pinned panel**: a button at the end of each row, besides the right click.
-- **Presets**: each slot names its two actions, **Recall** and **Capture**; a slot holding values is tinted, its number plain, Recall on; an empty one has a faint number and Recall off.
-
-### 0.2.0
-
-- **Interface rework**: a 4 px grid and one type scale; a tree in three columns, name, widget, type tags and flags, with indentation guides; the widget holds the value; monospace for data; a one line status bar in fixed zones, details on hover.
-- **Narrow windows**: down to the 640 px minimum, no control leaves the screen. The toolbar wraps, Refresh included; the side panes narrow in turn and their handles stop at their limits; a narrow tree gives up the name, then the metadata down to the access flags, never the widget.
-- **Server list**: discovered and manual servers apart; a manual entry can be removed, with the OSC port set for it; the OSC destination and the OSC port field, still correctable when the server does not advertise its port, are in the server pane; with no server found, it says since when it has been searching.
-- **Pinned nodes**, kept per server, visible whatever the tree shows.
-- **Sixteen preset slots**, captured and recalled in one click, kept in the config; a recall on another server sends what matches and counts the rest.
-- **Traffic**: filter by direction; a preset recall logged as one block; right click a row to copy its full path.
-- **About box**: name, version, Julien Bayle, Structure Void, license, repository link, from the About button and, on macOS, from the application menu.
-- **License**: GPL-3.0-or-later, with an additional permission for the fonts compiled into the application. Every artifact carries the license texts; the Windows artifact holds the `.exe` and a `licenses` folder.
-
-### 0.1.1
-
-- **Application icon** on the three systems: the macOS `.icns` in the bundle, the Windows executable's icon, the Linux `.png` named by the `.desktop` file, and the window and the Dock while the app runs.
-- **Version in the macOS bundle**: both version keys of `Info.plist` carry the release version, checked against the tag by the release workflow.
-- **OSC port you can set** per server when the server does not advertise one; the status bar tells advertised, inferred from the HTTP port, or set by the user. Needed for Max 9, which receives OSC on 30338 and serves OSCQuery on 30339.
-- **Errors say why**: a failed connection shows the system's reason, such as "Connection refused", not only "error sending request".
-- **Errors that no longer hold are cleared**: an error disappears once the same operation succeeds, and a failed connection is said once.
-- **Access is the server's**: when the connection fails, nodes keep the access the server declared; writable nodes say "cannot send", with the reason, never "read only". The same for a server declaring OSC over TCP.
-- **Release workflow**: `actions/upload-artifact` v7, no Node 20 deprecation warning.
-
-### 0.1.0
-
-- First release: discovery over Bonjour and manual entries, the address space as a tree, values read and sent with widgets fitting their types, values live over the WebSocket where the server pushes them, the JSON and Traffic tabs. Unsigned artifacts for macOS (universal), Windows and Linux.
-
-## Status
-
-- M0, protocol groundwork: done, merged.
-- M1, core client: done, merged. Proven by the human on 2026-10-09: `oscq_probe` printed the Helper's 22 node tree and a value sent to `/test/my_float` reached the Helper's target.
-- M2, discovery: done, merged. Proven on the human's LAN on 2026-10-09: one entry in 0.18 s, lo0 and en0 merged, LAN IPv4 promoted.
-- M3, application: done, merged. Tested by the human on the Mac against OSCQuery Helper.
-- M4, WebSocket and performance: done, merged. Every PRD 10 budget met on the human's Mac or the macOS CI machine, see docs/decisions.md. Values pushed by the synthetic server seen live on the Mac; Max 9 accepts the WebSocket and sends nothing, shown as open and silent.
-- M5, release: done, merged, tag `v0.1.0`. The tagged run built the three artifacts; the macOS app was installed, opened and connected to Max 9 by the human.
-- M5 polish: done, merged. The OSC port setting checked by the human on the Mac against Max 9: sends reach 30338 once set, kept across a restart. The loss and return of a server, the system's cause in the error and the declared access kept were checked there too.
-- v0.1.1: done, merged, tag `v0.1.1`. The tagged run 38269010531 built the three artifacts; on the human's Mac the app installed, showed its icon and 0.1.1 in the Finder, connected to Max 9 with the OSC port read from the config, and its sends moved the fader.
-- Cleanup: done, merged. A reload that leaves the rows on screen is locked to send no `LISTEN` or `IGNORE`; the PRD says the repository is public; docs/acceptance.md states the known limit of WebSocket interoperability.
-- M6, interface rework, server list, pinned nodes, presets, traffic filter: done, merged. Checked by the human on the Mac: the three real binary tests pass, cold start 91.5 to 105.7 ms, memory 97.8 MB, no repaint at rest. Headless tests lock the removal of a manual entry with its OSC port, the pinned panel across tabs and per server, a capture and recall on the same server and on another, and the traffic direction filter. The look waits on the human, docs/acceptance.md section 5. After the human's review: the toolbar, Refresh included, on screen at any window width; the pane handles stop dead at their limits; the narrow tree keeps the widget and gives up the name, then the metadata; the discovery line says since when it searches; the about box names the author, Structure Void, the license and the repository. License GPL-3.0-or-later, with an additional permission for the bundled fonts, after the dependency audit recorded in docs/decisions.md; every release artifact carries the license texts.
-- About fix: done, merged. On macOS the application menu's About item opened the system's panel, empty outside a bundle; it now opens the application's own about box, whose six pieces of information a test checks one by one on screen. Checked by the human on the Mac: the six shown by both paths, the menu and the button.
-- v0.2.0: done, merged, tagged and released; the three artifacts complete with their license texts, installed on the human's Mac.
-- v0.2.1: done, merged, tagged. Checked by the human on the Mac: the toolbar on one line, the unpin button, Recall and Capture apart, a held slot seen.
-- v0.2.2: done, merged, tagged. The filter path only on ambiguity, Writable only with its count, the folding preset section, the toned light theme. Checked by the human on the Mac: Max 9's tree from 35 nodes to 6 with the count, no path without ambiguity, the presets folded by default, both settings kept, the light theme.
-- After v0.2.2: on branch `void/toolbar-label`. The check box labelled Writable, the toolbar on one line from 1060 points.
-
-Backlog:
-
-- Acceptance against a real server that notifies over its WebSocket (VDMX, ossia): a value changed inside it updates in the app without user action. Neither OSCQuery Helper nor Max 9 notifies; the synthetic server is the only proof so far. The known limit and what lifts it are in docs/acceptance.md.
-- Real captured documents from VDMX and ossia, PRD 12. OSCQuery Helper and Max 9 are captured.
-- OSC sent over the WebSocket, opt in per server (PRD 7.5).

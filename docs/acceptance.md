@@ -1,6 +1,6 @@
 # Release acceptance
 
-The manual checklist run by the human before a release, on the artifacts of the release tag, not on a build from source. Each step gives what to do and what must be seen. A step whose result differs is a failed release: note what was seen instead.
+The manual checklist run by the human before a release, on the files of the draft GitHub Release that the release tag created, not on a build from source. Its last step publishes the draft. Each step gives what to do and what must be seen. A step whose result differs is a failed release: note what was seen instead.
 
 Three servers are available and covered: Vidvox OSCQuery Helper, Max 9, and this project's synthetic server. VDMX and an ossia based patch, named in PRD 12, are not available and are not covered. No covered server is a third party server that notifies over its WebSocket: the live update of a value changed inside a real server stays unproven, see "Known limit" at the end.
 
@@ -8,9 +8,9 @@ Record for the release: the tag, the CI run, the macOS version, the date, and th
 
 ## 0. The artifact
 
-1. In GitHub, Actions, workflow **Release**, open the run of the tag. Under **Artifacts**, download `void-oscq-VERSION-macos-universal`.
-   Expected: one artifact per system, macOS, Windows, Linux, each named with the tag's version.
-2. Unzip the download, then the zip inside it. Move **Void OSCQ.app** to Applications.
+1. In GitHub, **Releases**, open the draft of the tag, created by the workflow **Release** once its run passed; a draft is visible to the repository's writers only. Download `void-oscq-VERSION-macos-universal.zip`.
+   Expected: one file per system, `void-oscq-VERSION-macos-universal.zip`, `void-oscq-VERSION-windows-x86_64.zip`, `void-oscq-VERSION-linux-x86_64.tar.gz`, each named with the tag's version; as notes, the version's section of CHANGELOG.md.
+2. Unzip the download. Move **Void OSCQ.app** to Applications.
    Expected: an application named Void OSCQ, with its own icon in the Finder: a dark blue rounded square holding a white tree, a root and two leaves, one leaf amber. Not the generic application icon.
 3. Double click it, and follow the README's macOS first launch procedure: **Privacy & Security**, **Open Anyway**.
    Expected: macOS reports an app it cannot verify, never an app that is damaged; after **Open Anyway** the window opens.
@@ -111,7 +111,7 @@ Proves: the nominal WebSocket path end to end, listen and ignore following the r
 
 Not required for the macOS release. On each system available:
 
-1. Download its artifact, follow the README's first launch procedure for that system.
+1. Download its file from the draft, follow the README's first launch procedure for that system.
    Expected: the window opens; on Windows, no console window. The executable in Explorer, the window and the taskbar show the application's icon; on Linux, the icon in the application menu once installed as the README says.
 2. Run section 3 with the synthetic server on that machine, or section 1 if a Helper runs on the LAN.
    Expected: the same results.
@@ -158,6 +158,17 @@ Setup: the synthetic server of section 3 running, Max 9 with its patch as in sec
 
 Proves: the interface rework seen by a person, the server list removal, the pinned panel across tabs and restarts, a capture and recall cycle on the same server and on another one, the traffic direction filter. Cannot prove: anything beyond this Mac and these two servers.
 
+## 6. Publication
+
+Last, and only when every section run above gave what was expected.
+
+1. In GitHub, **Releases**, open the draft of the tag, **Edit**, then **Publish release**.
+   Expected: the release listed on the Releases page, marked Latest, with its three files; the README's download link leads to it.
+
+A section that failed: leave the draft unpublished and note what was seen. The fix goes into a new version, with its own tag and its own draft.
+
+Proves: what visitors download is what passed this checklist. Cannot prove: anything this checklist did not run.
+
 ## Known limit: WebSocket interoperability with a third party server
 
 Not proven by this checklist: that Void OSCQ receives the notifications of a third party OSCQuery server over its WebSocket, values changed inside the server appearing without user action, and `PATH_*` commands reloading the tree. The only server on which the notification path is proven is this project's synthetic server (section 3), written from this project's own reading of the proposal: it shows the client agrees with itself, not with anyone else.
@@ -179,3 +190,23 @@ To lift it, one server that notifies over its WebSocket and is not this project'
 4. Capture the frames with `websocat` while doing 2 and 3, and commit them under `tests/fixtures` with their provenance, so that the client's decoding of that server is tested in CI as the Helper and Max documents are.
 
 Until then the limit stands, and no release note may say that live values work with third party servers.
+
+## Acceptance record
+
+What was proven, by whom and against what, milestone after milestone, as the README's status section recorded it until 2026-10-14. Kept word for word.
+
+- M0, protocol groundwork: done, merged.
+- M1, core client: done, merged. Proven by the human on 2026-10-09: `oscq_probe` printed the Helper's 22 node tree and a value sent to `/test/my_float` reached the Helper's target.
+- M2, discovery: done, merged. Proven on the human's LAN on 2026-10-09: one entry in 0.18 s, lo0 and en0 merged, LAN IPv4 promoted.
+- M3, application: done, merged. Tested by the human on the Mac against OSCQuery Helper.
+- M4, WebSocket and performance: done, merged. Every PRD 10 budget met on the human's Mac or the macOS CI machine, see docs/decisions.md. Values pushed by the synthetic server seen live on the Mac; Max 9 accepts the WebSocket and sends nothing, shown as open and silent.
+- M5, release: done, merged, tag `v0.1.0`. The tagged run built the three artifacts; the macOS app was installed, opened and connected to Max 9 by the human.
+- M5 polish: done, merged. The OSC port setting checked by the human on the Mac against Max 9: sends reach 30338 once set, kept across a restart. The loss and return of a server, the system's cause in the error and the declared access kept were checked there too.
+- v0.1.1: done, merged, tag `v0.1.1`. The tagged run 38269010531 built the three artifacts; on the human's Mac the app installed, showed its icon and 0.1.1 in the Finder, connected to Max 9 with the OSC port read from the config, and its sends moved the fader.
+- Cleanup: done, merged. A reload that leaves the rows on screen is locked to send no `LISTEN` or `IGNORE`; the PRD says the repository is public; docs/acceptance.md states the known limit of WebSocket interoperability.
+- M6, interface rework, server list, pinned nodes, presets, traffic filter: done, merged. Checked by the human on the Mac: the three real binary tests pass, cold start 91.5 to 105.7 ms, memory 97.8 MB, no repaint at rest. Headless tests lock the removal of a manual entry with its OSC port, the pinned panel across tabs and per server, a capture and recall on the same server and on another, and the traffic direction filter. The look waits on the human, docs/acceptance.md section 5. After the human's review: the toolbar, Refresh included, on screen at any window width; the pane handles stop dead at their limits; the narrow tree keeps the widget and gives up the name, then the metadata; the discovery line says since when it searches; the about box names the author, Structure Void, the license and the repository. License GPL-3.0-or-later, with an additional permission for the bundled fonts, after the dependency audit recorded in docs/decisions.md; every release artifact carries the license texts.
+- About fix: done, merged. On macOS the application menu's About item opened the system's panel, empty outside a bundle; it now opens the application's own about box, whose six pieces of information a test checks one by one on screen. Checked by the human on the Mac: the six shown by both paths, the menu and the button.
+- v0.2.0: done, merged, tagged and released; the three artifacts complete with their license texts, installed on the human's Mac.
+- v0.2.1: done, merged, tagged. Checked by the human on the Mac: the toolbar on one line, the unpin button, Recall and Capture apart, a held slot seen.
+- v0.2.2: done, merged, tagged. The filter path only on ambiguity, Writable only with its count, the folding preset section, the toned light theme. Checked by the human on the Mac: Max 9's tree from 35 nodes to 6 with the count, no path without ambiguity, the presets folded by default, both settings kept, the light theme.
+- After v0.2.2: on branch `void/toolbar-label`. The check box labelled Writable, the toolbar on one line from 1060 points.
