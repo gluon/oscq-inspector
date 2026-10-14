@@ -4,11 +4,22 @@ Every published version of Void OSCQ, newest first. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-14
+
+The first version whose files are on the Releases page.
+
+### Added
+
+- **Releases**: a tag creates a draft GitHub Release holding the three files, with the version's section of this changelog as its notes; it is published once the release checks have passed.
+- **CHANGELOG.md**, this file, in place of the version history the README carried.
+- **CONTRIBUTING.md**: how issues and pull requests are handled, and the license contributions come under.
+
 ### Changed
 
 - **Writable**: the toolbar check box reads "Writable", no longer "Writable only". The toolbar holds on one line from a window of 1060 points, down from 1090.
-- **Downloads**: each version is published as a GitHub Release holding the three files. The Windows download is a zip holding the `.exe` and its `licenses` folder.
-- **Windows**: the release build now starts the packed executable before publishing it, as it already did on macOS and Linux.
+- **Windows download**: a zip holding the `.exe` and its `licenses` folder, in place of the bare `.exe`.
+- **Windows**: the release build unzips the packed executable and starts it, and fails unless it draws its first frame, as it already did on macOS and Linux. No Windows binary up to 0.2.2 had been started.
+- **Documentation**: the README addresses a user first, with the servers the app was tested with and what they do not do, how each system is checked, the downloads and the first launch on each system; the project's working documents are named as such.
 
 ## [0.2.2] - 2026-10-13
 
@@ -71,7 +82,8 @@ Every published version of Void OSCQ, newest first. The format follows [Keep a C
 
 - First release: discovery over Bonjour and manual entries, the address space as a tree, values read and sent with widgets fitting their types, values live over the WebSocket where the server pushes them, the JSON and Traffic tabs. Unsigned artifacts for macOS (universal), Windows and Linux.
 
-[Unreleased]: https://github.com/gluon/void-oscq/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/gluon/void-oscq/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/gluon/void-oscq/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/gluon/void-oscq/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/gluon/void-oscq/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/gluon/void-oscq/compare/v0.1.1...v0.2.0
