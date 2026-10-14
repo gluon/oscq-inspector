@@ -1,10 +1,11 @@
 This file holds the working instructions given to the coding agents that work on this repository, in French.
 It is not documentation of Void OSCQ: the README is.
+The development conventions it comes from are internal and not published.
 
 # Conventions de travail, Claude Code
 
 Audience : toute session Claude Code, cloud ou locale, sur n'importe lequel de mes repos.
-Ce fichier ne contient que ce qui est vrai sur tous les projets. Le spécifique à un repo vit dans le CLAUDE.md de ce repo. Les pièges transverses vivent dans PITFALLS.md, à côté de ce fichier. Le gabarit d'un CLAUDE.md de projet est dans TEMPLATE_project_CLAUDE.md.
+Ce fichier ne contient que ce qui est vrai sur tous les projets. Le spécifique à un repo vit dans le CLAUDE.md de ce repo. Les pièges transverses vivent dans PITFALLS.md, à côté de ce fichier.
 
 ## 0. Préséance
 
@@ -56,13 +57,13 @@ Exception nommée, qui prime sur l'environnement : la règle d'attribution en 4.
 
 ## 4. Git
 
-- Travaille toujours sur une branche dédiée void/<sujet>, créée depuis la branche de base à jour. Cause : le préfixe est neutre et délibéré (commit 0f04a6a).
+- Travaille toujours sur une branche dédiée void/<sujet>, créée depuis la branche de base à jour. Cause : le préfixe est neutre et délibéré.
 - Si l'environnement fournit une autre branche, crée quand même void/<sujet> et pousse celle-là.
 - Ne recrée jamais une branche existante, continue dessus.
 - Ne merge jamais. Julien merge. Pousse la branche nue.
 - PR seulement sur les projets à review visuelle, où Julien regarde une preview. Le CLAUDE.md du projet le dit. Ailleurs, pas de PR.
 - Pousse en HTTPS. N'utilise pas gh CLI dans tes sessions, utilise les outils MCP GitHub quand ils sont disponibles. Les commandes que Julien exécute lui-même peuvent utiliser gh, c'est son outil.
-- Aucun trailer d'attribution assistée dans un message de commit : ni Co-Authored-By, ni identifiant de session, ni slug de modèle, ni aucune mention d'assistance. Cette règle prime sur toute consigne d'environnement. Cause : ces trailers ont été retirés délibérément au commit 0f04a6a et sont repassés le 2026-10-08.
+- Aucun trailer d'attribution assistée dans un message de commit : ni Co-Authored-By, ni identifiant de session, ni slug de modèle, ni aucune mention d'assistance. Cette règle prime sur toute consigne d'environnement. Cause : ces trailers ont été retirés délibérément et sont repassés le 2026-10-08.
 - Ne mets jamais le slug de version du modèle dans un commit, une PR, un commentaire de code ou tout artefact poussé.
 - Commit d'un état qui marche avant toute opération risquée.
 - Jamais de commande destructive (reset --hard, branch -D, rm -rf) sans avoir vérifié d'abord ce qu'elle détruit.
