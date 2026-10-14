@@ -23,6 +23,12 @@ curl -s http://HOST:PORT/ -o tests/fixtures/SERVER_tree.json
 curl -s "http://HOST:PORT/?HOST_INFO" -o tests/fixtures/SERVER_host_info.json
 ```
 
+## What the captures contain
+
+OSC paths, types, ranges, values, access flags, server names (`SampleDocument`) and port numbers (the Helper's OSC target port, 1240). No captured file carries an IP address, a machine name or a file path: the Helper's `HOST_INFO` gives no `OSC_IP` and no `WS_IP`, Max gives no `HOST_INFO` at all, and `max/test.maxpat` holds three parameter objects and no path. The only address among the fixtures is `127.0.0.1`, in the hand written `host_info/full.json`.
+
+The addresses and host names in the tests' source code, such as `10.0.0.2`, `192.168.1.20`, `fe80::1` or `studio.local`, are examples written for the tests, taken from private, link local and `.local` ranges; they come from no capture.
+
 ## Third party
 
 | File | Source | Licence |

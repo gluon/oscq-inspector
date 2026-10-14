@@ -1,10 +1,11 @@
 name: Release
 
 # On a tag v*, builds the three release artifacts (PRD 13): a macOS universal .app in a zip, a
-# Windows .exe, a Linux binary with its .desktop file and icon in a tarball, all unsigned, each with
-# the license texts. A push
-# that changes the packaging or the icon runs the same jobs without a tag, so they are tested
-# before tagging.
+# Windows .exe in a zip, a Linux binary with its .desktop file and icon in a tarball, all unsigned,
+# each with the license texts, and starts each one. Then it creates a draft GitHub Release of the
+# tag holding the three files, with the tag's CHANGELOG.md section as notes; the draft is published
+# by hand once docs/acceptance.md has passed. A push that changes the packaging or the icon runs
+# the same jobs without a tag and without the Release, so they are tested before tagging.
 # Path filters are not evaluated for tag pushes: every tag runs.
 on:
   push:
@@ -16,6 +17,8 @@ on:
       - "ci/release-version.sh"
       - "ci/smoke-start.sh"
       - "ci/check-licenses.sh"
+      - "ci/changelog-section.sh"
+      - "CHANGELOG.md"
       - "LICENSE"
       - "LICENSE-EXCEPTION"
       - "licenses/**"
@@ -158,28 +161,35 @@ jobs:
             exit 1
           }
 
-      - name: Name the executable
+      # The zip holds one folder: the executable and, beside it, the license texts.
+      - name: Name the executable, license texts beside it
         id: exe
         shell: bash
         run: |
-          mkdir -p dist
-          exe="dist/void-oscq-${{ steps.version.outputs.version }}-windows-x86_64.exe"
-          cp target/release/void-oscq.exe "$exe"
-          echo "path=$exe" >> "$GITHUB_OUTPUT"
+          dir="dist/void-oscq-${{ steps.version.outputs.version }}-windows-x86_64"
+          mkdir -p "$dir"
+          cp target/release/void-oscq.exe "$dir/void-oscq-${{ steps.version.outputs.version }}-windows-x86_64.exe"
+          ./packaging/licenses.sh "$dir/licenses"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+          echo "zip=$dir.zip" >> "$GITHUB_OUTPUT"
 
-      # The artifact holds the executable and, beside it, the license texts.
-      - name: License texts
+      - name: Zip
+        shell: pwsh
+        run: Compress-Archive -Path "${{ steps.exe.outputs.dir }}" -DestinationPath "${{ steps.exe.outputs.zip }}"
+
+      - name: The zipped executable starts, its license texts are zipped
         shell: bash
         run: |
-          ./packaging/licenses.sh dist/licenses
-          ./ci/check-licenses.sh dist/licenses
+          mkdir -p unpacked
+          pwsh -Command "Expand-Archive -Path '${{ steps.exe.outputs.zip }}' -DestinationPath unpacked"
+          base="unpacked/void-oscq-${{ steps.version.outputs.version }}-windows-x86_64"
+          ./ci/check-licenses.sh "$base/licenses"
+          ./ci/smoke-start.sh "$base/void-oscq-${{ steps.version.outputs.version }}-windows-x86_64.exe"
 
       - uses: actions/upload-artifact@v7
         with:
           name: void-oscq-${{ steps.version.outputs.version }}-windows-x86_64
-          path: |
-            ${{ steps.exe.outputs.path }}
-            dist/licenses
+          path: ${{ steps.exe.outputs.zip }}
           if-no-files-found: error
 
   linux:
@@ -227,3 +237,48 @@ jobs:
           name: void-oscq-${{ steps.version.outputs.version }}-linux-x86_64
           path: ${{ steps.tarball.outputs.path }}
           if-no-files-found: error
+
+  notes:
+    name: Release notes from CHANGELOG.md
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: The version's section of CHANGELOG.md
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then v=$(./ci/release-version.sh "$GITHUB_REF_NAME"); else v=$(./ci/release-version.sh); fi
+          mkdir -p dist
+          ./ci/changelog-section.sh "$v" > dist/notes.md
+          cat dist/notes.md
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-notes
+          path: dist/notes.md
+          if-no-files-found: error
+
+  # Only on a tag. A draft is visible to the repository's writers only, until published by hand.
+  publish:
+    name: Draft GitHub Release
+    if: github.ref_type == 'tag'
+    needs: [macos, windows, linux, notes]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create the draft with the three files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l dist
+          v="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "Void OSCQ $v" --notes-file dist/notes.md \
+            "dist/void-oscq-$v-macos-universal.zip" \
+            "dist/void-oscq-$v-windows-x86_64.zip" \
+            "dist/void-oscq-$v-linux-x86_64.tar.gz"

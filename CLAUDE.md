@@ -1,3 +1,6 @@
+This file holds the working instructions given to the coding agents that work on this repository, in French.
+It is not documentation of Void OSCQ: the README is.
+
 # Conventions de travail, Claude Code
 
 Audience : toute session Claude Code, cloud ou locale, sur n'importe lequel de mes repos.
@@ -89,6 +92,4 @@ Cause : "ce qui a été fait, rien de plus" laissait Julien sans la branche ni l
 
 - Sépare proprement les projets, ne les mélange pas.
 - Distingue strictement les états : "publié" n'est pas "live", vision n'est pas consigne de build.
-- SV_Reference, ancien repo : lecture seule, ne jamais y toucher.
-- Tout projet touchant un VPS, un service déployé, nginx, PM2, DNS, certs ou backups lit d'abord le repo SV_Infrastructure, source de vérité de l'infra, et suit ses conventions. Cela concerne structure-void.com, julienbayle.net, le CRM et SV_SI_FORMATION déployé. Cela ne concerne pas les projets logiciels sans déploiement (externals Max, devices Max for Live, ofxRNBO, TRAME).
-- Ne recopie aucun fait d'infra (IP, port, path, ID, cert) dans un CLAUDE.md ou un README de projet. Référence SV_Infrastructure.
+- Ne recopie aucun fait d'infra (IP, port, path, ID, cert) dans un CLAUDE.md ou un README de projet.
