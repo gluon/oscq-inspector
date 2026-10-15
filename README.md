@@ -122,7 +122,7 @@ This README is the manual. The documents below are the project's working files, 
 - [docs/protocol-notes.md](docs/protocol-notes.md): what the OSCQuery proposal says, checked against its sources, and what real servers do.
 - [PITFALLS.md](PITFALLS.md): traps met while building, each with the case that produced it.
 - [docs/acceptance.md](docs/acceptance.md): the manual checks run before each release, and the record of what they proved.
-- [CLAUDE.md](CLAUDE.md): working instructions given to the coding agents that work on this repository, in French. Not documentation.
+- [CLAUDE.md](CLAUDE.md): the laws the application is held to, and the review criterion for every change. Not documentation either: it states what must stay true, not how to use the application.
 - [tests/fixtures/README.md](tests/fixtures/README.md): the test inputs and where each one comes from.
 
 ## Contributing
