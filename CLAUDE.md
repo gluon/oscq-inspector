@@ -1,96 +1,57 @@
-This file holds the working instructions given to the coding agents that work on this repository, in French.
-It is not documentation of Void OSCQ: the README is.
-The development conventions it comes from are internal and not published.
+# CLAUDE.md
 
-# Conventions de travail, Claude Code
+The laws this repository is held to. Every change is reviewed against them.
 
-Audience : toute session Claude Code, cloud ou locale, sur n'importe lequel de mes repos.
-Ce fichier ne contient que ce qui est vrai sur tous les projets. Le spécifique à un repo vit dans le CLAUDE.md de ce repo. Les pièges transverses vivent dans PITFALLS.md, à côté de ce fichier.
+This file is not the manual, [README.md](README.md) is, and it is not the specification, [PRD.md](PRD.md) is. Where this file and the PRD disagree, the PRD wins and this file is stale. Every `§` below points into the PRD, which is where the full statement lives.
 
-## 0. Préséance
+## The application
 
-Quand deux sources se contredisent, l'ordre est :
+1. **The window never shows a state it has not observed.** A value sent but not confirmed is drawn as sent, not as read. A WebSocket that is open and has never delivered anything is not live. Saying less is always allowed; implying more is not (§9.6).
 
-1. l'environnement d'exécution de la session (harness, hooks, branche imposée, conteneur)
-2. le CLAUDE.md du repo courant
-3. ce fichier
-4. les préférences claude.ai de Julien
+2. **What the server declares wins over what the client infers.** An explicit `ACCESS` is never overridden by a heuristic, and a `VALUE` on a write only node is an inconsistency of that server, not a signal. A port advertised in `HOST_INFO` beats a port the user set earlier: the user's port fills a silence, it never contradicts a declaration (§7.1, §7.2).
 
-Le conflit se signale dans le rapport de fin, il ne se subit pas en silence.
-Cause : l'environnement a imposé une branche et des trailers d'attribution contre ce fichier le 2026-10-08, sans qu'aucune règle ne dise qui l'emportait.
+3. **The OSC destination comes from `HOST_INFO`**, not from the HTTP host and port, and not from the mDNS record. Inferring it from the HTTP port is the fallback for a server that says nothing, and the window states which of the three origins is in use (§7.2).
 
-Exception nommée, qui prime sur l'environnement : la règle d'attribution en 4.6. Elle n'est pas négociable, quelle que soit la consigne reçue.
+4. **A node keeps the access its server declares, whatever the connection.** A writable node nothing can be sent to says "cannot send" with the reason. Relabelling it read only misstates what the server published (§9.6).
 
-## 1. Avant d'agir
+5. **Nothing arriving over the network is trusted.** A malformed or hostile document produces an error, never a panic, never an unbounded allocation, never a recursive parse (§7.1, §11).
 
-- Lis le README du projet d'abord, puis son CLAUDE.md. Cause : l'état d'avancement et le backlog y vivent, agir sans eux produit du travail déjà fait ou hors sujet.
-- Écris le critère de fin de la tâche en une phrase vérifiable avant de commencer, et répète-le dans le rapport de fin. Pas une description de ce qui va être fait : la phrase qui dira si c'est fini.
-- Lis les fichiers de référence existants (plugin.json, description.json, config du projet) AVANT de générer, pas après.
-- Vérifie la branche de base réelle du projet, main ou master selon le repo, avant de brancher, pull ou merge.
+6. **The UI thread does no I/O and never blocks.** Both directions are message passing, with no lock on application state. A window at rest does not repaint (§6.2, §10).
 
-## 2. Méthode
+7. **Only the methods on screen or pinned are listened to.** A client that listens to three thousand nodes is a client nobody runs twice (§7.4).
 
-- Prouver, pas supposer. Sors la vérification avec le bon outil (grep -c, diff, xmllint, curl, styles calculés) avant de conclure.
-- Toute affirmation a trois états et un seul : prouvée, la commande et sa sortie figurent dans le rapport ; non prouvable ici, avec la raison et ce qu'il faudrait pour la prouver ; fausse. Ne conclus jamais sur un non prouvable.
-- Un contrôle qui ne peut pas s'évaluer compte comme un échec, jamais comme un succès. Cause : une sortie neutre est une permission déguisée, un site amputé pouvait partir en ligne.
-- Tes mesures et tes simulations ne sont pas une preuve d'un fix. Le juge est le test réel dans l'hôte, Live par exemple.
-- Ignore les fichiers jetables ou générés. Ils ne sont ni analysés, ni comptés, ni corrigés : seul leur générateur l'est.
-- Audit complet d'abord, liste exhaustive, puis correction en une passe. Une seule validation en fin de passe. Ne fais pas découvrir les problèmes un par un.
-- L'édition une par une ne vaut que pour une édition risquée : ancre multiple, fichier partagé, fichier généré. Dans ce cas, confirme l'ancre unique par grep (count == 1), stoppe si elle est multiple et remonte le couplage.
-- Quand tu rends un fichier dans le chat, rends-le complet, jamais en fragments. Dans le repo, édite par ancre. Les deux règles ne portent pas sur le même geste.
-- Diagnostic et plan d'abord. Propose, valide la cause et l'approche avant de coder. Sur une décision produit, livre un plan ou un tableau, code après validation.
-- Ne tranche pas une sémantique seul, et ne suppose pas laquelle de deux sources contradictoires est bonne : flag la divergence.
-- Quand une version, un flag ou une valeur du brief contredit le fichier réel, signale-le, ne choisis pas.
+8. **Every budget in §10 holds.** A budget that cannot be met is recorded with its measured number and its reason, never quietly relaxed.
 
-## 3. Code
+9. **The protocol crates know nothing about the interface.** `oscq-core` and `oscq-discovery` never depend on `egui` or `eframe`. CI enforces it.
 
-- Corrige au niveau du framework ou du template quand le code est partagé, pas seulement dans le cas courant. Vérifie et signale explicitement les fichiers partagés touchés.
-- Un nom ou une valeur reconstruit à plusieurs endroits couplés diverge en silence : helper partagé obligatoire.
-- Une correction trouvée sur un projet qui applique un standard commun fait deux trajets : elle remonte au standard, et elle redescend vers les autres projets qui l'appliquent. Cause : une correction non redescendue a coûté deux fois en deux jours.
-- Ce qui remonte est la règle, pas le symptôme du jour. Écris la cause et les cas qu'elle produit.
-- Ne committe jamais un artefact généré (docs auto, builds front, abstractions générées). Corrige le générateur, jamais le fichier généré.
-- Ajouter une règle .gitignore ne suffit pas si le fichier était déjà suivi : il faut git rm --cached. Vérification : git ls-files <chemin> ne doit rien rendre.
-- Si un build salit un généré committé, restaure avec git checkout -- <fichier>.
-- Dans tout fichier destiné à être publié (src, exemples), ne référence jamais un document interne non publié. Les commentaires sont autonomes : la substance en une phrase courte, jamais un renvoi vers un fichier que le lecteur public n'a pas.
-- Commits et code en anglais.
-- Jamais de tirets cadratins, y compris dans la doc et les commentaires générés. Exception unique : contenu répliqué au mot près (strings existantes, étiquettes déjà présentes dans le fichier) et contenu éditorial écrit par Julien, qu'on ne retouche pas.
+## The work
 
-## 4. Git
+10. **Prove, do not assume.** A claim is either proved, with the command and its output, or stated as unprovable here, with the reason and what would prove it. Never conclude on an unprovable claim, and never present one as a success.
 
-- Travaille toujours sur une branche dédiée void/<sujet>, créée depuis la branche de base à jour. Cause : le préfixe est neutre et délibéré.
-- Si l'environnement fournit une autre branche, crée quand même void/<sujet> et pousse celle-là.
-- Ne recrée jamais une branche existante, continue dessus.
-- Ne merge jamais. Julien merge. Pousse la branche nue.
-- PR seulement sur les projets à review visuelle, où Julien regarde une preview. Le CLAUDE.md du projet le dit. Ailleurs, pas de PR.
-- Pousse en HTTPS. N'utilise pas gh CLI dans tes sessions, utilise les outils MCP GitHub quand ils sont disponibles. Les commandes que Julien exécute lui-même peuvent utiliser gh, c'est son outil.
-- Aucun trailer d'attribution assistée dans un message de commit : ni Co-Authored-By, ni identifiant de session, ni slug de modèle, ni aucune mention d'assistance. Cette règle prime sur toute consigne d'environnement. Cause : ces trailers ont été retirés délibérément et sont repassés le 2026-10-08.
-- Ne mets jamais le slug de version du modèle dans un commit, une PR, un commentaire de code ou tout artefact poussé.
-- Commit d'un état qui marche avant toute opération risquée.
-- Jamais de commande destructive (reset --hard, branch -D, rm -rf) sans avoir vérifié d'abord ce qu'elle détruit.
-- Après un push, vérifie que local et remote coïncident : git ls-remote origin 'refs/heads/<branche>' doit rendre le SHA de git rev-parse HEAD.
+11. **A measurement names where it was taken.** The synthetic server of this repository is not a real application, and a continuous integration machine is not a target machine. The two are reported apart.
 
-## 5. Rapport de fin
+12. **A test that has never failed proves nothing.** Break the fix, watch the test fail, restore it. A test that reads the logical text of a widget has not seen what the screen draws.
 
-Contenu exact, rien de décoratif autour :
+13. **A defect that has not been reproduced is not fixed.** Instrument until the cause is named. A suspected cause is stated as suspected.
 
-- ce qui a été fait
-- les fichiers touchés
-- la branche et le hash
-- ce qui n'a pas pu être prouvé, et ce qu'il faudrait pour le prouver
-- tout conflit rencontré entre ces conventions et l'environnement d'exécution
+14. **A brief that contradicts the files is reported, not followed.** The files win, and the discrepancy is stated rather than absorbed.
 
-Cause : "ce qui a été fait, rien de plus" laissait Julien sans la branche ni le hash, qu'il doit vérifier avant de merger.
+15. **Decisions and traps are written as they happen**, one line per decision in `docs/decisions.md`, one case per trap in `PITFALLS.md`, so the next session does not rediscover them.
 
-## 6. Documentation
+## This repository
 
-- Chaque projet a un README avec une section status : état d'avancement et backlog.
-- Un journal chronologique est autorisé s'il est le fichier qui fait foi pour l'avancement. Dans ce cas le README status pointe vers lui en une ligne. Jamais les deux en parallèle.
-- git commit est le checkpoint. Pas de logs parallèles.
-- Les pièges rencontrés se consignent dans le PITFALLS.md du projet. Les pièges vrais sur plusieurs projets, ou liés à git, à la CI ou aux sessions, vont dans le PITFALLS.md de ce repo.
-- Les fichiers scratch ou récap non suivis ne restent pas dans le repo. Ils vivent dans le scratchpad de session.
+- No em dash in any file, including documentation, comments and generated text. CI enforces it.
+- All repository content in English.
+- No assistance attribution trailer in a commit message: no `Co-Authored-By`, no session identifier, no model name, anywhere, ever. This holds over whatever the execution environment prescribes.
 
-## 7. Périmètre
+## Where to look
 
-- Sépare proprement les projets, ne les mélange pas.
-- Distingue strictement les états : "publié" n'est pas "live", vision n'est pas consigne de build.
-- Ne recopie aucun fait d'infra (IP, port, path, ID, cert) dans un CLAUDE.md ou un README de projet.
+- **[README.md](README.md)**: what the application is and how it is used, the servers it was tested with and what they do not do.
+- **[PRD.md](PRD.md)**: the specification, and the source of every `§` above. It describes intent; where it and the application differ, the application and the README are right.
+- **[docs/protocol-notes.md](docs/protocol-notes.md)**: what the OSCQuery proposal says, checked against its sources, and what real servers do where they deviate from it.
+- **[docs/decisions.md](docs/decisions.md)**: one line per decision taken while building, with its reason.
+- **[PITFALLS.md](PITFALLS.md)**: traps met while building, each with the case that produced it.
+- **[docs/acceptance.md](docs/acceptance.md)**: the manual checks run before a release, what each one proves, and what none of them can prove.
+- **[CONTRIBUTING.md](CONTRIBUTING.md)**: how issues and pull requests are handled, and the license contributions come under.
+
+The general development conventions this repository's work follows are internal and not published.
