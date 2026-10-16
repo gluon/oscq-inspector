@@ -49,6 +49,7 @@ This file is not the manual, [README.md](README.md) is, and it is not the specif
 - **[README.md](README.md)**: what the application is and how it is used, the servers it was tested with and what they do not do.
 - **[PRD.md](PRD.md)**: the specification, and the source of every `§` above. It describes intent; where it and the application differ, the application and the README are right.
 - **[docs/protocol-notes.md](docs/protocol-notes.md)**: what the OSCQuery proposal says, checked against its sources, and what real servers do where they deviate from it.
+- **[CHANGELOG.md](CHANGELOG.md)**: what changed in every published version, and the source of a release's notes.
 - **[docs/decisions.md](docs/decisions.md)**: one line per decision taken while building, with its reason.
 - **[PITFALLS.md](PITFALLS.md)**: traps met while building, each with the case that produced it.
 - **[docs/acceptance.md](docs/acceptance.md)**: the manual checks run before a release, what each one proves, and what none of them can prove.
