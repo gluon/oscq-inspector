@@ -105,7 +105,7 @@ Copyright (C) 2026 Julien Bayle, Structure Void. Void OSCQ is free software unde
 
 ## Status
 
-Latest published version: 0.2.2, tagged on 2026-10-13. Checked by hand on a Mac against Max 9; earlier versions also against OSCQuery Helper on a local network. What each check proved is recorded in [docs/acceptance.md](docs/acceptance.md), under "Acceptance record".
+Latest published version: 0.2.3, tagged and released on 2026-10-14, the first whose files are on the Releases page. Its macOS download was installed and checked by hand on a Mac against Max 9; earlier versions were checked the same way, and against OSCQuery Helper on a local network. What each check proved is recorded in [docs/acceptance.md](docs/acceptance.md), under "Acceptance record".
 
 Backlog:
 
@@ -117,6 +117,7 @@ Backlog:
 
 This README is the manual. The documents below are the project's working files, left visible on purpose so the reasoning behind the code can be read. They are not user documentation, and some of them describe intent rather than the shipped application:
 
+- [CHANGELOG.md](CHANGELOG.md): what changed in every published version, newest first.
 - [PRD.md](PRD.md): the specification the application was built from, written for whoever implements it. Not the manual: where it and the application differ, the application and this README are right.
 - [docs/decisions.md](docs/decisions.md): one line per decision taken while building, with its reason.
 - [docs/protocol-notes.md](docs/protocol-notes.md): what the OSCQuery proposal says, checked against its sources, and what real servers do.
