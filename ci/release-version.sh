@@ -28,7 +28,7 @@ for manifest in crates/*/Cargo.toml; do
     fi
     # A dependency on another crate of the workspace names its version again: it must follow.
     # sed -E: the same extended syntax for GNU sed and the BSD sed of macOS.
-    deps=$(sed -n -E 's/^((oscq-[a-z-]+)|(void-oscq)) = \{ version = "([^"]*)".*/\1 \4/p' "$manifest")
+    deps=$(sed -n -E 's/^(oscq-[a-z-]+) = \{ version = "([^"]*)".*/\1 \2/p' "$manifest")
     internal=$((internal + $(printf '%s' "$deps" | grep -c . || true)))
     stale=$(printf '%s\n' "$deps" | awk -v v="$version" 'NF && $2 != v')
     if [ -n "$stale" ]; then
@@ -36,7 +36,7 @@ for manifest in crates/*/Cargo.toml; do
         exit 1
     fi
 done
-# void-oscq depends on oscq-core and oscq-discovery: finding none means the check did not run.
+# oscq-inspector depends on oscq-core and oscq-discovery: finding none means the check did not run.
 if [ "$internal" -eq 0 ]; then
     echo "FAIL: no dependency between the workspace crates found, the check cannot evaluate" >&2
     exit 1

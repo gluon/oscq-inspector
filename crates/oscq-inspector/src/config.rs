@@ -1,9 +1,18 @@
 //! The single config file (PRD 9.7): window geometry, manual entries, last selected server,
 //! theme preference, pinned paths, the OSC ports the user set, the preset slots, whether the tree
-//! shows writable nodes only, and whether the preset section is open. Nothing else.
+//! shows writable nodes only, whether the preset section is open, and the peers poll interval.
+//! Nothing else.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// The peers poll interval when the config names none (PRD 7.6, 9.10).
+pub const PEERS_POLL_DEFAULT_MS: u64 = 2000;
+/// The shortest and the longest interval a config can ask for. A config is edited by hand: an
+/// interval of zero would repaint the window without rest and ask every server without pause.
+pub const PEERS_POLL_MIN_MS: u64 = 250;
+pub const PEERS_POLL_MAX_MS: u64 = 60_000;
 
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +33,7 @@ pub enum Theme {
     Light,
 }
 
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub window: Option<WindowGeometry>,
@@ -44,9 +53,37 @@ pub struct Config {
     pub hide_read_only: bool,
     /// The preset section is open; it is folded until the user opens it.
     pub presets_open: bool,
+    /// Milliseconds between two readings of `?PEERS` while the map tab is visible (PRD 9.10).
+    /// Read through [`Config::peers_poll`], which keeps it within bounds.
+    pub peers_poll_ms: u64,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            window: None,
+            manual_entries: Vec::new(),
+            last_selected: None,
+            theme: Theme::default(),
+            pinned_paths: BTreeMap::new(),
+            osc_ports: BTreeMap::new(),
+            presets: BTreeMap::new(),
+            hide_read_only: false,
+            presets_open: false,
+            peers_poll_ms: PEERS_POLL_DEFAULT_MS,
+        }
+    }
 }
 
 impl Config {
+    /// The peers poll interval, kept between [`PEERS_POLL_MIN_MS`] and [`PEERS_POLL_MAX_MS`].
+    pub fn peers_poll(&self) -> Duration {
+        Duration::from_millis(
+            self.peers_poll_ms
+                .clamp(PEERS_POLL_MIN_MS, PEERS_POLL_MAX_MS),
+        )
+    }
+
     /// Reads the config. A missing file gives the defaults; an unreadable or invalid file gives the
     /// defaults and the reason, so the user is told rather than silently reset.
     pub fn load(path: &Path) -> (Config, Option<String>) {
@@ -116,7 +153,8 @@ mod tests {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("void-oscq-test-{name}-{}", std::process::id()));
+        let d =
+            std::env::temp_dir().join(format!("oscq-inspector-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d
     }
@@ -174,6 +212,34 @@ mod tests {
         assert_eq!((c.theme, warning), (Theme::Light, None));
         assert!(c.manual_entries.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// PRD 9.7: the peers poll interval is 2000 ms unless the config says otherwise, a config
+    /// written before the field existed included; it is kept, and an interval a hand edit made
+    /// absurd is brought back within bounds rather than obeyed.
+    #[test]
+    fn the_peers_poll_interval_defaults_to_2000_ms_and_stays_within_bounds() {
+        assert_eq!(Config::default().peers_poll_ms, 2000);
+        assert_eq!(Config::default().peers_poll(), Duration::from_millis(2000));
+        let older: Config = serde_json::from_str(r#"{"theme":"Dark"}"#).unwrap();
+        assert_eq!(older.peers_poll(), Duration::from_millis(2000));
+        let set: Config = serde_json::from_str(r#"{"peers_poll_ms":5000}"#).unwrap();
+        assert_eq!(set.peers_poll(), Duration::from_millis(5000));
+        let saved: Config = serde_json::from_slice(&set.to_bytes()).unwrap();
+        assert_eq!(saved.peers_poll_ms, 5000, "kept in the config");
+        for (asked, got) in [
+            (0, 250),
+            (1, 250),
+            (250, 250),
+            (60_000, 60_000),
+            (u64::MAX, 60_000),
+        ] {
+            let c = Config {
+                peers_poll_ms: asked,
+                ..Config::default()
+            };
+            assert_eq!(c.peers_poll(), Duration::from_millis(got), "{asked}");
+        }
     }
 
     #[test]

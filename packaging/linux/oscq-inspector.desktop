@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
-Name=Void OSCQ
+Name=OSCQuery Inspector
 GenericName=OSCQuery client
 Comment=Browse OSCQuery servers, watch their values and send OSC
-Exec=void-oscq
-Icon=void-oscq
+Exec=oscq-inspector
+Icon=oscq-inspector
 Terminal=false
 Categories=AudioVideo;Audio;
 Keywords=OSC;OSCQuery;

@@ -9,6 +9,7 @@ use url::Url;
 
 use crate::document::{Diagnostic, DocumentError, ParseReport, parse_document, parse_json};
 use crate::host_info::HostInfo;
+use crate::peers::{MAX_PEERS_BODY, Peers, PeersError};
 
 /// Response bodies above this size are refused.
 pub const DEFAULT_MAX_BODY: usize = 64 * 1024 * 1024;
@@ -55,6 +56,8 @@ pub enum ClientError {
     Transport { url: String, source: reqwest::Error },
     #[error("invalid response from {url}: {source}")]
     Document { url: String, source: DocumentError },
+    #[error("invalid PEERS reply from {url}: {source}")]
+    Peers { url: String, source: PeersError },
     #[error("could not build the HTTP client: {0}")]
     Build(reqwest::Error),
 }
@@ -242,8 +245,35 @@ impl OscQueryClient {
         })
     }
 
+    /// `?PEERS` on the root, the only path it is asked on (PRD 7.6). The caller asks only a server
+    /// that declares the extension. A reply with no document, 204 or an empty body, is a failure:
+    /// a server that declares its peers and publishes nothing has not answered.
+    pub async fn fetch_peers(&self) -> Result<(Peers, Vec<Diagnostic>), ClientError> {
+        let url = self.url_for("/", Some(crate::peers::EXT_PEERS))?;
+        let limit = self.config.max_body.min(MAX_PEERS_BODY);
+        let (status, body) = self.get_within(&url, limit).await?;
+        if status == StatusCode::NO_CONTENT || body.iter().all(u8::is_ascii_whitespace) {
+            return Err(ClientError::NoDocument {
+                url: url.to_string(),
+            });
+        }
+        Peers::parse(&body).map_err(|source| ClientError::Peers {
+            url: url.to_string(),
+            source,
+        })
+    }
+
     /// GET with status and size checks. Returns the status, 200 or 204, and the body.
     async fn get(&self, url: &Url) -> Result<(StatusCode, Vec<u8>), ClientError> {
+        self.get_within(url, self.config.max_body).await
+    }
+
+    /// GET refusing a body above `limit` bytes, announced or received.
+    async fn get_within(
+        &self,
+        url: &Url,
+        limit: usize,
+    ) -> Result<(StatusCode, Vec<u8>), ClientError> {
         let u = url.to_string();
         let classify = |e: reqwest::Error| {
             // The URL is said once, by this error.
@@ -270,7 +300,6 @@ impl OscQueryClient {
                 status: status.as_u16(),
             });
         }
-        let limit = self.config.max_body;
         let too_large = || ClientError::BodyTooLarge {
             url: u.clone(),
             limit,

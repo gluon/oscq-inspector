@@ -8,27 +8,27 @@ Record for the release: the tag, the CI run, the macOS version, the date, and th
 
 ## 0. The artifact
 
-1. In GitHub, **Releases**, open the draft of the tag, created by the workflow **Release** once its run passed; a draft is visible to the repository's writers only. Download `void-oscq-VERSION-macos-universal.zip`.
-   Expected: one file per system, `void-oscq-VERSION-macos-universal.zip`, `void-oscq-VERSION-windows-x86_64.zip`, `void-oscq-VERSION-linux-x86_64.tar.gz`, each named with the tag's version; as notes, the version's section of CHANGELOG.md.
-2. Unzip the download. Move **Void OSCQ.app** to Applications.
-   Expected: an application named Void OSCQ, with its own icon in the Finder: a dark blue rounded square holding a white tree, a root and two leaves, one leaf amber. Not the generic application icon.
+1. In GitHub, **Releases**, open the draft of the tag, created by the workflow **Release** once its run passed; a draft is visible to the repository's writers only. Download `oscq-inspector-VERSION-macos-universal.zip`.
+   Expected: one file per system, `oscq-inspector-VERSION-macos-universal.zip`, `oscq-inspector-VERSION-windows-x86_64.zip`, `oscq-inspector-VERSION-linux-x86_64.tar.gz`, each named with the tag's version; as notes, the version's section of CHANGELOG.md.
+2. Unzip the download. Move **OSCQuery Inspector.app** to Applications.
+   Expected: an application named OSCQuery Inspector, with its own icon in the Finder: a dark blue rounded square holding a white tree, a root and two leaves, one leaf amber. Not the generic application icon.
 3. Double click it, and follow the README's macOS first launch procedure: **Privacy & Security**, **Open Anyway**.
    Expected: macOS reports an app it cannot verify, never an app that is damaged; after **Open Anyway** the window opens.
 4. Quit and open it again by a double click.
    Expected: it opens with no warning.
 5. Click **About**, at the bottom of the server pane.
-   Expected: Void OSCQ, version equal to the tag without the `v`, "Julien Bayle, Structure Void", "License GPL-3.0-or-later", and a link to github.com/gluon/void-oscq that opens the repository. A plain box, like no system window.
-   Then choose **About Void OSCQ** in the application menu, at the left of the menu bar.
+   Expected: OSCQuery Inspector, version equal to the tag without the `v`, "Julien Bayle, Structure Void", "License GPL-3.0-or-later", and a link to github.com/gluon/void-oscq that opens the repository. A plain box, like no system window.
+   Then choose **About OSCQuery Inspector** in the application menu, at the left of the menu bar.
    Expected: the same box, not the system's panel with a folder icon.
    In the Finder, **Show Package Contents** on the app, `Contents/Resources/licenses`: `LICENSE`, `LICENSE-EXCEPTION` and the four font licenses in `fonts`.
 6. While it runs, look at the Dock.
    Expected: the same icon as in the Finder, not the generic one and not another application's.
-7. Quit it. In the Finder, select **Void OSCQ.app**, **File**, **Get Info**.
+7. Quit it. In the Finder, select **OSCQuery Inspector.app**, **File**, **Get Info**.
    Expected: Version equal to the tag, without the `v`.
 8. In Terminal, read what the bundle and Spotlight hold:
    ```
-   defaults read "/Applications/Void OSCQ.app/Contents/Info" CFBundleShortVersionString
-   mdls -name kMDItemVersion "/Applications/Void OSCQ.app"
+   defaults read "/Applications/OSCQuery Inspector.app/Contents/Info" CFBundleShortVersionString
+   mdls -name kMDItemVersion "/Applications/OSCQuery Inspector.app"
    ```
    Expected: both give the tag's version. If the first does and the second gives `(null)`, the bundle carries the version and the Finder's Version column waits for Spotlight to index the app.
 
@@ -38,7 +38,7 @@ Proves: the tagged CI run gives a macOS app that opens on this Mac, unsigned, th
 
 Setup: OSCQuery Helper running with its `SampleDocument`, its OSC target port set (1240 in the captured setup), and an OSC monitor listening on that port to see what arrives.
 
-1. Open Void OSCQ. If macOS asks whether it may find devices on the local network, click **Allow**.
+1. Open OSCQuery Inspector. If macOS asks whether it may find devices on the local network, click **Allow**.
    Expected: OSCQuery Helper listed on the left within two seconds, once, even if the Mac has several interfaces.
 2. Select it.
    Expected: the tree loads, 22 nodes in the status bar, which shows "connected" and the OSC destination with the Helper's target port. Under **OSC destination** in the server pane, "port advertised" and no OSC port field (an advertised port is not editable, and wins over any port set earlier for this server). Hovering "connected" says "values on refresh only".
@@ -73,9 +73,9 @@ Setup: Max 9 running `tests/fixtures/max/test.maxpat`, which serves OSCQuery on 
    Expected: the fader moves in Max. The row shows the value sent until a value is read.
 6. Select `/test/param/fader/normalized` and press F5.
    Expected: the value read from Max in the widget, no longer marked "sent".
-7. Move the fader in Max, and do not touch Void OSCQ.
+7. Move the fader in Max, and do not touch OSCQuery Inspector.
    Expected: the value shown does not change by itself, since Max sends no notification; F5 shows the new value.
-8. Quit Void OSCQ and open it again.
+8. Quit OSCQuery Inspector and open it again.
    Expected: the server reconnects with "OSC localhost:30338 UDP" and "port set by the user"; sends reach Max. **Infer OSC port** goes back to 30339, "port inferred from the HTTP port"; set 30338 again before going on.
 9. Close the patch in Max, then click the server on the left to reconnect.
    Expected: the status bar says the connection failed once, with the system's reason (for example "Connection refused"). The tree stays; its read write nodes still show `rw`, have no widget and say "cannot send", the reason on hover. Never "read only".
@@ -92,7 +92,7 @@ Setup, from a clone of the repository at the release tag:
 cargo run -p oscq-core --example synthetic_server --release -- --port 5678 --stream 2
 ```
 
-1. In Void OSCQ, **+ manual**, `127.0.0.1:5678`, connect.
+1. In OSCQuery Inspector, **+ manual**, `127.0.0.1:5678`, connect.
    Expected: 5050 nodes in the status bar, the tree shown at once and smooth to scroll.
 2. Expand `/g0`.
    Expected: within a second, "live" in the status bar; the values of the visible rows change twice a second by themselves, each row its own value. The server's terminal shows the number of listens, close to the number of visible rows.
@@ -102,7 +102,7 @@ cargo run -p oscq-core --example synthetic_server --release -- --port 5678 --str
    Expected: the status bar shows "connected, socket lost" and the retry delay, growing on each attempt, up to 15 s.
 5. Start the server again with the same command.
    Expected: back to "live" within the retry delay; with `/g0` expanded, values move again, without touching the app.
-6. With the pointer outside the window and nothing changing, watch the CPU of Void OSCQ in Activity Monitor for ten seconds.
+6. With the pointer outside the window and nothing changing, watch the CPU of OSCQuery Inspector in Activity Monitor for ten seconds.
    Expected: about 0 %.
 
 Proves: the nominal WebSocket path end to end, listen and ignore following the rows on screen, reconnection with backoff and listens sent again, idle with no repaint. Cannot prove: interoperability with a third party server: the synthetic server is this project's own.
@@ -158,7 +158,26 @@ Setup: the synthetic server of section 3 running, Max 9 with its patch as in sec
 
 Proves: the interface rework seen by a person, the server list removal, the pinned panel across tabs and restarts, a capture and recall cycle on the same server and on another one, the traffic direction filter. Cannot prove: anything beyond this Mac and these two servers.
 
-## 6. Publication
+## 6. Peers and the map
+
+Setup: two applications that implement the `PEERS` and `CLIENT_NAME` extension and declare it in their `HOST_INFO`, called A and B here, A connected to B as a client of its WebSocket, on this Mac or the LAN; and Max 9 as in section 2, which declares nothing. The synthetic server cannot stand for A: it is never itself a client of another server. Enter all three with **+ manual**, or let discovery find them, and select each once so that the app connects to it.
+
+1. Open the **Map** tab.
+   Expected: one node per server in the list, the three included. An arrow from A to B, its label the number of values A sent; the node of A titled A, not "unnamed client". A node "OSCQuery Inspector", "this application", with an arrow to A and one to B. Max 9 drawn, "does not publish its peers", no arrow to or from it. Above the map: read every 2 s while this tab is shown, not live. Under A and B: read 0 or 1 s ago, never more than 2.
+2. In A, make it listen to one method of B. Select B, open the **Tree** tab, find that method.
+   Expected: on that method's row, in the metadata column, a badge "1"; on hover, A's name. No badge on its container, its siblings or its children. The line above the tree: listeners as of a time of day a few seconds ago.
+3. In A, stop listening to it. Press **Refresh**.
+   Expected: the badge leaves.
+4. Select Max 9, **Tree** tab.
+   Expected: no badge anywhere; the line above the tree says the listeners are not published by this server.
+5. Back on **Map**, quit A.
+   Expected: within a reading, A's arrow to B leaves; B no longer lists it.
+6. With the map shown, the pointer outside the window, watch the CPU of OSCQuery Inspector in Activity Monitor for ten seconds; then the same on the **Tree** tab.
+   Expected: about 0 % on both.
+
+Proves: the extension read from two real implementations, the edge between them, the badge on exactly the methods a peer listens to and its leaving, a server without the extension drawn with neither edge nor badge. Cannot prove: implementations other than the two run, and a setup larger than the one on the table.
+
+## 7. Publication
 
 Last, and only when every section run above gave what was expected.
 
@@ -171,7 +190,7 @@ Proves: what visitors download is what passed this checklist. Cannot prove: anyt
 
 ## Known limit: WebSocket interoperability with a third party server
 
-Not proven by this checklist: that Void OSCQ receives the notifications of a third party OSCQuery server over its WebSocket, values changed inside the server appearing without user action, and `PATH_*` commands reloading the tree. The only server on which the notification path is proven is this project's synthetic server (section 3), written from this project's own reading of the proposal: it shows the client agrees with itself, not with anyone else.
+Not proven by this checklist: that OSCQuery Inspector receives the notifications of a third party OSCQuery server over its WebSocket, values changed inside the server appearing without user action, and `PATH_*` commands reloading the tree. The only server on which the notification path is proven is this project's synthetic server (section 3), written from this project's own reading of the proposal: it shows the client agrees with itself, not with anyone else.
 
 The two third party servers tested do not notify:
 
@@ -185,7 +204,7 @@ Untested against a real server, in consequence: binary OSC value frames as a thi
 To lift it, one server that notifies over its WebSocket and is not this project's, for example VDMX or an ossia based patch, both named in PRD 12; that they notify is what their makers state, not something checked here. Then:
 
 1. Connect to it and expand a container: the status bar says "live" only once the server has sent a frame.
-2. Change a value inside the server, without touching Void OSCQ: the row updates, read, not marked "sent"; the Traffic tab logs it as `in`.
+2. Change a value inside the server, without touching OSCQuery Inspector: the row updates, read, not marked "sent"; the Traffic tab logs it as `in`.
 3. Add or remove a node inside the server: the tree follows without a refresh.
 4. Capture the frames with `websocat` while doing 2 and 3, and commit them under `tests/fixtures` with their provenance, so that the client's decoding of that server is tested in CI as the Helper and Max documents are.
 

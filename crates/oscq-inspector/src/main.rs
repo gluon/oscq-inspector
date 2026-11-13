@@ -1,4 +1,4 @@
-//! Void OSCQ desktop application. UI only, all protocol work lives in `oscq-core` and `oscq-discovery`.
+//! OSCQuery Inspector desktop application. UI only, all protocol work lives in `oscq-core` and `oscq-discovery`.
 
 // A window application: no console window on Windows. Debug builds keep it for the logs.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
@@ -9,6 +9,7 @@ mod icon;
 mod json_view;
 #[cfg(target_os = "macos")]
 mod macos_menu;
+mod map;
 mod presets;
 mod rate;
 mod state;
@@ -51,7 +52,7 @@ fn main() -> anyhow::Result<()> {
         .context("starting the network runtime")?;
 
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("Void OSCQ")
+        .with_title(app::APP_NAME)
         .with_min_inner_size([640.0, 400.0])
         .with_inner_size([1100.0, 700.0])
         .with_icon(window_icon());
@@ -64,18 +65,22 @@ fn main() -> anyhow::Result<()> {
         viewport,
         ..Default::default()
     };
+    // What the real binary tests ask of a launch, see `InspectorApp::startup`.
+    let startup = std::env::var("OSCQ_INSPECTOR_STARTUP").unwrap_or_default();
     eframe::run_native(
-        "Void OSCQ",
+        app::APP_NAME,
         options,
         Box::new(move |cc| {
-            Ok(Box::new(app::VoidApp::start(
+            let mut app = app::InspectorApp::start(
                 launched,
                 cc.egui_ctx.clone(),
                 runtime,
                 config,
                 warning,
                 dir,
-            )))
+            );
+            app.startup(&cc.egui_ctx, &startup);
+            Ok(Box::new(app))
         }),
     )
     .map_err(|e| anyhow!("window: {e}"))

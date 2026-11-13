@@ -27,6 +27,9 @@ Each input event costs at least 3 frames in egui: the event's, the one `wants_re
 A measurement taken with other servers running on the same machine measures them too. Close Max and OSCQuery Helper before measuring idle CPU or repaints.
 Case: 563 frames and 21.36 % CPU with Max and the Helper running, 57 frames and 1.50 % without, 2026-10-11 and 2026-10-12.
 
+egui wakes the window one predicted frame before the delay asked for: `request_repaint_after` subtracts `predicted_dt`. A timer that acts only once its time has come is found not due by the frame that woke for it, which asks again for the few milliseconds left, and a delay of zero costs two frames. Two or three frames per interval where one was meant. Let the action fall due within two predicted frames of its time.
+Case: `the_peers_timer_runs_only_while_the_map_is_shown`, the rest of the interval asked for was 1.4833 s, not 1.5, 2026-11-13.
+
 `Context::repaint_causes()` lists where the code asked for the frame. A frame woken by the operating system or by input, a window event, has no cause listed. An empty list is therefore a finding, not a lack of one.
 
 A headless frame through `Context::run_ui` must consume `FullOutput::textures_delta`, as a renderer would, or the test panics in debug when the delta is dropped.
@@ -104,6 +107,15 @@ Case: 166 to 169 MB with the defaults, 145.8 MB with `WGPU_BACKEND=vulkan`, 130.
 The test filter is a substring too. A real binary test named `budget_cold_start...` was picked up by the in process `budget_` filter and failed in CI for want of a display. Real binary tests are named `real_binary_...`.
 Case: CI run 38208380933, 2026-10-12.
 
+A test that names a tree row by the leftmost text at its height takes a container's expander, `-` or `+`, for its name.
+Case: `drawn_badges` reported the badge of `/foo` on a row named `-`, 2026-11-13.
+
+A request still on its way is not asked again, so asking right after a change can bring back the answer to a request made before it. A test that waits for a reading to reflect a change must ask again until one does, as a user pressing Refresh would.
+Case: `three_synthetic_servers_are_read_drawn_and_badged_through_the_real_service`, the reading asked for the tree arrived without the listens sent meanwhile, 2026-11-13.
+
+A real binary test opens its window where the person at the machine is working: their pointer and keys reach it, and an idle measurement is then refused as invalid. Run them when the machine is left alone, or in CI.
+Case: `real_binary_map_frame_time`, 72 then 892 input events in the idle window, 2026-11-13.
+
 `pkill -f PATTERN` matches its own shell when the pattern is in the command line, and kills it. Stop processes by the pid recorded when they were started.
 Case: killing the synthetic server by name ended the session's shell, 2026-10-12.
 
@@ -113,6 +125,12 @@ Case: killing the synthetic server by name ended the session's shell, 2026-10-12
 Case: `ws::tests::hostile_nesting_is_refused_without_recursion`, run on a 256 KiB stack.
 
 ## OSCQuery servers
+
+The `PEERS` extension lists this application among each server's clients, under the name it sent. Another client may send the same name. Telling it from this application by name drew two clients as one; by the local address of its own socket, address and port both, it is found for certain, and only it.
+Case: `this_application_is_one_node_told_from_a_namesake`, 2026-11-13.
+
+A server that lists a client under its own name is connected to itself. A map that drops such an entry, taking it for a mistake, hides a real connection: another map known to the human does. Draw it, as a loop on the one node.
+Case: the human's brief for M7, locked by `a_server_connected_to_itself_is_drawn_with_a_loop`, 2026-11-13.
 
 OSCQuery Helper declares ACCESS 2, write only, on every node and answers `?VALUE` with `{}`. Clearing the sent value on any answer to the refresh that follows a send made the widget jump back to its old position after each release.
 Case: `/test/my_longlong` on the human's Mac, 2026-10-09.

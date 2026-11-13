@@ -20,13 +20,20 @@ use rosc::{OscColor, OscType};
 
 use crate::config::{self, Config, Theme, WindowGeometry};
 use crate::json_view::{self, Line, Token};
+use crate::map;
 use crate::presets;
 use crate::rate::{INTERVAL, RateLimiter};
-use crate::state::{AppState, ConnState, ServerEntry, WsState};
+use crate::state::{
+    AppState, ConnState, PeersSnapshot, PeersView, ServerEntry, WsState, client_label,
+};
 use crate::style::{self, GRID, GROUP_GAP, ROW_H};
 use crate::traffic;
 use crate::tree::{self, Hit, NodeIndex, Row};
 use crate::widget::{self, WidgetKind};
+
+/// The application's name, wherever it is shown: the window title, the about box, the macOS
+/// application menu.
+pub const APP_NAME: &str = "OSCQuery Inspector";
 
 /// Events applied per frame at most, so a flood cannot starve rendering.
 const EVENTS_PER_FRAME: usize = 512;
@@ -66,6 +73,17 @@ enum Tab {
     Tree,
     Json,
     Traffic,
+    /// The setup as the servers publish it (PRD 9.10).
+    Map,
+}
+
+/// The servers a reading of `?PEERS` is asked of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PeersScope {
+    /// The selected server: what the tree's listener badges need.
+    Selected,
+    /// Every server: what the map draws.
+    All,
 }
 
 enum Action {
@@ -87,6 +105,8 @@ enum Action {
     Send(SendReq, SendMode),
     RefreshValue(String),
     RefreshTree(String),
+    /// Reads `?PEERS` again, at the user's request (PRD 7.6).
+    ReadPeers(PeersScope),
     Copy(String),
     Save {
         stem: &'static str,
@@ -159,6 +179,19 @@ struct View {
     about_menu_installed: bool,
     note: Option<String>,
     geometry_dirty_since: Option<Instant>,
+    /// When the map's next reading of every server is due, in the window's own time, while the
+    /// map is the visible tab; `None` whenever it is not. The one timer of the application: it
+    /// does not run behind another tab (PRD 7.6, 10).
+    peers_due: Option<f64>,
+    /// The server whose peers were read for the tree tab, since that tab was opened on it.
+    tree_peers_for: Option<ServerId>,
+    /// The metadata column of the tree as last drawn: narrowed to the flags, it holds no badge.
+    tree_meta_w: Option<f32>,
+    /// The part of the map in view, in the map's own coordinates, once it has been shown.
+    map_scene: Option<egui::Rect>,
+    /// The extent of the map the view was last fitted to, until the user moves the view.
+    map_fitted: Option<egui::Rect>,
+    map_moved: bool,
 }
 
 struct Owned {
@@ -166,7 +199,7 @@ struct Owned {
     discovery: oscq_discovery::MdnsSdDiscovery,
 }
 
-pub struct VoidApp {
+pub struct InspectorApp {
     state: AppState,
     backend: Backend,
     config: Config,
@@ -184,7 +217,7 @@ pub struct VoidApp {
     launched: Option<Instant>,
 }
 
-impl VoidApp {
+impl InspectorApp {
     /// The application as it runs: network service and discovery on `runtime`.
     pub fn start(
         launched: Instant,
@@ -198,8 +231,13 @@ impl VoidApp {
         let (events_tx, events_rx) = flume::unbounded();
         let repaint = ctx.clone();
         let notify: oscq_core::Notify = Arc::new(move || repaint.request_repaint());
-        let commands =
-            oscq_core::service::spawn(runtime.handle(), events_tx.clone(), notify.clone());
+        // Under its own name, for the servers that take one (PRD 7.6).
+        let commands = oscq_core::service::spawn_named(
+            runtime.handle(),
+            events_tx.clone(),
+            notify.clone(),
+            APP_NAME,
+        );
         let mut discovery = MdnsSdDiscovery::default();
         let mut startup_error = config_warning;
         match discovery.start() {
@@ -283,19 +321,44 @@ impl VoidApp {
         app
     }
 
+    /// What a launch is asked besides its config, as words separated by commas: `map` opens on
+    /// the map tab, `connect-all` connects every known server instead of the selected one
+    /// alone. For the real binary tests, which have no hand to click with; the variable
+    /// `OSCQ_INSPECTOR_STARTUP` carries it, and nothing is kept of it.
+    pub fn startup(&mut self, ctx: &egui::Context, what: &str) {
+        for word in what.split(',').map(str::trim) {
+            match word {
+                "map" => self.view.tab = Tab::Map,
+                "connect-all" => {
+                    let idle: Vec<ServerId> = self
+                        .state
+                        .servers
+                        .iter()
+                        .filter(|e| e.server.kind.connectable() && e.conn == ConnState::Idle)
+                        .map(|e| e.server.id)
+                        .collect();
+                    for id in idle {
+                        self.act(ctx, Action::Connect(id));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// One frame. Everything the window shows comes from here.
     pub fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         // Why this frame runs: where the previous pass asked for it. Costs nothing when off.
         tracing::trace!(
-            target: "void_oscq::frame",
+            target: "oscq_inspector::frame",
             causes = ?ctx.repaint_causes(),
             inputs = ?input_kinds(&ctx),
             "frame"
         );
         if let Some(t) = self.launched.take() {
             tracing::info!(
-                target: "void_oscq::startup",
+                target: "oscq_inspector::startup",
                 "first frame {:.1} ms after launch",
                 t.elapsed().as_secs_f64() * 1000.0
             );
@@ -346,6 +409,102 @@ impl VoidApp {
             self.act(&ctx, a);
         }
         self.sync_listens();
+        self.read_peers_when_due(&ctx);
+    }
+
+    /// Asks the servers in `scope` for their peers: those connected that declare `PEERS`, and
+    /// no other (PRD 7.6), each asked again only once its last answer is in.
+    fn read_peers(&mut self, scope: PeersScope, quiet: bool) {
+        let selected = self.state.selected;
+        for e in &mut self.state.servers {
+            let wanted = scope == PeersScope::All || selected == Some(e.server.id);
+            if wanted && e.peers_readable() && !e.peers.asked {
+                e.peers.asked = true;
+                let _ = self.backend.commands.send(Command::RefreshPeers {
+                    server_id: e.server.id,
+                    quiet,
+                });
+            }
+        }
+    }
+
+    /// PRD 7.6: `?PEERS` is read when a tab that shows it is opened on a server, and, while the
+    /// map is the visible tab, on a timer. Never on a timer otherwise: this is the one place
+    /// where the window asks to be woken at rest, and it does so only with the map in view.
+    /// The timer's readings are quiet: their answers wait for the timer's next frame, so that
+    /// a poll costs the window one frame whatever the number of servers.
+    fn read_peers_when_due(&mut self, ctx: &egui::Context) {
+        let tree_for = self
+            .state
+            .selected_entry()
+            .filter(|e| self.view.tab == Tab::Tree && e.peers_readable())
+            .map(|e| e.server.id);
+        if tree_for != self.view.tree_peers_for {
+            self.view.tree_peers_for = tree_for;
+            if tree_for.is_some() {
+                self.read_peers(PeersScope::Selected, false);
+            }
+        }
+        // The map shows only with a server selected: see `main_pane`.
+        if self.view.tab != Tab::Map || self.state.selected.is_none() {
+            self.view.peers_due = None;
+            return;
+        }
+        let (now, frame) = ctx.input(|i| (i.time, f64::from(i.predicted_dt)));
+        let interval = self.config.peers_poll().as_secs_f64();
+        // egui wakes the window one predicted frame before the time asked for (`Context::
+        // request_repaint_after`): a reading falls due within two frames of its time, or the
+        // frame that wakes for it would find it not due and ask for another, two frames per
+        // interval where the budget allows one.
+        let slack = (2.0 * frame).min(interval / 4.0);
+        match self.view.peers_due {
+            // The tab opens: every server at once, each shown as it answers.
+            None => {
+                self.read_peers(PeersScope::All, false);
+                self.view.peers_due = Some(now + interval);
+            }
+            Some(due) if now + slack >= due => {
+                self.read_peers(PeersScope::All, true);
+                // On the timer's own beat, so that early wakes do not shorten it; after a long
+                // gap, from now.
+                let next = due + interval;
+                self.view.peers_due = Some(if next > now + slack {
+                    next
+                } else {
+                    now + interval
+                });
+            }
+            Some(_) => {
+                // A server that could not be read when the tab opened, connected since: its
+                // first reading does not wait for the timer.
+                let first: Vec<ServerId> = self
+                    .state
+                    .servers
+                    .iter()
+                    .filter(|e| {
+                        e.peers_readable()
+                            && !e.peers.asked
+                            && e.peers.snapshot.is_none()
+                            && e.peers.failure.is_none()
+                    })
+                    .map(|e| e.server.id)
+                    .collect();
+                for id in first {
+                    if let Some(e) = self.state.entry_mut(id) {
+                        e.peers.asked = true;
+                    }
+                    let _ = self.backend.commands.send(Command::RefreshPeers {
+                        server_id: id,
+                        quiet: false,
+                    });
+                }
+            }
+        }
+        let wait = self
+            .view
+            .peers_due
+            .map_or(interval, |due| (due - now).max(0.0));
+        ctx.request_repaint_after(Duration::from_secs_f64(wait));
     }
 
     /// Keeps each connection's listens equal to its visible and pinned methods: `LISTEN` when a
@@ -420,7 +579,7 @@ impl VoidApp {
                     moved(p);
                 }
             }
-            tracing::trace!(target: "void_oscq::event", kind = event_kind(&event));
+            tracing::trace!(target: "oscq_inspector::event", kind = event_kind(&event));
             self.state.apply(event);
             if let Some(id) = restore {
                 self.act(ctx, Action::SelectServer(id));
@@ -665,6 +824,14 @@ impl VoidApp {
                         server_id: id,
                         from_path: path,
                     });
+                }
+            }
+            Action::ReadPeers(scope) => {
+                self.read_peers(scope, false);
+                // The timer counts from this reading.
+                if self.view.peers_due.is_some() {
+                    let now = ctx.input(|i| i.time);
+                    self.view.peers_due = Some(now + self.config.peers_poll().as_secs_f64());
                 }
             }
             Action::Copy(text) => ctx.copy_text(text),
@@ -1298,18 +1465,33 @@ impl VoidApp {
         ui.horizontal_wrapped(|ui| {
             ui.set_min_height(ROW_H);
             let width = ui.available_width();
+            // The four tabs are one group: nothing between them, so that the fourth takes the
+            // room of its own label and no more, and the line still holds at 1060 points.
+            let gap = ui.spacing().item_spacing.x;
+            ui.spacing_mut().item_spacing.x = 0.0;
             ui.selectable_value(&mut self.view.tab, Tab::Tree, "Tree");
             ui.selectable_value(&mut self.view.tab, Tab::Json, "JSON");
             ui.selectable_value(&mut self.view.tab, Tab::Traffic, "Traffic");
+            ui.spacing_mut().item_spacing.x = gap;
+            ui.selectable_value(&mut self.view.tab, Tab::Map, "Map");
             // Groups apart by GROUP_GAP, the item spacing included.
-            let gap = ui.spacing().item_spacing.x;
             ui.add_space(GROUP_GAP - gap);
+            let on_map = self.view.tab == Tab::Map;
             if ui
                 .button("Refresh")
-                .on_hover_text("Refresh the selected node, or the whole tree (F5)")
+                .on_hover_text(if on_map {
+                    "Read the peers of every server again (F5)"
+                } else {
+                    "Refresh the selected node, or the whole tree, and the listeners (F5)"
+                })
                 .clicked()
             {
-                actions.push(self.refresh_action());
+                if on_map {
+                    actions.push(Action::ReadPeers(PeersScope::All));
+                } else {
+                    actions.push(self.refresh_action());
+                    actions.push(Action::ReadPeers(PeersScope::Selected));
+                }
             }
             ui.add_space(GROUP_GAP - gap);
             let mut hide = self.config.hide_read_only;
@@ -1324,7 +1506,7 @@ impl VoidApp {
                 self.save_config(ui.ctx());
             }
             ui.add_space(GROUP_GAP - gap);
-            let (filter_min, root_min) = (22.0 * GRID, 18.0 * GRID);
+            let (filter_min, root_min) = (16.0 * GRID, 18.0 * GRID);
             // In a wrapping layout `available_width` is the whole line's: what is left of it is
             // from the cursor to the right edge.
             let mut room = ui.max_rect().right() - ui.cursor().min.x;
@@ -1334,8 +1516,12 @@ impl VoidApp {
             }
             // Three parts to the filter, two to the root, each within its least and most width.
             // A grid step of slack: two fields filling the line exactly would wrap on rounding.
+            // The root keeps its least width before the filter takes its three parts: the two
+            // never ask for more than the line has, which would send the root alone to the next.
             let share = (room - gap - GRID).max(0.0).floor();
-            let filter_w = (share * 0.6).clamp(filter_min.min(share), 64.0 * GRID);
+            let filter_w = (share * 0.6)
+                .min(share - root_min)
+                .clamp(filter_min.min(share), 64.0 * GRID);
             let root_w = (share - filter_w).clamp(root_min.min(share), 48.0 * GRID);
             let filter = ui.add(
                 egui::TextEdit::singleline(&mut self.view.filter)
@@ -1355,6 +1541,11 @@ impl VoidApp {
             );
         });
         ui.add_space(style::ITEM_GAP);
+        // The map shows every server, whatever the state of the selected one.
+        if self.view.tab == Tab::Map {
+            self.map_tab(ui, actions);
+            return;
+        }
         let Some(entry) = self.state.entry(id) else {
             return;
         };
@@ -1394,6 +1585,56 @@ impl VoidApp {
                     traffic_tab(ui, e, &mut self.view, started, actions);
                 }
             }
+            // Drawn above, before the selected server's tree is asked for.
+            Tab::Map => {}
+        }
+    }
+
+    /// The map tab (PRD 9.10): what the servers publish of their own connections, drawn. It
+    /// reads; it connects nothing. Zoom and pan only: the places are computed.
+    fn map_tab(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F5)) {
+            actions.push(Action::ReadPeers(PeersScope::All));
+        }
+        let interval = self.config.peers_poll();
+        let model = map::build(&self.state, Instant::now(), interval, APP_NAME);
+        let rects = map::layout(&model);
+        let bounds = map::bounds(&rects);
+        ui.horizontal_wrapped(|ui| {
+            ui.set_min_height(ROW_H);
+            // PRD 7.6: the polling is said, and never presented as live.
+            ui.weak(map_caption(interval));
+            if ui
+                .button("Fit")
+                .on_hover_text(
+                    "Show the whole map. Scroll to pan, pinch or Ctrl and scroll to zoom.",
+                )
+                .clicked()
+            {
+                self.view.map_moved = false;
+                self.view.map_fitted = None;
+            }
+        });
+        // Until the user moves the view, it follows the map as nodes come and go.
+        let outer = ui.available_size_before_wrap();
+        let zoom = egui::Rangef::new(0.2, 1.0);
+        let fitted = fit_scene(bounds, outer, zoom);
+        if !self.view.map_moved && self.view.map_fitted != Some(bounds) {
+            self.view.map_fitted = Some(bounds);
+            self.view.map_scene = Some(fitted);
+        }
+        let scene = self.view.map_scene.get_or_insert(fitted);
+        let selected = self.state.selected;
+        let response = egui::Scene::new()
+            .zoom_range(zoom)
+            .max_inner_size(bounds.size())
+            .show(ui, scene, |ui| {
+                ui.allocate_rect(bounds, egui::Sense::hover());
+                map::draw(ui, &model, &rects, selected);
+            })
+            .response;
+        if response.changed() {
+            self.view.map_moved = true;
         }
     }
 
@@ -1411,13 +1652,52 @@ impl VoidApp {
     }
 }
 
-impl eframe::App for VoidApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+impl eframe::App for InspectorApp {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        // What the frame before this one cost the CPU, the window's own pass and its
+        // rendering, as eframe measured it. Costs nothing when off.
+        if let Some(seconds) = frame.info().cpu_usage {
+            tracing::trace!(
+                target: "oscq_inspector::frame_time",
+                ms = f64::from(seconds) * 1000.0,
+                "previous frame"
+            );
+        }
         self.frame(ui);
     }
 }
 
-impl Drop for VoidApp {
+/// The part of the map to show so that all of `bounds` is in view, in a pane of `outer` size:
+/// the whole map, at the scale that holds it, never larger than life.
+fn fit_scene(bounds: egui::Rect, outer: egui::Vec2, zoom: egui::Rangef) -> egui::Rect {
+    let scale = (outer / bounds.size()).min_elem();
+    let scale = if scale.is_finite() {
+        zoom.clamp(scale)
+    } else {
+        zoom.max
+    };
+    egui::Rect::from_center_size(bounds.center(), outer / scale)
+}
+
+/// What the map says of itself above its nodes: how it is read, and that it is not live.
+fn map_caption(interval: Duration) -> String {
+    format!(
+        "Peers as each server publishes them, read every {} while this tab is shown: not live.",
+        seconds_text(interval)
+    )
+}
+
+/// A duration in seconds, as short as it is exact: "2 s", "0.25 s".
+fn seconds_text(d: Duration) -> String {
+    let ms = d.as_millis();
+    if ms.is_multiple_of(1000) {
+        format!("{} s", ms / 1000)
+    } else {
+        format!("{} s", ms as f64 / 1000.0)
+    }
+}
+
+impl Drop for InspectorApp {
     fn drop(&mut self) {
         let _ = self.backend.commands.send(Command::Shutdown);
         if let Some(mut owned) = self.owned.take() {
@@ -1461,6 +1741,7 @@ fn event_kind(e: &Event) -> &'static str {
         Event::PathRenamed { .. } => "PathRenamed",
         Event::TransportState { .. } => "TransportState",
         Event::TrafficLogged(_) => "TrafficLogged",
+        Event::Peers { .. } => "Peers",
         Event::Error { .. } => "Error",
         Event::Succeeded { .. } => "Succeeded",
     }
@@ -1543,7 +1824,7 @@ enum AboutLine {
 
 fn about_lines() -> Vec<AboutLine> {
     let mut lines = vec![
-        AboutLine::Title("Void OSCQ"),
+        AboutLine::Title(APP_NAME),
         AboutLine::Text(format!("version {}", env!("CARGO_PKG_VERSION"))),
         AboutLine::Text(format!("{}, Structure Void", env!("CARGO_PKG_AUTHORS"))),
     ];
@@ -1567,6 +1848,24 @@ static LOCAL_OFFSET: std::sync::OnceLock<time::UtcOffset> = std::sync::OnceLock:
 pub fn capture_local_offset() {
     if let Ok(offset) = time::UtcOffset::current_local_offset() {
         let _ = LOCAL_OFFSET.set(offset);
+    }
+}
+
+/// Hours, minutes and seconds of `at`, in local time, or in UTC, said so, when the local offset
+/// is unknown.
+fn clock_time_seconds(at: std::time::SystemTime) -> String {
+    let utc = time::OffsetDateTime::from(at);
+    match LOCAL_OFFSET.get() {
+        Some(offset) => {
+            let t = utc.to_offset(*offset);
+            format!("{:02}:{:02}:{:02}", t.hour(), t.minute(), t.second())
+        }
+        None => format!(
+            "{:02}:{:02}:{:02} UTC",
+            utc.hour(),
+            utc.minute(),
+            utc.second()
+        ),
     }
 }
 
@@ -1884,6 +2183,32 @@ fn tree_tab(
 
     keyboard(ui, t, &rows, view, actions);
 
+    // The metadata column says what its listener badges mean on this server, or why it has
+    // none (PRD 9.10): no badge is not the same thing on a server that publishes its peers
+    // and on one that does not.
+    let narrowed = view.tree_meta_w.is_some_and(|w| w < style::META_W);
+    let header = listeners_header(entry, narrowed);
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), 4.0 * GRID),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            // The scroll bar's place, so that the line ends where the column does.
+            ui.add_space(ui.spacing().scroll.allocated_width());
+            let colour = if header.warn {
+                ui.visuals().warn_fg_color
+            } else {
+                ui.visuals().weak_text_color()
+            };
+            ui.add(egui::Label::new(RichText::new(&header.text).small().color(colour)).truncate())
+                .on_hover_text(&header.hover);
+        },
+    );
+    // Only a reading of a server that declares its peers gives badges.
+    let listeners = match entry.peers_view() {
+        PeersView::Read { snapshot, .. } => Some(snapshot),
+        _ => None,
+    };
+
     let row_h = ROW_H;
     let selected_pos = view.selected_path.as_ref().and_then(|p| {
         rows.iter()
@@ -1906,6 +2231,7 @@ fn tree_tab(
         // The visible width: a ui can be wider than what shows of it.
         let visible = (ui.clip_rect().right() - ui.max_rect().left()).min(ui.available_width());
         let cols = Columns::tree(visible);
+        view.tree_meta_w = Some(cols.meta);
         ui.spacing_mut().item_spacing.y = 0.0;
         for i in range {
             let row = &rows[i];
@@ -1952,9 +2278,116 @@ fn tree_tab(
                 cell,
                 send_blocked.as_deref(),
                 value_supported,
+                listeners,
                 view,
                 actions,
             );
+        }
+    });
+}
+
+/// What the tree's metadata column says of its listener badges.
+struct ListenersHeader {
+    text: String,
+    hover: String,
+    warn: bool,
+}
+
+/// PRD 9.10: the column says which it is, a server whose peers listen to nothing or a server
+/// that does not publish its peers. A reading is dated by its time of day, not by its age: the
+/// tree reads its listeners when the tab opens and on Refresh, and an age would go stale on a
+/// window that does not repaint.
+fn listeners_header(e: &ServerEntry, narrowed: bool) -> ListenersHeader {
+    let plain = |text: &str, hover: &str| ListenersHeader {
+        text: text.to_owned(),
+        hover: hover.to_owned(),
+        warn: false,
+    };
+    match e.peers_view() {
+        PeersView::NotConnected => plain(
+            "listeners: not known, not connected",
+            "Who listens to the methods of this server was never read, and cannot be: it is \
+             not connected.",
+        ),
+        PeersView::HostInfoUnknown => plain(
+            "listeners: not known, HOST_INFO not read",
+            "Whether this server publishes its peers is declared in its HOST_INFO, which could \
+             not be read.",
+        ),
+        PeersView::NotPublished => plain(
+            "listeners: not published by this server",
+            "This server does not declare PEERS in its HOST_INFO: who listens to its methods \
+             is not known. No count in this column means not published, not zero.",
+        ),
+        PeersView::NotRead => plain(
+            "listeners: not read yet",
+            "This server publishes its peers; they have not been read yet.",
+        ),
+        PeersView::Failed(reason) => ListenersHeader {
+            text: format!(
+                "listeners: not read, {}",
+                crate::state::short_reason(reason)
+            ),
+            hover: format!(
+                "This server declares PEERS in its HOST_INFO, and reading them failed: \
+                 {reason}. Refresh reads them again."
+            ),
+            warn: true,
+        },
+        PeersView::Read { .. } if narrowed => plain(
+            "listeners: not shown at this width",
+            "The column is narrowed to the access flags: widen the pane to see who listens to \
+             each method.",
+        ),
+        PeersView::Read { snapshot, failure } => {
+            let at = clock_time_seconds(snapshot.wall);
+            let mut text = format!("listeners as of {at}");
+            if failure.is_some() {
+                text.push_str(", not read since");
+            }
+            ListenersHeader {
+                text,
+                hover: format!(
+                    "The peers of this server that listen to each method, as the server \
+                     published them at {at}: their count in this column, their names on \
+                     hover. No count: no peer listens to that method. This application is \
+                     left out: it listens to every method on screen. Refresh reads them \
+                     again.{}",
+                    failure.map_or_else(String::new, |r| format!(" The last reading failed: {r}."))
+                ),
+                warn: failure.is_some(),
+            }
+        }
+    }
+}
+
+/// The listener badge of a method (PRD 9.10): how many peers listen to exactly its full path,
+/// their names on hover. Drawn only when there is one at least.
+fn listener_badge(ui: &mut egui::Ui, snapshot: &PeersSnapshot, path: &str) {
+    let count = snapshot.listeners(path).count();
+    if count == 0 {
+        return;
+    }
+    let text = count.to_string();
+    let width = (text.len() as f32 * 2.0 * GRID + 2.0 * GRID).max(5.0 * GRID);
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, 4.0 * GRID), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 2.0 * GRID, map::EDGE_CLIENT);
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        text,
+        FontId::monospace(style::DATA),
+        Color32::BLACK,
+    );
+    response.on_hover_ui(|ui| {
+        ui.label(if count == 1 {
+            "Listened to by 1 peer:".to_owned()
+        } else {
+            format!("Listened to by {count} peers:")
+        });
+        for c in snapshot.listeners(path) {
+            ui.label(style::data(client_label(c)));
         }
     });
 }
@@ -2037,6 +2470,7 @@ fn node_row(
     cell: NameCell,
     send_blocked: Option<&str>,
     value_supported: bool,
+    listeners: Option<&PeersSnapshot>,
     view: &mut View,
     actions: &mut Vec<Action>,
 ) {
@@ -2196,7 +2630,14 @@ fn node_row(
                     if access.writable() { "w" } else { "" }
                 );
                 ui.label(style::data(flags).weak());
-                // Narrowed to the flags alone, the column holds nothing else.
+                // Narrowed to the flags alone, the column holds nothing else. The badge is
+                // a method's: a container is never listened to, and its children's listeners
+                // are not its own.
+                if cols.meta >= style::META_W
+                    && let Some(snapshot) = listeners
+                {
+                    listener_badge(ui, snapshot, &node.full_path);
+                }
                 if cols.meta >= style::META_W
                     && let Some(tags) = &node.type_raw
                 {
@@ -2268,6 +2709,7 @@ fn pinned_cells(
                 cell,
                 e.send_blocked().as_deref(),
                 e.value_supported(),
+                None,
                 view,
                 actions,
             );
@@ -2449,6 +2891,7 @@ fn keyboard(
             Some(p) => Action::RefreshValue(p),
             None => Action::RefreshTree("/".to_owned()),
         });
+        actions.push(Action::ReadPeers(PeersScope::Selected));
     }
     let copy = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)));
     if copy && let Some(p) = &view.selected_path {
@@ -3002,7 +3445,7 @@ mod tests {
 
     struct Harness {
         ctx: egui::Context,
-        app: VoidApp,
+        app: InspectorApp,
         commands: flume::Receiver<Command>,
         events: flume::Sender<Event>,
         _rt: tokio::runtime::Runtime,
@@ -3020,7 +3463,7 @@ mod tests {
         let (cmd_tx, cmd_rx) = flume::unbounded();
         let (ev_tx, ev_rx) = flume::unbounded();
         let ctx = egui::Context::default();
-        let mut app = VoidApp::with_backend(
+        let mut app = InspectorApp::with_backend(
             &ctx,
             Backend {
                 commands: cmd_tx,
@@ -3994,7 +4437,7 @@ mod tests {
         let (ev_tx, ev_rx) = flume::unbounded();
         let commands = oscq_core::service::spawn(rt.handle(), ev_tx, Arc::new(|| {}));
         let ctx = egui::Context::default();
-        let app = VoidApp::with_backend(
+        let app = InspectorApp::with_backend(
             &ctx,
             Backend {
                 commands,
@@ -4019,7 +4462,7 @@ mod tests {
         (h, server, osc)
     }
 
-    fn wait_for(h: &mut Harness, what: &str, done: impl Fn(&VoidApp) -> bool) {
+    fn wait_for(h: &mut Harness, what: &str, done: impl Fn(&InspectorApp) -> bool) {
         let end = Instant::now() + Duration::from_secs(10);
         while !done(&h.app) {
             assert!(Instant::now() < end, "timed out waiting for {what}");
@@ -4048,7 +4491,7 @@ mod tests {
         let (ev_tx, ev_rx) = flume::unbounded();
         let commands = oscq_core::service::spawn(rt.handle(), ev_tx, Arc::new(|| {}));
         let ctx = egui::Context::default();
-        let app = VoidApp::with_backend(
+        let app = InspectorApp::with_backend(
             &ctx,
             Backend {
                 commands,
@@ -4198,14 +4641,15 @@ mod tests {
     }
 
     /// On a wide window, 1060 points or more, under the default width of 1100, the side panes keep
-    /// their width, the centre takes the rest, and the toolbar holds on one line: the three tabs,
+    /// their width, the centre takes the rest, and the toolbar holds on one line: the four tabs,
     /// Refresh, Writable, the filter and the root fields side by side, frame after frame.
     #[test]
     fn the_toolbar_holds_one_line_on_a_wide_window() {
-        const CONTROLS: [&str; 7] = [
+        const CONTROLS: [&str; 8] = [
             "Tree",
             "JSON",
             "Traffic",
+            "Map",
             "Refresh",
             "Writable",
             "filter  /",
@@ -4257,7 +4701,7 @@ mod tests {
         h.frame_sized(size, Vec::new());
         let out = h.frame_sized(size, Vec::new());
         let y = |c: &str| place(&out, c).center().y;
-        for c in ["JSON", "Traffic", "Refresh"] {
+        for c in ["JSON", "Traffic", "Map", "Refresh"] {
             assert!((y(c) - y("Tree")).abs() < 2.0, "{c} beside Tree");
         }
         assert!(
@@ -4662,12 +5106,13 @@ mod tests {
     /// window: the theme and About under the server list, the status bar and its message.
     #[test]
     fn every_toolbar_control_stays_on_screen_whatever_the_width() {
-        const CONTROLS: [&str; 7] = [
+        const CONTROLS: [&str; 8] = [
             "filter  /",
             "root at path",
             "Tree",
             "JSON",
             "Traffic",
+            "Map",
             "Refresh",
             "Writable",
         ];
@@ -4807,7 +5252,7 @@ mod tests {
         let version = format!("version {}", env!("CARGO_PKG_VERSION"));
         let license_line = format!("License {license}");
         let six: [(&str, &str); 6] = [
-            ("the name", "Void OSCQ"),
+            ("the name", "OSCQuery Inspector"),
             ("the version", &version),
             ("the author", "Julien Bayle"),
             ("the studio", "Structure Void"),
@@ -5061,7 +5506,7 @@ mod tests {
         let (ev_tx, ev_rx) = flume::unbounded();
         let commands = oscq_core::service::spawn(rt.handle(), ev_tx, Arc::new(|| {}));
         let ctx = egui::Context::default();
-        let app = VoidApp::with_backend(
+        let app = InspectorApp::with_backend(
             &ctx,
             Backend {
                 commands,
@@ -5087,7 +5532,7 @@ mod tests {
                 .selected_entry()
                 .is_some_and(|e| e.conn == ConnState::Connected && e.tree.is_some())
         });
-        let rows = |a: &VoidApp| {
+        let rows = |a: &InspectorApp| {
             let e = a.state.selected_entry().unwrap();
             let t = e.tree.as_ref().unwrap();
             ["/declared", "/inferred"].map(|p| {
@@ -5151,7 +5596,7 @@ mod tests {
         let (ev_tx, ev_rx) = flume::unbounded();
         let commands = oscq_core::service::spawn(rt.handle(), ev_tx, Arc::new(|| {}));
         let ctx = egui::Context::default();
-        let app = VoidApp::with_backend(
+        let app = InspectorApp::with_backend(
             &ctx,
             Backend {
                 commands,
@@ -5212,7 +5657,7 @@ mod tests {
             ..Config::default()
         });
         let port_of =
-            |a: &VoidApp| match a.state.selected_entry().and_then(|e| e.destination.clone()) {
+            |a: &InspectorApp| match a.state.selected_entry().and_then(|e| e.destination.clone()) {
                 Some(Ok(d)) => Some((d.port, d.port_source)),
                 _ => None,
             };
@@ -5263,7 +5708,7 @@ mod tests {
         ));
 
         // The config as saved, read back: a restart connects with the user's port.
-        let dir = std::env::temp_dir().join(format!("void-oscq-port-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("oscq-inspector-port-{}", std::process::id()));
         let path = config::config_path(&dir);
         config::write_atomic(&path, &h.app.config.to_bytes()).unwrap();
         let (saved, warning) = Config::load(&path);
@@ -5325,7 +5770,7 @@ mod tests {
             "/g0/p1".into(),
             vec![OscType::Float(0.75)],
         ));
-        let shown = |a: &VoidApp, path: &str| {
+        let shown = |a: &InspectorApp, path: &str| {
             a.state
                 .selected_entry()
                 .and_then(|e| e.tree.as_ref())
@@ -5413,8 +5858,969 @@ mod tests {
         );
     }
 
+    // ------------------------------------------------------------ peers, map, listener badge
+
+    /// A server entered by hand at `ip:port`, shown as `name`, which its `HOST_INFO` gives
+    /// too, declaring the peers extension or not, connected, with `doc` loaded.
+    fn peer_server(
+        h: &mut Harness,
+        name: &str,
+        ip: &str,
+        port: u16,
+        declares: bool,
+        doc: &str,
+    ) -> ServerId {
+        let s = DiscoveredServer {
+            id: ServerId::next(),
+            kind: ServiceKind::OscQuery,
+            name: name.into(),
+            host: ip.into(),
+            port,
+            addresses: Vec::new(),
+            origin: Origin::Manual,
+            stale: false,
+        };
+        let id = s.id;
+        h.events.send(Event::ServerFound(s)).unwrap();
+        h.frame(Vec::new());
+        h.app.act(&h.ctx.clone(), Action::SelectServer(id));
+        let extensions = if declares {
+            r#""VALUE":true,"PEERS":true,"CLIENT_NAME":true"#
+        } else {
+            r#""VALUE":true"#
+        };
+        let host_info = format!(r#"{{"NAME":"{name}","EXTENSIONS":{{{extensions}}}}}"#);
+        let (info, _) = oscq_core::HostInfo::parse(host_info.as_bytes()).unwrap();
+        let destination = info.osc_destination(ip, port);
+        for event in [
+            Event::HostInfo {
+                server_id: id,
+                info,
+                destination,
+            },
+            Event::TreeLoaded {
+                server_id: id,
+                raw: Arc::from(doc),
+                report: parse_document(doc.as_bytes()).unwrap(),
+            },
+            Event::TransportState {
+                server_id: id,
+                state: oscq_core::TransportState::HttpOnly,
+            },
+        ] {
+            h.events.send(event).unwrap();
+        }
+        h.frame(Vec::new());
+        id
+    }
+
+    /// The answer to a reading of `?PEERS` that arrived `age` ago.
+    fn peers_read(
+        id: ServerId,
+        age: Duration,
+        reply: serde_json::Value,
+        this_client: Option<usize>,
+    ) -> Event {
+        let (peers, _) = oscq_core::Peers::parse(reply.to_string().as_bytes()).unwrap();
+        Event::Peers {
+            server_id: id,
+            at: Instant::now() - age,
+            result: Ok(oscq_core::PeersReading { peers, this_client }),
+        }
+    }
+
+    /// The servers asked for their peers by `cmds`, with whether each was asked quietly.
+    fn peers_asked(cmds: &[Command]) -> Vec<(ServerId, bool)> {
+        cmds.iter()
+            .filter_map(|c| match c {
+                Command::RefreshPeers { server_id, quiet } => Some((*server_id, *quiet)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    const EDGE_COLOURS: [Color32; 4] = [
+        map::EDGE_CLIENT,
+        map::EDGE_SENDER,
+        map::EDGE_AMBIGUOUS,
+        map::EDGE_STALE,
+    ];
+
+    /// The edges the frame drew: every line segment and every circle stroked in one of the
+    /// colours kept for edges, in the order they were painted. A straight edge is its line,
+    /// whole or in dashes, then the two strokes of its head; a loop is one circle.
+    #[derive(Default)]
+    struct DrawnEdges {
+        segments: Vec<([egui::Pos2; 2], Color32)>,
+        loops: Vec<(egui::Pos2, f32, Color32)>,
+    }
+
+    impl DrawnEdges {
+        fn of(&self, colour: Color32) -> Vec<[egui::Pos2; 2]> {
+            self.segments
+                .iter()
+                .filter(|(_, c)| *c == colour)
+                .map(|(p, _)| *p)
+                .collect()
+        }
+
+        /// Where the one edge drawn in `colour` starts, at the peer, and where its head is, at
+        /// the server.
+        fn ends(&self, colour: Color32) -> (egui::Pos2, egui::Pos2) {
+            let of = self.of(colour);
+            assert!(
+                of.len() >= 3,
+                "a line and the two strokes of its head: {of:?}"
+            );
+            (of[0][0], of[of.len() - 1][0])
+        }
+    }
+
+    fn drawn_edges(out: &egui::FullOutput) -> DrawnEdges {
+        fn walk(shape: &egui::Shape, edges: &mut DrawnEdges) {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, edges)),
+                egui::Shape::LineSegment { points, stroke }
+                    if EDGE_COLOURS.contains(&stroke.color) =>
+                {
+                    edges.segments.push((*points, stroke.color))
+                }
+                egui::Shape::Circle(c) if EDGE_COLOURS.contains(&c.stroke.color) => {
+                    edges.loops.push((c.center, c.radius, c.stroke.color))
+                }
+                _ => {}
+            }
+        }
+        let mut edges = DrawnEdges::default();
+        for clipped in &out.shapes {
+            walk(&clipped.shape, &mut edges);
+        }
+        edges
+    }
+
+    /// What the centre pane shows, as the glyphs laid out and where: between the two side
+    /// panes, under the toolbar's first line and above the status bar. On the map tab, the
+    /// titles and lines of the nodes and the labels of the edges.
+    fn centre_texts(h: &Harness, out: &egui::FullOutput) -> Vec<(String, egui::Rect)> {
+        let pane = |name: &str| {
+            egui::PanelState::load(&h.ctx, egui::Id::new(name))
+                .unwrap()
+                .outer_rect
+        };
+        let (left, right, bottom) = (
+            pane("servers").max.x,
+            pane("work").min.x,
+            pane("status").min.y,
+        );
+        shown_texts(out)
+            .into_iter()
+            .filter(|(_, r, _)| {
+                r.min.x >= left
+                    && r.max.x <= right
+                    && r.min.y > ROW_H + 2.0 * GRID
+                    && r.max.y < bottom
+            })
+            .map(|(t, r, _)| (t, r))
+            .collect()
+    }
+
+    /// Where the centre pane shows `text`, once.
+    fn centre_place(h: &Harness, out: &egui::FullOutput, text: &str) -> egui::Rect {
+        let found: Vec<egui::Rect> = centre_texts(h, out)
+            .into_iter()
+            .filter(|(t, _)| t == text)
+            .map(|(_, r)| r)
+            .collect();
+        assert_eq!(found.len(), 1, "{text:?} shown once in the centre");
+        found[0]
+    }
+
+    /// The listener badges the frame drew in the tree, as (the name on the badge's row, the
+    /// count on the badge): each rectangle filled with the badge's colour, the text inside it,
+    /// and the name shown at its height in the centre pane.
+    fn drawn_badges(h: &Harness, out: &egui::FullOutput) -> Vec<(String, String)> {
+        fn walk(shape: &egui::Shape, rects: &mut Vec<egui::Rect>) {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, rects)),
+                egui::Shape::Rect(r) if r.fill == map::EDGE_CLIENT => rects.push(r.rect),
+                _ => {}
+            }
+        }
+        let mut pills = Vec::new();
+        for clipped in &out.shapes {
+            walk(&clipped.shape, &mut pills);
+        }
+        let texts = centre_texts(h, out);
+        let mut badges: Vec<(f32, String, String)> = pills
+            .into_iter()
+            .map(|pill| {
+                let inside: Vec<&String> = texts
+                    .iter()
+                    .filter(|(_, r)| pill.contains(r.center()))
+                    .map(|(t, _)| t)
+                    .collect();
+                assert_eq!(inside.len(), 1, "one count in the badge at {pill:?}");
+                // The row's name: the leftmost text at the badge's height, the expander of a
+                // container left aside.
+                let name = texts
+                    .iter()
+                    .filter(|(t, r)| {
+                        (r.center().y - pill.center().y).abs() < ROW_H / 2.0 && t != "+" && t != "-"
+                    })
+                    .min_by(|a, b| a.1.min.x.total_cmp(&b.1.min.x))
+                    .map(|(t, _)| t.clone())
+                    .unwrap();
+                (pill.center().y, name, inside[0].clone())
+            })
+            .collect();
+        badges.sort_by(|a, b| a.0.total_cmp(&b.0));
+        badges.into_iter().map(|(_, n, c)| (n, c)).collect()
+    }
+
+    const ONE_METHOD: &str = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
+
+    fn max_listening_to_a() -> serde_json::Value {
+        serde_json::json!({"CLIENTS": [
+            {"IP": "10.0.0.9", "PORT": 40001, "NAME": "Max", "LISTEN": ["/a"], "PACKETS": 4}
+        ]})
+    }
+
+    /// M7: without the declaration, no edge and no badge. A server whose `HOST_INFO` does not
+    /// declare `PEERS` is drawn on the map, labelled as not publishing its peers, with no edge;
+    /// its tree carries no badge, and its column says the listeners are not published, which
+    /// is not what it says of a server whose peers listen to nothing. It is never asked for
+    /// its peers, and an answer that arrives all the same shows nothing. The same answer from
+    /// a server that declares draws its edge and its badge.
+    #[test]
+    fn a_server_that_declares_nothing_has_no_edge_and_no_badge() {
+        let mut h = harness();
+        let declares = peer_server(&mut h, "Declares", "10.0.0.1", 5000, true, ONE_METHOD);
+        let silent = peer_server(&mut h, "Silent", "10.0.0.2", 5000, false, ONE_METHOD);
+        for id in [declares, silent] {
+            h.events
+                .send(peers_read(id, Duration::ZERO, max_listening_to_a(), None))
+                .unwrap();
+        }
+        // The tree of the server that declares nothing, which is the selected one.
+        h.frame(Vec::new());
+        let out = h.frame(Vec::new());
+        assert_eq!(drawn_badges(&h, &out), [], "no badge");
+        centre_place(&h, &out, "listeners: not published by this server");
+        // The same tree, the same answer, on the server that declares.
+        h.app.act(&h.ctx.clone(), Action::SelectServer(declares));
+        h.frame(Vec::new());
+        let out = h.frame(Vec::new());
+        assert_eq!(drawn_badges(&h, &out), [("a".to_owned(), "1".to_owned())]);
+        let header: Vec<String> = centre_texts(&h, &out)
+            .into_iter()
+            .map(|(t, _)| t)
+            .filter(|t| t.starts_with("listeners"))
+            .collect();
+        assert_eq!(header.len(), 1, "{header:?}");
+        assert!(header[0].starts_with("listeners as of "), "{header:?}");
+
+        // The map: both servers drawn, one edge, to the server that declares.
+        h.app.view.tab = Tab::Map;
+        h.frame(Vec::new());
+        let out = h.frame(Vec::new());
+        let silent_node = centre_place(&h, &out, "Silent");
+        let declares_node = centre_place(&h, &out, "Declares");
+        let label = centre_place(&h, &out, "does not publish its peers");
+        assert!(
+            (label.center().x - silent_node.center().x).abs() < 120.0
+                && label.min.y > silent_node.max.y
+                && label.min.y - silent_node.max.y < 60.0,
+            "the label is the silent server's: {label:?} under {silent_node:?}"
+        );
+        let edges = drawn_edges(&out);
+        assert!(edges.loops.is_empty());
+        assert_eq!(
+            edges.segments.len(),
+            3,
+            "one edge, its line and its head: {:?}",
+            edges.segments
+        );
+        let (from, head) = edges.ends(map::EDGE_CLIENT);
+        let max_node = centre_place(&h, &out, "Max");
+        let near = |p: egui::Pos2, r: egui::Rect| r.expand(60.0).distance_to_pos(p);
+        assert!(
+            near(head, declares_node) < near(head, silent_node)
+                && near(from, max_node) < near(from, silent_node),
+            "from Max at {from:?} to the server that declares at {head:?}, not to the silent one"
+        );
+
+        // Never asked: not when its tree was opened, not when the map was, not by the timer.
+        for t in [300.0, 302.0, 304.0] {
+            h.frame_at(t, Vec::new());
+        }
+        let asked: Vec<ServerId> = peers_asked(&h.sent())
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert!(asked.contains(&declares), "the one that declares is asked");
+        assert!(!asked.contains(&silent), "the silent one never is");
+    }
+
+    /// M7: the badge matches exactly, because `LISTEN` is not recursive. A method carries the
+    /// count of the peers that listen to its own full path, `/foo` here, a method with children
+    /// as VVOSCQueryProtocol servers publish. Its children do not carry it; a container that is
+    /// not a method never does, listed or not, `/g` here; an address that only starts like
+    /// another is another. This application, which listens to every method on screen, is left out. When
+    /// the column narrows to the access flags, it says the badges are not shown.
+    #[test]
+    fn the_listener_badge_matches_the_full_path_exactly() {
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{
+            "ab":{"FULL_PATH":"/ab","TYPE":"f","ACCESS":3,"VALUE":[0.5]},
+            "abc":{"FULL_PATH":"/abc","TYPE":"f","ACCESS":3,"VALUE":[0.5]},
+            "foo":{"FULL_PATH":"/foo","TYPE":"f","ACCESS":3,"VALUE":[0.5],"CONTENTS":{
+                "bar":{"FULL_PATH":"/foo/bar","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}},
+            "g":{"FULL_PATH":"/g","CONTENTS":{
+                "x":{"FULL_PATH":"/g/x","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}},
+            "quiet":{"FULL_PATH":"/quiet","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
+        let mut h = harness();
+        let id = peer_server(&mut h, "S", "10.0.0.1", 5000, true, doc);
+        let ctx = h.ctx.clone();
+        h.app.act(&ctx, Action::Toggle("/foo".into()));
+        h.app.act(&ctx, Action::Toggle("/g".into()));
+        h.events
+            .send(peers_read(
+                id,
+                Duration::ZERO,
+                serde_json::json!({"CLIENTS": [
+                    {"IP": "10.0.0.9", "PORT": 40001, "NAME": "Max",
+                     "LISTEN": ["/foo", "/g", "/ab", "/foo"]},
+                    {"IP": "10.0.0.8", "PORT": 40004, "LISTEN": ["/foo"]},
+                    {"IP": "10.0.0.50", "PORT": 40009, "NAME": APP_NAME,
+                     "LISTEN": ["/ab", "/abc", "/foo", "/foo/bar", "/g/x", "/quiet"]}
+                ]}),
+                Some(2),
+            ))
+            .unwrap();
+        h.frame(Vec::new());
+        let out = h.frame(Vec::new());
+        let rows: Vec<String> = ["ab", "abc", "foo", "bar", "g", "x", "quiet"]
+            .iter()
+            .map(|n| {
+                centre_place(&h, &out, n);
+                (*n).to_owned()
+            })
+            .collect();
+        assert_eq!(rows.len(), 7, "every row is on screen");
+        assert_eq!(
+            drawn_badges(&h, &out),
+            [
+                ("ab".to_owned(), "1".to_owned()),
+                ("foo".to_owned(), "2".to_owned())
+            ],
+            "/ab and /foo, and nothing else"
+        );
+        // Who they are, as the badge names them on hover.
+        let e = h.app.state.entry(id).unwrap();
+        let PeersView::Read { snapshot, .. } = e.peers_view() else {
+            panic!("a reading")
+        };
+        let names =
+            |path: &str| -> Vec<String> { snapshot.listeners(path).map(client_label).collect() };
+        assert_eq!(names("/foo"), ["Max", "unnamed client 10.0.0.8:40004"]);
+        assert_eq!(names("/ab"), ["Max"]);
+        for unlistened in ["/abc", "/foo/bar", "/g/x", "/quiet", "/fo", "/foo/", "/"] {
+            assert_eq!(names(unlistened), Vec::<String>::new(), "{unlistened}");
+        }
+
+        // Narrowed to the flags, the column holds no badge, and says so.
+        let narrow = egui::vec2(640.0, 700.0);
+        h.frame_sized(narrow, Vec::new());
+        h.frame_sized(narrow, Vec::new());
+        let out = h.frame_sized(narrow, Vec::new());
+        assert_eq!(drawn_badges(&h, &out), []);
+        centre_place(&h, &out, "listeners: not shown at this width");
+    }
+
+    /// M7: a server connected to itself. A client under the server's own name is drawn as a
+    /// loop on that one node, not dropped.
+    #[test]
+    fn a_server_connected_to_itself_is_drawn_with_a_loop() {
+        let mut h = harness();
+        let id = peer_server(&mut h, "Narcissus", "10.0.0.1", 5000, true, ONE_METHOD);
+        h.events
+            .send(peers_read(
+                id,
+                Duration::ZERO,
+                serde_json::json!({"CLIENTS": [
+                    {"IP": "10.0.0.1", "PORT": 40001, "NAME": "Narcissus", "PACKETS": 3}
+                ]}),
+                None,
+            ))
+            .unwrap();
+        h.app.view.tab = Tab::Map;
+        h.frame(Vec::new());
+        let out = h.frame(Vec::new());
+        let node = centre_place(&h, &out, "Narcissus");
+        let edges = drawn_edges(&out);
+        assert!(
+            edges.segments.is_empty(),
+            "no straight edge: {:?}",
+            edges.segments
+        );
+        let [(centre, radius, colour)] = edges.loops[..] else {
+            panic!("one loop: {:?}", edges.loops)
+        };
+        assert_eq!(colour, map::EDGE_CLIENT);
+        assert!(radius > 4.0, "a loop one can see, radius {radius}");
+        // On the node itself: over its title, within its width.
+        assert!(
+            centre.y < node.min.y
+                && node.min.y - centre.y < 40.0
+                && centre.x > node.min.x
+                && centre.x - node.min.x < 220.0,
+            "the loop at {centre:?} is on the node titled at {node:?}"
+        );
+        centre_place(&h, &out, "3 packets");
+        let texts: Vec<String> = centre_texts(&h, &out).into_iter().map(|(t, _)| t).collect();
+        assert_eq!(
+            texts.iter().filter(|t| *t == "Narcissus").count(),
+            1,
+            "one node, no second one for the client: {texts:?}"
+        );
+    }
+
+    /// M7: two servers sharing one name. A client under that name is matched to neither: its
+    /// edge is drawn as ambiguous, in its own line and colour, starts from a node of the
+    /// client's own, and says what makes it ambiguous.
+    #[test]
+    fn a_name_two_servers_share_draws_an_ambiguous_edge_that_says_so() {
+        let mut h = harness();
+        let hub = peer_server(&mut h, "Hub", "10.0.0.1", 5000, true, ONE_METHOD);
+        peer_server(&mut h, "Twin", "10.0.0.2", 5000, true, ONE_METHOD);
+        peer_server(&mut h, "Twin", "10.0.0.3", 5000, true, ONE_METHOD);
+        h.events
+            .send(peers_read(
+                hub,
+                Duration::ZERO,
+                serde_json::json!({"CLIENTS": [{"IP": "10.0.0.2", "PORT": 40001, "NAME": "Twin"}]}),
+                None,
+            ))
+            .unwrap();
+        h.app.view.tab = Tab::Map;
+        h.frame(Vec::new());
+        let out = h.frame(Vec::new());
+        let edges = drawn_edges(&out);
+        assert!(edges.loops.is_empty());
+        assert!(
+            edges.of(map::EDGE_CLIENT).is_empty(),
+            "not drawn as a matched client: {:?}",
+            edges.segments
+        );
+        let dashes = edges.of(map::EDGE_AMBIGUOUS);
+        assert_eq!(
+            dashes.len(),
+            edges.segments.len(),
+            "one edge, the ambiguous one"
+        );
+        assert!(dashes.len() > 4, "in dashes: {} segments", dashes.len());
+        centre_place(&h, &out, "ambiguous: name of 2 known servers: not matched");
+        // It starts from the client's own node, the one that says it is not matched, and from
+        // neither of the two servers of that name.
+        let own = centre_place(&h, &out, "name of 2 known servers: not matched");
+        let titles: Vec<egui::Rect> = centre_texts(&h, &out)
+            .into_iter()
+            .filter(|(t, _)| t == "Twin")
+            .map(|(_, r)| r)
+            .collect();
+        assert_eq!(titles.len(), 3, "the two servers and the client");
+        let (from, head) = edges.ends(map::EDGE_AMBIGUOUS);
+        let distance = |r: &egui::Rect| r.distance_to_pos(from);
+        let nearest = titles
+            .iter()
+            .min_by(|a, b| distance(a).total_cmp(&distance(b)))
+            .unwrap();
+        assert!(
+            (nearest.center().x - own.center().x).abs() < 120.0
+                && own.min.y > nearest.max.y
+                && own.min.y - nearest.max.y < 60.0,
+            "the edge starts at the node titled at {nearest:?}, which is the client's own, \
+             labelled at {own:?}"
+        );
+        let hub_node = centre_place(&h, &out, "Hub");
+        assert!(
+            hub_node.expand(80.0).distance_to_pos(head) < 40.0,
+            "its head at {head:?} is on Hub at {hub_node:?}"
+        );
+    }
+
+    /// M7: a reading older than three poll intervals is marked stale, in the node's words and
+    /// in the edge's colour, and not before. Three intervals, not a number of seconds: a
+    /// longer interval keeps the same reading current.
+    #[test]
+    fn a_reading_older_than_three_intervals_is_marked_stale() {
+        let seen = |poll_ms: u64, age: Duration| {
+            let mut h = harness_with(Config {
+                peers_poll_ms: poll_ms,
+                ..Config::default()
+            });
+            let id = peer_server(&mut h, "S", "10.0.0.1", 5000, true, ONE_METHOD);
+            h.events
+                .send(peers_read(id, age, max_listening_to_a(), None))
+                .unwrap();
+            h.app.view.tab = Tab::Map;
+            h.frame(Vec::new());
+            let out = h.frame(Vec::new());
+            let texts: Vec<String> = centre_texts(&h, &out).into_iter().map(|(t, _)| t).collect();
+            let edges = drawn_edges(&out);
+            assert_eq!(edges.segments.len(), 3, "the one edge is drawn either way");
+            (
+                texts
+                    .into_iter()
+                    .find(|t| t.starts_with("read ") || t.starts_with("stale: "))
+                    .unwrap(),
+                edges.segments[0].1,
+            )
+        };
+        // 2 s intervals: stale past 6 s.
+        assert_eq!(
+            seen(2000, Duration::from_secs(5)),
+            ("read 5 s ago".to_owned(), map::EDGE_CLIENT)
+        );
+        assert_eq!(
+            seen(2000, Duration::from_secs(7)),
+            ("stale: read 7 s ago".to_owned(), map::EDGE_STALE)
+        );
+        // 5 s intervals: the same 7 s are within three of them.
+        assert_eq!(
+            seen(5000, Duration::from_secs(7)),
+            ("read 7 s ago".to_owned(), map::EDGE_CLIENT)
+        );
+        assert_eq!(
+            seen(5000, Duration::from_secs(16)),
+            ("stale: read 16 s ago".to_owned(), map::EDGE_STALE)
+        );
+    }
+
+    /// M7 and PRD 10: zero idle repaints with the map tab not visible, one per poll interval
+    /// with it visible, and no more. The timer that reads `?PEERS` runs only while the map is
+    /// the tab in view: behind another tab nothing asks for a frame and nothing is asked of
+    /// any server, however long the window rests. On the map, every server is asked when the
+    /// tab opens, then once per interval, quietly, and never again before it has answered.
+    #[test]
+    fn the_peers_timer_runs_only_while_the_map_is_shown() {
+        let mut h = harness();
+        let a = peer_server(&mut h, "A", "10.0.0.1", 5000, true, ONE_METHOD);
+        let b = peer_server(&mut h, "B", "10.0.0.2", 5000, true, ONE_METHOD);
+        let answer = |h: &Harness, ids: &[ServerId]| {
+            for id in ids {
+                h.events
+                    .send(peers_read(*id, Duration::ZERO, max_listening_to_a(), None))
+                    .unwrap();
+            }
+        };
+        let poll = Duration::from_millis(2000);
+
+        // The tree tab: each server's listeners are read once, aloud, when the tab shows it,
+        // A's when it was selected, then B's.
+        h.frame(Vec::new());
+        h.frame(Vec::new());
+        assert_eq!(
+            peers_asked(&h.sent()),
+            [(a, false), (b, false)],
+            "each read once for the tree"
+        );
+        answer(&h, &[a, b]);
+        let (_, t, _) = h.frames_until_idle(100.0, &[]);
+        for later in [1.0, 2.0, 2.5, 60.0, 600.0] {
+            let out = h.frame_at(t + later, Vec::new());
+            assert_eq!(
+                idle_delay(&out),
+                Duration::MAX,
+                "the tree tab at rest asks for no frame, {later} s on"
+            );
+        }
+        assert_eq!(
+            peers_asked(&h.sent()),
+            [],
+            "and asks no server for anything"
+        );
+
+        // The map tab opens: every server at once, aloud.
+        let out = h.frame_at(t + 700.0, Vec::new());
+        click(&mut h, place(&out, "Map"), egui::PointerButton::Primary);
+        assert_eq!(h.app.view.tab, Tab::Map);
+        let mut asked = peers_asked(&h.sent());
+        asked.sort();
+        assert_eq!(asked, [(a, false), (b, false)], "both, when the tab opens");
+        // The frames egui asks for after the click's input, before the window rests.
+        let mut settle = h.ctx.input(|i| i.time);
+        for _ in 0..10 {
+            settle += 1.0 / 60.0;
+            if idle_delay(&h.frame_at(settle, Vec::new())) > Duration::ZERO {
+                break;
+            }
+        }
+        assert_eq!(peers_asked(&h.sent()), [], "nothing more while it settles");
+
+        // Its timer: one frame per interval, each asking both servers quietly, once they have
+        // answered the reading before.
+        answer(&h, &[a, b]);
+        let t0 = 2000.0;
+        let out = h.frame_at(t0, Vec::new());
+        let delay = idle_delay(&out);
+        assert!(
+            delay > Duration::ZERO && delay <= poll,
+            "the map asks for its next frame within the interval: {delay:?}"
+        );
+        let mut asked = peers_asked(&h.sent());
+        asked.sort();
+        assert_eq!(
+            asked,
+            [(a, true), (b, true)],
+            "the timer's reading is quiet"
+        );
+        // Woken early, by input: nothing is asked before the interval is over.
+        let out = h.frame_at(t0 + 0.5, Vec::new());
+        assert_eq!(peers_asked(&h.sent()), []);
+        // egui asks one predicted frame early, a sixtieth of a second here.
+        let delay = idle_delay(&out).as_secs_f64();
+        assert!(
+            (delay - (1.5 - 1.0 / 60.0)).abs() < 0.001,
+            "the rest of the interval: {delay}"
+        );
+        // The interval over, and no answer: no server is asked twice.
+        let out = h.frame_at(t0 + 2.0, Vec::new());
+        assert_eq!(
+            peers_asked(&h.sent()),
+            [],
+            "not asked again before it answers"
+        );
+        assert!(idle_delay(&out) <= poll);
+        // Ten seconds of an event loop that runs a frame when one is asked for, at the time
+        // egui says, the servers answering each reading: five frames, one per interval, each
+        // asked for by the timer and each reading both servers. Counted after a reading, so
+        // that the ten seconds hold five intervals and not the ends of six.
+        answer(&h, &[a, b]);
+        let start = t0 + 4.0 - 1.0 / 60.0;
+        let out = h.frame_at(start, Vec::new());
+        assert_eq!(
+            peers_asked(&h.sent()).len(),
+            2,
+            "a reading starts the count"
+        );
+        answer(&h, &[a, b]);
+        let (mut now, mut frames, mut readings) = (start + idle_delay(&out).as_secs_f64(), 0, 0);
+        while now <= start + 10.0 {
+            let out = h.frame_at(now, Vec::new());
+            frames += 1;
+            for cause in h.ctx.repaint_causes() {
+                let cause = cause.to_string();
+                assert!(cause.contains("app.rs"), "a frame asked for by {cause}");
+            }
+            let asked = peers_asked(&h.sent());
+            assert!(asked.iter().all(|(_, quiet)| *quiet));
+            readings += asked.len();
+            answer(&h, &[a, b]);
+            let delay = idle_delay(&out);
+            assert!(delay > Duration::ZERO && delay <= poll, "{delay:?}");
+            now += delay.as_secs_f64();
+        }
+        assert_eq!(frames, 5, "one frame per poll interval and no more");
+        assert_eq!(readings, 10, "each frame reads the two servers");
+
+        // Another tab: the timer stops.
+        h.app.view.tab = Tab::Json;
+        h.frame_at(now, Vec::new());
+        h.sent();
+        for later in [1.0, 2.0, 4.0, 600.0] {
+            let out = h.frame_at(now + later, Vec::new());
+            assert_eq!(
+                idle_delay(&out),
+                Duration::MAX,
+                "behind the JSON tab the timer asks for no frame, {later} s on"
+            );
+        }
+        assert_eq!(peers_asked(&h.sent()), [], "and no server is asked");
+    }
+
+    /// PRD 9.10: this application is one node of the map, named as itself, with its edge to
+    /// each server that lists it; a UDP source is drawn in a line and a colour of its own; a
+    /// server that declares its peers and fails to give them says why, and keeps no edge.
+    #[test]
+    fn the_map_names_this_application_udp_sources_and_failures() {
+        let mut h = harness();
+        let ok = peer_server(&mut h, "Answers", "10.0.0.1", 5000, true, ONE_METHOD);
+        let fails = peer_server(&mut h, "Fails", "10.0.0.2", 5000, true, ONE_METHOD);
+        h.events
+            .send(peers_read(
+                ok,
+                Duration::ZERO,
+                serde_json::json!({
+                    "CLIENTS": [{"IP": "10.0.0.50", "PORT": 40001, "NAME": APP_NAME}],
+                    "SENDERS": [{"IP": "10.0.0.77", "PORT": 9002, "PACKETS": 12}]
+                }),
+                Some(0),
+            ))
+            .unwrap();
+        h.events
+            .send(Event::Peers {
+                server_id: fails,
+                at: Instant::now(),
+                result: Err("http://10.0.0.2:5000/?PEERS answered HTTP 500".into()),
+            })
+            .unwrap();
+        h.app.view.tab = Tab::Map;
+        h.frame(Vec::new());
+        let out = h.frame(Vec::new());
+        let this = centre_place(&h, &out, APP_NAME);
+        let says = centre_place(&h, &out, "this application");
+        assert!(
+            says.min.y > this.max.y && says.min.y - this.max.y < 40.0,
+            "under its own name"
+        );
+        centre_place(&h, &out, "1 client, 1 UDP source");
+        centre_place(&h, &out, "UDP source");
+        centre_place(&h, &out, "10.0.0.77:9002");
+        centre_place(&h, &out, "UDP, 12 packets");
+        let edges = drawn_edges(&out);
+        assert_eq!(
+            edges.of(map::EDGE_CLIENT).len(),
+            3,
+            "this application's edge"
+        );
+        let dotted = edges.of(map::EDGE_SENDER);
+        assert!(
+            dotted.len() > 8,
+            "the UDP source in short dashes: {}",
+            dotted.len()
+        );
+        let dash = (dotted[0][1] - dotted[0][0]).length();
+        assert!(dash < 4.0, "short ones, {dash} long");
+        // The failure, on its node, with its reason, whole on screen; the address of the
+        // request is on hover, the node saying already which server it is.
+        centre_place(&h, &out, "peers not read: answered HTTP 500");
+        let model = map::build(
+            &h.app.state,
+            Instant::now(),
+            h.app.config.peers_poll(),
+            APP_NAME,
+        );
+        let node = model.nodes.iter().find(|n| n.title == "Fails").unwrap();
+        assert_eq!(
+            node.detail,
+            ["peers not read: http://10.0.0.2:5000/?PEERS answered HTTP 500"]
+        );
+        // No edge to or from the server that gave no peers: the two edges drawn are this
+        // application's and the UDP source's, both to the server that answered.
+        let at = |title: &str| model.nodes.iter().position(|n| n.title == title).unwrap();
+        let (fails_at, answers_at) = (at("Fails"), at("Answers"));
+        assert_eq!(model.edges.len(), 2);
+        for e in &model.edges {
+            assert_ne!(e.from, fails_at);
+            assert_eq!(e.to, answers_at);
+        }
+    }
+
+    /// The window on the real network service, which names itself as the application does.
+    fn named_service_harness(config: Config) -> Harness {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (ev_tx, ev_rx) = flume::unbounded();
+        let commands =
+            oscq_core::service::spawn_named(rt.handle(), ev_tx, Arc::new(|| {}), APP_NAME);
+        let ctx = egui::Context::default();
+        let app = InspectorApp::with_backend(
+            &ctx,
+            Backend {
+                commands,
+                events: ev_rx,
+                io: rt.handle().clone(),
+            },
+            config,
+            None,
+        );
+        Harness {
+            ctx,
+            app,
+            commands: flume::unbounded().1,
+            events: flume::unbounded().0,
+            _rt: rt,
+        }
+    }
+
+    /// M7, the whole path: the real network service against three synthetic servers, one that
+    /// declares the extension and answers, one that declares it and then fails on `?PEERS`,
+    /// one that declares nothing. The first is told this application's name, is drawn with
+    /// this application and its other client, and its tree badges the method that client
+    /// listens to and no other, this application's own listens left out. The second is drawn
+    /// with its failure. The third is drawn as not publishing its peers, and is neither named
+    /// to nor asked.
+    #[test]
+    fn three_synthetic_servers_are_read_drawn_and_badged_through_the_real_service() {
+        use crate::synthetic::{
+            PeersMode, Reply, SyntheticServer, borrowed, host_info_json, large_routes,
+        };
+        let srv = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let start = |name: &str, declares: bool, mode: PeersMode| {
+            let mut routes = large_routes(300, 9);
+            routes.push((
+                "/?HOST_INFO".to_owned(),
+                Reply::json(host_info_json(name, 9, declares)),
+            ));
+            let s = srv
+                .block_on(SyntheticServer::start_ws("127.0.0.1:0", borrowed(&routes)))
+                .unwrap();
+            s.ws.set_peers(mode);
+            s
+        };
+        let answers = start("answers", true, PeersMode::Serve);
+        let fails = start("fails", true, PeersMode::Fail);
+        // It would answer if asked: the test is that it is not.
+        let silent = start("silent", false, PeersMode::Serve);
+        answers.ws.set_other_peers(
+            vec![serde_json::json!({
+                "IP": "10.0.0.9", "PORT": 40001, "NAME": "Max", "LISTEN": ["/g0/p1"], "PACKETS": 4
+            })],
+            Vec::new(),
+        );
+        let key = |s: &SyntheticServer| format!("127.0.0.1:{}", s.addr.port());
+        let mut h = named_service_harness(Config {
+            manual_entries: vec![key(&answers), key(&fails), key(&silent)],
+            last_selected: Some(key(&answers)),
+            ..Config::default()
+        });
+        // As a launch of the real binary tests does.
+        h.app.startup(&h.ctx.clone(), "map,connect-all");
+        assert_eq!(h.app.view.tab, Tab::Map);
+        let entry = |a: &InspectorApp, key: &str| {
+            let i = a.state.servers.iter().position(|e| e.key() == key).unwrap();
+            a.state.servers[i].server.id
+        };
+        let (keys, own_key) = ([key(&answers), key(&fails), key(&silent)], key(&answers));
+        wait_for(
+            &mut h,
+            "the three connected, their peers read or refused",
+            |a| {
+                a.state
+                    .servers
+                    .iter()
+                    .all(|e| e.conn == ConnState::Connected && e.tree.is_some())
+                    && a.state
+                        .entry(entry(a, &keys[0]))
+                        .unwrap()
+                        .peers
+                        .snapshot
+                        .is_some()
+                    && a.state
+                        .entry(entry(a, &keys[1]))
+                        .unwrap()
+                        .peers
+                        .failure
+                        .is_some()
+                    && a.state.entry(entry(a, &keys[0])).unwrap().ws == WsState::Open
+            },
+        );
+        // A reading made with the socket open: this application is among the clients.
+        h.app
+            .act(&h.ctx.clone(), Action::ReadPeers(PeersScope::All));
+        wait_for(&mut h, "this application among the clients", |a| {
+            a.state
+                .entry(entry(a, &own_key))
+                .and_then(|e| e.peers.snapshot.as_ref())
+                .is_some_and(|s| s.this_client.is_some())
+        });
+        h.frame(Vec::new());
+        let out = h.frame(Vec::new());
+        centre_place(&h, &out, APP_NAME);
+        centre_place(&h, &out, "this application");
+        centre_place(&h, &out, "Max");
+        centre_place(&h, &out, "2 clients, no UDP source");
+        centre_place(&h, &out, "does not publish its peers");
+        centre_place(&h, &out, "peers not read: answered HTTP 500");
+        let edges = drawn_edges(&out);
+        assert_eq!(
+            edges.of(map::EDGE_CLIENT).len(),
+            6,
+            "two edges, this application's and Max's: {:?}",
+            edges.segments
+        );
+        assert_eq!(edges.segments.len(), 6, "and no other");
+
+        // What each server was told and asked.
+        let commands = |s: &SyntheticServer| -> Vec<String> {
+            s.ws.received()
+                .iter()
+                .map(|t| {
+                    let v: serde_json::Value = serde_json::from_str(t).unwrap();
+                    v["COMMAND"].as_str().unwrap().to_owned()
+                })
+                .collect()
+        };
+        let first: serde_json::Value = serde_json::from_str(&answers.ws.received()[0]).unwrap();
+        assert_eq!(
+            first,
+            serde_json::json!({"COMMAND": "CLIENT_NAME", "DATA": "OSCQuery Inspector"}),
+            "named first, under the application's name"
+        );
+        assert!(!commands(&silent).iter().any(|c| c == "CLIENT_NAME"));
+        assert!(
+            !silent.ws.requests().iter().any(|t| t.contains("PEERS")),
+            "the silent server is not asked: {:?}",
+            silent.ws.requests()
+        );
+        assert!(fails.ws.requests().iter().any(|t| t == "/?PEERS"));
+
+        // The tree of the first: the method Max listens to is badged, and no other, though
+        // this application listens to every one of them once they are on screen.
+        h.app.view.tab = Tab::Tree;
+        h.app.act(&h.ctx.clone(), Action::Toggle("/g0".into()));
+        wait_for(&mut h, "/g0 on screen and listened to", |a| {
+            a.state
+                .selected_entry()
+                .is_some_and(|e| e.listening.contains("/g0/p0") && e.listening.contains("/g0/p1"))
+        });
+        srv.block_on(answers.ws.wait("the listens", |w| {
+            w.listens().contains("/g0/p0") && w.listens().contains("/g0/p1")
+        }));
+        // Refresh, as a user would, until a reading made after the listens holds them: a
+        // reading still on its way is not asked again.
+        let holds = |a: &InspectorApp| {
+            a.state
+                .selected_entry()
+                .and_then(|e| e.peers.snapshot.as_ref())
+                .is_some_and(|s| {
+                    s.this_client.is_some_and(|i| {
+                        s.peers.clients[i]
+                            .listen
+                            .as_ref()
+                            .is_some_and(|l| l.iter().any(|p| p == "/g0/p0"))
+                    })
+                })
+        };
+        let end = Instant::now() + Duration::from_secs(10);
+        while !holds(&h.app) {
+            assert!(
+                Instant::now() < end,
+                "no reading holds this application's listens"
+            );
+            h.app
+                .act(&h.ctx.clone(), Action::ReadPeers(PeersScope::Selected));
+            h.frame(Vec::new());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        h.frame(Vec::new());
+        let out = h.frame(Vec::new());
+        assert_eq!(
+            drawn_badges(&h, &out),
+            [("p1".to_owned(), "1".to_owned())],
+            "the one method a peer listens to, counted once: this application is not a peer"
+        );
+    }
+
     /// PRD 10, measured on the synthetic server's 5000 node document. Run on a release build:
-    /// `cargo test --release -p void-oscq -- --ignored budget_ --nocapture --test-threads=1`.
+    /// `cargo test --release -p oscq-inspector -- --ignored budget_ --nocapture --test-threads=1`.
     mod budgets {
         use super::*;
         use crate::synthetic::large_document;
@@ -5521,6 +6927,73 @@ mod tests {
             );
             let budget = Duration::from_millis(8);
             assert!(report("frame while scrolling 5050 rows", budget, times) < budget);
+        }
+
+        /// Map budget: frames of the map tab, eight servers and 24 peers, under 8 ms at p95,
+        /// the pointer moving over the map and the map read again on every frame. Measured on
+        /// the CPU, headless: the whole frame plus tessellation, GPU time not included. The
+        /// real binary test measures the same with its rendering.
+        #[test]
+        #[ignore = "budget, release build"]
+        fn budget_frame_time_map_8_servers_24_peers() {
+            release_only();
+            let mut h = harness();
+            let doc = large_document(200);
+            let ids: Vec<ServerId> = (0..8)
+                .map(|i| {
+                    peer_server(
+                        &mut h,
+                        &format!("map {i}"),
+                        &format!("10.0.0.{}", i + 1),
+                        5000,
+                        true,
+                        &doc,
+                    )
+                })
+                .collect();
+            let reading = |i: usize| {
+                let clients: Vec<serde_json::Value> = (0..3)
+                    .map(|c| {
+                        serde_json::json!({
+                            "IP": format!("10.1.{i}.{}", c + 1), "PORT": 40000 + c,
+                            "NAME": format!("peer {i}.{c}"),
+                            "LISTEN": [format!("/g0/p{c}"), format!("/g1/p{c}")],
+                            "PACKETS": 10 * c
+                        })
+                    })
+                    .collect();
+                serde_json::json!({ "CLIENTS": clients })
+            };
+            h.app.view.tab = Tab::Map;
+            h.frame(Vec::new());
+            let mut times = Vec::new();
+            for f in 0..400 {
+                // A new reading of every server on each frame: the model is built again.
+                for (i, id) in ids.iter().enumerate() {
+                    h.events
+                        .send(peers_read(*id, Duration::ZERO, reading(i), None))
+                        .unwrap();
+                }
+                let x = 300.0 + (f % 100) as f32 * 5.0;
+                let t0 = Instant::now();
+                let out = h.frame(vec![egui::Event::PointerMoved(egui::pos2(x, 350.0))]);
+                let _ = h.ctx.tessellate(out.shapes, out.pixels_per_point);
+                times.push(t0.elapsed());
+                h.sent();
+            }
+            let model = map::build(
+                &h.app.state,
+                Instant::now(),
+                h.app.config.peers_poll(),
+                APP_NAME,
+            );
+            assert_eq!(
+                (model.nodes.len(), model.edges.len()),
+                (8 + 24, 24),
+                "eight servers and 24 peers drawn"
+            );
+            let budget = Duration::from_millis(8);
+            assert!(report("frame on the map, 8 servers and 24 peers", budget, times) < budget);
         }
 
         /// Budget 5: connected, WebSocket live, 50 pinned listens: an idle frame asks for no
@@ -5635,7 +7108,7 @@ mod tests {
             manual_entries: vec!["10.0.0.2:2345".into(), "bad".into()],
             ..Config::default()
         };
-        let app = VoidApp::with_backend(
+        let app = InspectorApp::with_backend(
             &egui::Context::default(),
             Backend {
                 commands: cmd_tx,
@@ -5663,7 +7136,7 @@ mod tests {
             last_selected: Some("10.0.0.2:2345".into()),
             ..Config::default()
         };
-        let app = VoidApp::with_backend(
+        let app = InspectorApp::with_backend(
             &egui::Context::default(),
             Backend {
                 commands: cmd_tx,

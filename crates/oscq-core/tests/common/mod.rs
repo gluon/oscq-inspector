@@ -2,7 +2,7 @@
 
 #![allow(dead_code)]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -52,6 +52,12 @@ impl Reply {
 /// target, for example `/`, `/?HOST_INFO`, `/foo?VALUE`. Unknown targets answer 404. When its
 /// WebSocket is accepting, an upgrade request on any target opens a session driven by
 /// [`WsControl`]; otherwise the upgrade is answered like a plain GET.
+///
+/// The `PEERS` and `CLIENT_NAME` extension (PRD 7.6) follows [`PeersMode`]: `/?PEERS`, on the
+/// root only, answers the sessions open at that moment, unless the route table holds a reply
+/// for that target, which then wins. The declaration itself is the `HOST_INFO` route's, see
+/// [`host_info_json`]: a server that declares and one that answers are two things, so that a
+/// test can have either without the other.
 pub struct SyntheticServer {
     pub addr: SocketAddr,
     pub ws: Arc<WsControl>,
@@ -71,6 +77,31 @@ pub enum Push {
     Drop,
 }
 
+/// What a [`SyntheticServer`] does with `/?PEERS`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PeersMode {
+    /// Not implemented: the target is unknown and answers 404, like any other. With a
+    /// `HOST_INFO` that declares nothing, this is the server that knows nothing of the extension.
+    #[default]
+    Off,
+    /// Answers its open WebSocket sessions as `CLIENTS`, with the entries added by the test,
+    /// and `SENDERS` as the test set them.
+    Serve,
+    /// Answers 500. With a `HOST_INFO` that declares the extension, this is the server that
+    /// declares and then fails.
+    Fail,
+}
+
+/// One open WebSocket session, as `/?PEERS` describes it.
+#[derive(Debug, Clone)]
+struct Session {
+    addr: SocketAddr,
+    name: Option<String>,
+    listens: Vec<String>,
+    /// Binary frames, OSC packets, received from the client.
+    packets: u64,
+}
+
 /// The WebSocket side of a [`SyntheticServer`], shared with the test.
 pub struct WsControl {
     accept: AtomicBool,
@@ -83,6 +114,15 @@ pub struct WsControl {
     sessions: AtomicUsize,
     /// The last value pushed for each path, which `?VALUE` answers.
     values: Mutex<HashMap<String, Vec<OscType>>>,
+    /// Targets of the plain GET requests received, in order.
+    requests: Mutex<Vec<String>>,
+    peers: Mutex<PeersMode>,
+    /// The sessions open now, by the order they opened in.
+    open: Mutex<BTreeMap<usize, Session>>,
+    /// `CLIENTS` entries standing for clients other than the sessions open now.
+    extra_clients: Mutex<Vec<serde_json::Value>>,
+    /// `SENDERS` entries.
+    senders: Mutex<Vec<serde_json::Value>>,
 }
 
 impl WsControl {
@@ -94,7 +134,57 @@ impl WsControl {
             listens: Mutex::new(HashSet::new()),
             sessions: AtomicUsize::new(0),
             values: Mutex::new(HashMap::new()),
+            requests: Mutex::new(Vec::new()),
+            peers: Mutex::new(PeersMode::Off),
+            open: Mutex::new(BTreeMap::new()),
+            extra_clients: Mutex::new(Vec::new()),
+            senders: Mutex::new(Vec::new()),
         }
+    }
+
+    /// What `/?PEERS` does from now on.
+    pub fn set_peers(&self, mode: PeersMode) {
+        *self.peers.lock().unwrap() = mode;
+    }
+
+    /// The `CLIENTS` entries answered besides the open sessions, and the `SENDERS` entries.
+    pub fn set_other_peers(
+        &self,
+        clients: Vec<serde_json::Value>,
+        senders: Vec<serde_json::Value>,
+    ) {
+        *self.extra_clients.lock().unwrap() = clients;
+        *self.senders.lock().unwrap() = senders;
+    }
+
+    /// Targets of the plain GET requests received so far, in order.
+    pub fn requests(&self) -> Vec<String> {
+        self.requests.lock().unwrap().clone()
+    }
+
+    /// The reply to `/?PEERS` as it stands: one `CLIENTS` entry per open session, with only the
+    /// fields this server can fill, then the entries the test added.
+    pub fn peers_json(&self) -> serde_json::Value {
+        let mut clients: Vec<serde_json::Value> = self
+            .open
+            .lock()
+            .unwrap()
+            .values()
+            .map(|s| {
+                let mut c = serde_json::json!({
+                    "IP": s.addr.ip().to_string(),
+                    "PORT": s.addr.port(),
+                    "LISTEN": s.listens,
+                    "PACKETS": s.packets,
+                });
+                if let Some(name) = &s.name {
+                    c["NAME"] = serde_json::json!(name);
+                }
+                c
+            })
+            .collect();
+        clients.extend(self.extra_clients.lock().unwrap().iter().cloned());
+        serde_json::json!({ "CLIENTS": clients, "SENDERS": *self.senders.lock().unwrap() })
     }
 
     /// Whether upgrade requests are accepted from now on.
@@ -162,11 +252,11 @@ impl SyntheticServer {
         let ws = Arc::new(WsControl::new(accept_ws));
         let control = Arc::clone(&ws);
         let task = tokio::spawn(async move {
-            while let Ok((stream, _)) = listener.accept().await {
+            while let Ok((stream, peer)) = listener.accept().await {
                 let routes = Arc::clone(&routes);
                 let control = Arc::clone(&control);
                 tokio::spawn(async move {
-                    let _ = serve(stream, &routes, &control).await;
+                    let _ = serve(stream, peer, &routes, &control).await;
                 });
             }
         });
@@ -186,6 +276,7 @@ impl Drop for SyntheticServer {
 
 async fn serve(
     mut stream: TcpStream,
+    peer: SocketAddr,
     routes: &HashMap<String, Reply>,
     ws: &WsControl,
 ) -> std::io::Result<()> {
@@ -217,8 +308,18 @@ async fn serve(
         );
         stream.write_all(response.as_bytes()).await?;
         let socket = WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
-        ws.sessions.fetch_add(1, Ordering::SeqCst);
-        ws_session(socket, ws, pushes).await;
+        let session = ws.sessions.fetch_add(1, Ordering::SeqCst);
+        ws.open.lock().unwrap().insert(
+            session,
+            Session {
+                addr: peer,
+                name: None,
+                listens: Vec::new(),
+                packets: 0,
+            },
+        );
+        ws_session(socket, session, ws, pushes).await;
+        ws.open.lock().unwrap().remove(&session);
         return Ok(());
     }
     let target = head
@@ -227,6 +328,7 @@ async fn serve(
         .and_then(|l| l.split(' ').nth(1))
         .unwrap_or("")
         .to_owned();
+    ws.requests.lock().unwrap().push(target.clone());
     // A value pushed over the WebSocket is the server's current value: `?VALUE` answers it.
     let pushed = target
         .strip_suffix("?VALUE")
@@ -235,8 +337,15 @@ async fn serve(
             let body = serde_json::json!({ "VALUE": oscq_core::ws::args_to_json(&args) });
             Reply::json(body.to_string())
         });
+    // `?PEERS` on the root only; a reply the test put in the route table wins.
+    let peers = || match (target.as_str(), *ws.peers.lock().unwrap()) {
+        ("/?PEERS", PeersMode::Serve) => Some(Reply::json(ws.peers_json().to_string())),
+        ("/?PEERS", PeersMode::Fail) => Some(Reply::Body(500, Vec::new())),
+        _ => None,
+    };
     let reply = pushed
         .or_else(|| routes.get(&target).cloned())
+        .or_else(peers)
         .unwrap_or(Reply::Body(404, Vec::new()));
     let response = match reply {
         Reply::Hang => {
@@ -260,12 +369,19 @@ async fn serve(
 
 async fn ws_session(
     socket: WebSocketStream<TcpStream>,
+    session: usize,
     ws: &WsControl,
     mut pushes: broadcast::Receiver<Push>,
 ) {
     let (mut sink, mut incoming) = socket.split();
     let mut listens = HashSet::new();
     ws.listens.lock().unwrap().clear();
+    // What `/?PEERS` says of this session.
+    let describe = |edit: &dyn Fn(&mut Session)| {
+        if let Some(s) = ws.open.lock().unwrap().get_mut(&session) {
+            edit(s);
+        }
+    };
     loop {
         tokio::select! {
             m = incoming.next() => match m {
@@ -280,11 +396,16 @@ async fn ws_session(
                         Some("IGNORE") => {
                             listens.remove(&path);
                         }
+                        Some("CLIENT_NAME") => describe(&|s| s.name = Some(path.clone())),
                         _ => {}
                     }
                     ws.received.lock().unwrap().push(t.as_str().to_owned());
                     *ws.listens.lock().unwrap() = listens.clone();
+                    let mut sorted: Vec<String> = listens.iter().cloned().collect();
+                    sorted.sort();
+                    describe(&|s| s.listens = sorted.clone());
                 }
+                Some(Ok(Message::Binary(_))) => describe(&|s| s.packets += 1),
                 Some(Ok(_)) => {}
                 Some(Err(_)) | None => return,
             },
@@ -360,6 +481,18 @@ pub fn large_group(g: usize, n: usize) -> String {
     )
 }
 
+/// A `HOST_INFO` naming the server and sending OSC to `osc_port`. With `peers`, it declares the
+/// `PEERS` and `CLIENT_NAME` extension (PRD 7.6); without, it declares nothing of it, as every
+/// server did before the extension existed.
+pub fn host_info_json(name: &str, osc_port: u16, peers: bool) -> String {
+    let mut extensions = serde_json::json!({"VALUE": true, "LISTEN": true});
+    if peers {
+        extensions["PEERS"] = true.into();
+        extensions["CLIENT_NAME"] = true.into();
+    }
+    serde_json::json!({"NAME": name, "OSC_PORT": osc_port, "EXTENSIONS": extensions}).to_string()
+}
+
 /// The routes of a server publishing [`large_document`]: the root, each container, the `?VALUE`
 /// of each method, and a `HOST_INFO` sending OSC to `osc_port`.
 pub fn large_routes(n: usize, osc_port: u16) -> Vec<(String, Reply)> {
@@ -411,16 +544,22 @@ pub struct Harness {
 }
 
 pub fn harness() -> Harness {
+    harness_named(None)
+}
+
+/// The network service giving `client_name` to the servers that take one.
+pub fn harness_named(client_name: Option<&str>) -> Harness {
     let (tx, rx) = flume::unbounded();
     let notified = Arc::new(AtomicUsize::new(0));
     let n = Arc::clone(&notified);
-    let commands = service::spawn(
-        &tokio::runtime::Handle::current(),
-        tx,
-        Arc::new(move || {
-            n.fetch_add(1, Ordering::SeqCst);
-        }),
-    );
+    let notify: service::Notify = Arc::new(move || {
+        n.fetch_add(1, Ordering::SeqCst);
+    });
+    let runtime = tokio::runtime::Handle::current();
+    let commands = match client_name {
+        Some(name) => service::spawn_named(&runtime, tx, notify, name),
+        None => service::spawn(&runtime, tx, notify),
+    };
     Harness {
         commands,
         events: rx,

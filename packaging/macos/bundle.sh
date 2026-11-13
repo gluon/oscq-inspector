@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# Builds "Void OSCQ.app" from the aarch64 and x86_64 release builds, joined with lipo into one
+# Builds "OSCQuery Inspector.app" from the aarch64 and x86_64 release builds, joined with lipo into one
 # universal binary, with its icon and the license texts, ad hoc signed. Run on macOS from the
 # workspace root, after:
-#   cargo build --release --locked -p void-oscq --target aarch64-apple-darwin
-#   cargo build --release --locked -p void-oscq --target x86_64-apple-darwin
+#   cargo build --release --locked -p oscq-inspector --target aarch64-apple-darwin
+#   cargo build --release --locked -p oscq-inspector --target x86_64-apple-darwin
 # Arguments: version, output directory. Prints the path of the bundle.
 set -euo pipefail
 version="$1"
 out="$2"
-app="$out/Void OSCQ.app"
+app="$out/OSCQuery Inspector.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 
-lipo -create -output "$app/Contents/MacOS/void-oscq" \
-    target/aarch64-apple-darwin/release/void-oscq \
-    target/x86_64-apple-darwin/release/void-oscq
-archs=$(lipo -archs "$app/Contents/MacOS/void-oscq")
+lipo -create -output "$app/Contents/MacOS/oscq-inspector" \
+    target/aarch64-apple-darwin/release/oscq-inspector \
+    target/x86_64-apple-darwin/release/oscq-inspector
+archs=$(lipo -archs "$app/Contents/MacOS/oscq-inspector")
 if [[ "$archs" != *arm64* || "$archs" != *x86_64* ]]; then
     echo "FAIL: the binary is not universal, it holds: $archs"
     exit 1
@@ -27,7 +27,7 @@ plutil -lint "$app/Contents/Info.plist"
 # The icon, drawn by the application's own code, on the build machine's architecture.
 icons=$(mktemp -d)
 host=$(uname -m | sed 's/arm64/aarch64/')
-cargo run --release --locked -p void-oscq --target "$host-apple-darwin" --example icons -- "$icons" >&2
+cargo run --release --locked -p oscq-inspector --target "$host-apple-darwin" --example icons -- "$icons" >&2
 iconutil -c icns "$icons/AppIcon.iconset" -o "$app/Contents/Resources/AppIcon.icns"
 rm -rf "$icons"
 if ! file "$app/Contents/Resources/AppIcon.icns" | grep -q "Mac OS X icon"; then

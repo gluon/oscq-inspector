@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>Void OSCQ</string>
+	<string>OSCQuery Inspector</string>
 	<key>CFBundleDisplayName</key>
-	<string>Void OSCQ</string>
+	<string>OSCQuery Inspector</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.structure-void.void-oscq</string>
 	<key>CFBundleExecutable</key>
-	<string>void-oscq</string>
+	<string>oscq-inspector</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleIconFile</key>
@@ -25,7 +25,7 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Void OSCQ finds OSCQuery servers on your local network, reads their address space and sends them OSC.</string>
+	<string>OSCQuery Inspector finds OSCQuery servers on your local network, reads their address space and sends them OSC.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_oscjson._tcp</string>

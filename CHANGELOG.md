@@ -1,8 +1,19 @@
 # Changelog
 
-Every published version of Void OSCQ, newest first. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html). A version's date is the date of its tag.
+Every published version of OSCQuery Inspector, formerly void-oscq and published under that name up to 0.2.3, newest first. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html). A version's date is the date of its tag.
 
 ## [Unreleased]
+
+### Added
+
+- **Map**, a fourth tab: every server, and what each one that publishes its peers says of its connections, one arrow per client, UDP sources apart, this application named as itself. Read when the tab opens, then every two seconds while it is shown, never behind another tab; each server says how old its reading is, and past three intervals it is marked stale. A server that does not publish its peers is drawn and says so, with no arrow.
+- **Listeners in the tree**: on a server that publishes its peers, a badge on each method other clients listen to, with their count, their names on hover; the line above the tree says when they were read, or that the server does not publish them.
+- **`PEERS` and `CLIENT_NAME`**: the application names itself to the servers that declare the extension, on every connection, and reads their peers. Nothing of it is sent to a server that does not declare it.
+- **`peers_poll_ms`** in the settings file, the interval of the map's readings, 2000 by default.
+
+### Changed
+
+- **Name**: the application is OSCQuery Inspector. Its crate, its binary, its downloads and its `.desktop` file are `oscq-inspector`; on macOS the bundle is **OSCQuery Inspector.app**. The macOS bundle identifier and the settings folder keep the former name, so that an installed copy stays the same application to its system and finds its settings again.
 
 ## [0.2.3] - 2026-10-14
 

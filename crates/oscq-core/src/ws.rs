@@ -32,6 +32,12 @@ pub fn ignore_text(path: &str) -> String {
     json!({"COMMAND": "IGNORE", "DATA": path}).to_string()
 }
 
+/// `CLIENT_NAME` with this client's name, as a text frame: the extension of PRD 7.6, sent only
+/// to a server that declares it.
+pub fn client_name_text(name: &str) -> String {
+    json!({"COMMAND": "CLIENT_NAME", "DATA": name}).to_string()
+}
+
 /// A text command from the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerCommand {
@@ -250,6 +256,11 @@ mod tests {
         assert_eq!(l, json!({"COMMAND":"LISTEN","DATA":"/a b"}));
         let i: Value = serde_json::from_str(&ignore_text("/x")).unwrap();
         assert_eq!(i, json!({"COMMAND":"IGNORE","DATA":"/x"}));
+        let n: Value = serde_json::from_str(&client_name_text("An \"Inspector\"")).unwrap();
+        assert_eq!(
+            n,
+            json!({"COMMAND":"CLIENT_NAME","DATA":"An \"Inspector\""})
+        );
 
         let p = |s: &str| parse_server_text(s);
         assert_eq!(

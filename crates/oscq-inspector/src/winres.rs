@@ -179,11 +179,11 @@ mod tests {
 
     /// The resource file is the one the resource compiler makes of the same icon: `llvm-rc`
     /// compiling `1 ICON "app.ico"`. Needs `llvm-rc` on the PATH, fails without it:
-    /// cargo test -p void-oscq -- --ignored same_resource_as_llvm_rc
+    /// cargo test -p oscq-inspector -- --ignored same_resource_as_llvm_rc
     #[test]
     #[ignore = "needs llvm-rc"]
     fn same_resource_as_llvm_rc() {
-        let dir = std::env::temp_dir().join(format!("void-oscq-rc-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("oscq-inspector-rc-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("app.ico"), ico(&images())).unwrap();
         std::fs::write(dir.join("app.rc"), "1 ICON \"app.ico\"\n").unwrap();
