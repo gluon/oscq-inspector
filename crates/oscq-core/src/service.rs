@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasher;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -20,6 +21,7 @@ use crate::document::ParseReport;
 use crate::host_info::{HostInfo, OscDestination, SendBlocked};
 use crate::osc::{OscUdpSender, coerce_args, encode_message};
 use crate::path::OscPath;
+use crate::peers::PeersReading;
 use crate::server::{DiscoveredServer, ServerId};
 use crate::types::TypeSignature;
 use crate::ws::{self, ServerCommand};
@@ -76,6 +78,15 @@ pub enum Command {
     Ignore {
         server_id: ServerId,
         path: String,
+    },
+    /// `?PEERS` on the root of one server (PRD 7.6), answered by [`Event::Peers`]. Never sent to
+    /// a server whose `HOST_INFO` does not declare the extension: the answer is then the reason,
+    /// with no request made. `quiet`: the answer is queued without waking the UI, which reads it
+    /// on its next frame; for the readings a timer asks for, so that a poll of several servers
+    /// costs the window one frame and not one per server.
+    RefreshPeers {
+        server_id: ServerId,
+        quiet: bool,
     },
     Shutdown,
 }
@@ -209,6 +220,13 @@ pub enum Event {
         state: TransportState,
     },
     TrafficLogged(TrafficRecord),
+    /// The answer to [`Command::RefreshPeers`]: what the server published at `at`, or why it
+    /// could not be read. `at` is when the answer arrived here, not when the UI took it.
+    Peers {
+        server_id: ServerId,
+        at: Instant,
+        result: Result<PeersReading, String>,
+    },
     Error {
         server_id: Option<ServerId>,
         error: UserFacingError,
@@ -237,6 +255,9 @@ struct Conn {
     /// Wakes the WebSocket task when `listens` changes. Dropped with the connection, which stops
     /// the task.
     ws_wake: Option<flume::Sender<()>>,
+    /// This end of the open WebSocket, `None` while there is none: the address the server lists
+    /// this application under in `?PEERS`.
+    ws_local: Option<SocketAddr>,
 }
 
 #[derive(Clone)]
@@ -247,12 +268,41 @@ struct Shared {
     sender: Arc<tokio::sync::Mutex<OscUdpSender>>,
     events: flume::Sender<Event>,
     notify: Notify,
+    /// The name sent with `CLIENT_NAME` to the servers that declare it; `None` sends none.
+    client_name: Option<Arc<str>>,
 }
 
 impl Shared {
     fn emit(&self, event: Event) {
         if self.events.send(event).is_ok() {
             (self.notify)();
+        }
+    }
+
+    /// Queues an event without waking the UI: it is read on the UI's next frame, whatever asks
+    /// for that frame.
+    fn emit_quiet(&self, event: Event) {
+        let _ = self.events.send(event);
+    }
+
+    /// The name to send on a new socket of a connection: this client's, when it has one and
+    /// the server's `HOST_INFO` declares `CLIENT_NAME`. `None` otherwise: nothing is sent.
+    fn client_name_for(&self, id: ServerId, generation: u64) -> Option<Arc<str>> {
+        let name = self.client_name.clone()?;
+        let conns = self.conns.lock().ok()?;
+        let c = conns.get(&id).filter(|c| c.generation == generation)?;
+        c.host_info
+            .as_ref()
+            .is_some_and(HostInfo::takes_client_name)
+            .then_some(name)
+    }
+
+    /// Records this end of a connection's WebSocket, or that it has none any more.
+    fn set_ws_local(&self, id: ServerId, generation: u64, local: Option<SocketAddr>) {
+        if let Ok(mut conns) = self.conns.lock()
+            && let Some(c) = conns.get_mut(&id).filter(|c| c.generation == generation)
+        {
+            c.ws_local = local;
         }
     }
 
@@ -357,11 +407,33 @@ impl Shared {
 }
 
 /// Starts the service on `runtime`. Returns the command sender. The service stops on
-/// [`Command::Shutdown`] or when every sender is dropped.
+/// [`Command::Shutdown`] or when every sender is dropped. It gives no name to servers: see
+/// [`spawn_named`].
 pub fn spawn(
     runtime: &tokio::runtime::Handle,
     events: flume::Sender<Event>,
     notify: Notify,
+) -> flume::Sender<Command> {
+    start(runtime, events, notify, None)
+}
+
+/// [`spawn`], naming this client: `client_name` is sent with `CLIENT_NAME` on every WebSocket
+/// opened to a server that declares the command, each reconnection included (PRD 7.6), and to
+/// no other server.
+pub fn spawn_named(
+    runtime: &tokio::runtime::Handle,
+    events: flume::Sender<Event>,
+    notify: Notify,
+    client_name: &str,
+) -> flume::Sender<Command> {
+    start(runtime, events, notify, Some(Arc::from(client_name)))
+}
+
+fn start(
+    runtime: &tokio::runtime::Handle,
+    events: flume::Sender<Event>,
+    notify: Notify,
+    client_name: Option<Arc<str>>,
 ) -> flume::Sender<Command> {
     let (tx, rx) = flume::unbounded();
     let shared = Shared {
@@ -370,6 +442,7 @@ pub fn spawn(
         sender: Arc::new(tokio::sync::Mutex::new(OscUdpSender::new())),
         events,
         notify,
+        client_name,
     };
     runtime.spawn(run(rx, shared));
     tx
@@ -406,6 +479,7 @@ async fn run(rx: flume::Receiver<Command>, shared: Shared) {
                             generation,
                             listens: HashSet::new(),
                             ws_wake: None,
+                            ws_local: None,
                         },
                     );
                 }
@@ -466,6 +540,9 @@ async fn run(rx: flume::Receiver<Command>, shared: Shared) {
                 shared.edit_listens(server_id, |l| {
                     l.remove(&path);
                 });
+            }
+            Command::RefreshPeers { server_id, quiet } => {
+                tokio::spawn(refresh_peers(shared.clone(), server_id, quiet));
             }
         }
     }
@@ -582,6 +659,58 @@ async fn refresh_value(shared: Shared, id: ServerId, path: String) {
         Ok(_) => {}
         Err(e) => shared.error(id, Operation::ReadValue, Some(path), e.to_string()),
     }
+}
+
+/// `?PEERS` on one server, answered by one [`Event::Peers`]. The request is made only to a
+/// connected server whose `HOST_INFO` declares the extension (PRD 7.6); otherwise the answer is
+/// the reason. An answer for a connection that was closed or replaced meanwhile is dropped.
+async fn refresh_peers(shared: Shared, id: ServerId, quiet: bool) {
+    let report = |result: Result<PeersReading, String>| {
+        let event = Event::Peers {
+            server_id: id,
+            at: Instant::now(),
+            result,
+        };
+        if quiet {
+            shared.emit_quiet(event);
+        } else {
+            shared.emit(event);
+        }
+    };
+    let context = shared.conns.lock().ok().and_then(|c| {
+        c.get(&id).map(|c| {
+            let declared = c.host_info.as_ref().is_some_and(HostInfo::publishes_peers);
+            (c.client.clone(), c.generation, declared)
+        })
+    });
+    let Some((client, generation, declared)) = context else {
+        return report(Err("not connected".to_owned()));
+    };
+    if !declared {
+        return report(Err(
+            "the server does not declare PEERS in its HOST_INFO".to_owned()
+        ));
+    }
+    let result = client.fetch_peers().await;
+    // This application's own socket on that server, as it is now that the answer is here.
+    let local = shared.conns.lock().ok().and_then(|c| {
+        c.get(&id)
+            .filter(|c| c.generation == generation)
+            .map(|c| c.ws_local)
+    });
+    let Some(local) = local else {
+        return;
+    };
+    report(match result {
+        Ok((peers, diagnostics)) => {
+            for d in &diagnostics {
+                tracing::debug!(kind = ?d.kind, "PEERS diagnostic");
+            }
+            let this_client = local.and_then(|l| peers.client_at(l));
+            Ok(PeersReading { peers, this_client })
+        }
+        Err(e) => Err(e.to_string()),
+    });
 }
 
 async fn send(
@@ -734,7 +863,10 @@ async fn websocket(shared: Shared, id: ServerId, generation: u64, url: String, a
                     tokio::spawn(refresh_tree(shared.clone(), id, "/".to_owned()));
                 }
                 opened_before = true;
-                match session(&shared, id, generation, stream, &wake).await {
+                shared.set_ws_local(id, generation, local_address(&stream));
+                let end = session(&shared, id, generation, stream, &wake).await;
+                shared.set_ws_local(id, generation, None);
+                match end {
                     SessionEnd::Stopped => return,
                     SessionEnd::Lost(r) => r,
                 }
@@ -784,6 +916,15 @@ async fn open_websocket(url: &str) -> Result<WsStream, String> {
     }
 }
 
+/// This end of an open WebSocket. OSCQuery sockets are plain `ws://`: a wrapped stream gives
+/// no address here, and the connection is then not looked for among a server's clients.
+fn local_address(stream: &WsStream) -> Option<SocketAddr> {
+    match stream.get_ref() {
+        tokio_tungstenite::MaybeTlsStream::Plain(tcp) => tcp.local_addr().ok(),
+        _ => None,
+    }
+}
+
 /// Same as the HTTP connect timeout.
 const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -797,6 +938,13 @@ async fn session(
     wake: &flume::Receiver<()>,
 ) -> SessionEnd {
     let (mut sink, mut incoming) = stream.split();
+    // PRD 7.6: once on every socket, the first one and each reconnection, since a new socket is
+    // a new client to the server; and only to a server that declares the command.
+    if let Some(name) = shared.client_name_for(id, generation)
+        && let Err(e) = sink.send(Message::text(ws::client_name_text(&name))).await
+    {
+        return SessionEnd::Lost(e.to_string());
+    }
     // What this server has been asked to send. Empty on a new socket: the server forgot.
     let mut sent: HashSet<String> = HashSet::new();
     let mut sync_needed = true;

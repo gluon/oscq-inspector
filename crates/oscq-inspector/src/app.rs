@@ -20,9 +20,12 @@ use rosc::{OscColor, OscType};
 
 use crate::config::{self, Config, Theme, WindowGeometry};
 use crate::json_view::{self, Line, Token};
+use crate::map;
 use crate::presets;
 use crate::rate::{INTERVAL, RateLimiter};
-use crate::state::{AppState, ConnState, ServerEntry, WsState};
+use crate::state::{
+    AppState, ConnState, PeersSnapshot, PeersView, ServerEntry, WsState, client_label,
+};
 use crate::style::{self, GRID, GROUP_GAP, ROW_H};
 use crate::traffic;
 use crate::tree::{self, Hit, NodeIndex, Row};
@@ -70,6 +73,17 @@ enum Tab {
     Tree,
     Json,
     Traffic,
+    /// The setup as the servers publish it (PRD 9.10).
+    Map,
+}
+
+/// The servers a reading of `?PEERS` is asked of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PeersScope {
+    /// The selected server: what the tree's listener badges need.
+    Selected,
+    /// Every server: what the map draws.
+    All,
 }
 
 enum Action {
@@ -91,6 +105,8 @@ enum Action {
     Send(SendReq, SendMode),
     RefreshValue(String),
     RefreshTree(String),
+    /// Reads `?PEERS` again, at the user's request (PRD 7.6).
+    ReadPeers(PeersScope),
     Copy(String),
     Save {
         stem: &'static str,
@@ -163,6 +179,19 @@ struct View {
     about_menu_installed: bool,
     note: Option<String>,
     geometry_dirty_since: Option<Instant>,
+    /// When the map's next reading of every server is due, in the window's own time, while the
+    /// map is the visible tab; `None` whenever it is not. The one timer of the application: it
+    /// does not run behind another tab (PRD 7.6, 10).
+    peers_due: Option<f64>,
+    /// The server whose peers were read for the tree tab, since that tab was opened on it.
+    tree_peers_for: Option<ServerId>,
+    /// The metadata column of the tree as last drawn: narrowed to the flags, it holds no badge.
+    tree_meta_w: Option<f32>,
+    /// The part of the map in view, in the map's own coordinates, once it has been shown.
+    map_scene: Option<egui::Rect>,
+    /// The extent of the map the view was last fitted to, until the user moves the view.
+    map_fitted: Option<egui::Rect>,
+    map_moved: bool,
 }
 
 struct Owned {
@@ -202,8 +231,13 @@ impl InspectorApp {
         let (events_tx, events_rx) = flume::unbounded();
         let repaint = ctx.clone();
         let notify: oscq_core::Notify = Arc::new(move || repaint.request_repaint());
-        let commands =
-            oscq_core::service::spawn(runtime.handle(), events_tx.clone(), notify.clone());
+        // Under its own name, for the servers that take one (PRD 7.6).
+        let commands = oscq_core::service::spawn_named(
+            runtime.handle(),
+            events_tx.clone(),
+            notify.clone(),
+            APP_NAME,
+        );
         let mut discovery = MdnsSdDiscovery::default();
         let mut startup_error = config_warning;
         match discovery.start() {
@@ -287,6 +321,31 @@ impl InspectorApp {
         app
     }
 
+    /// What a launch is asked besides its config, as words separated by commas: `map` opens on
+    /// the map tab, `connect-all` connects every known server instead of the selected one
+    /// alone. For the real binary tests, which have no hand to click with; the variable
+    /// `OSCQ_INSPECTOR_STARTUP` carries it, and nothing is kept of it.
+    pub fn startup(&mut self, ctx: &egui::Context, what: &str) {
+        for word in what.split(',').map(str::trim) {
+            match word {
+                "map" => self.view.tab = Tab::Map,
+                "connect-all" => {
+                    let idle: Vec<ServerId> = self
+                        .state
+                        .servers
+                        .iter()
+                        .filter(|e| e.server.kind.connectable() && e.conn == ConnState::Idle)
+                        .map(|e| e.server.id)
+                        .collect();
+                    for id in idle {
+                        self.act(ctx, Action::Connect(id));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// One frame. Everything the window shows comes from here.
     pub fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
@@ -350,6 +409,90 @@ impl InspectorApp {
             self.act(&ctx, a);
         }
         self.sync_listens();
+        self.read_peers_when_due(&ctx);
+    }
+
+    /// Asks the servers in `scope` for their peers: those connected that declare `PEERS`, and
+    /// no other (PRD 7.6), each asked again only once its last answer is in.
+    fn read_peers(&mut self, scope: PeersScope, quiet: bool) {
+        let selected = self.state.selected;
+        for e in &mut self.state.servers {
+            let wanted = scope == PeersScope::All || selected == Some(e.server.id);
+            if wanted && e.peers_readable() && !e.peers.asked {
+                e.peers.asked = true;
+                let _ = self.backend.commands.send(Command::RefreshPeers {
+                    server_id: e.server.id,
+                    quiet,
+                });
+            }
+        }
+    }
+
+    /// PRD 7.6: `?PEERS` is read when a tab that shows it is opened on a server, and, while the
+    /// map is the visible tab, on a timer. Never on a timer otherwise: this is the one place
+    /// where the window asks to be woken at rest, and it does so only with the map in view.
+    /// The timer's readings are quiet: their answers wait for the timer's next frame, so that
+    /// a poll costs the window one frame whatever the number of servers.
+    fn read_peers_when_due(&mut self, ctx: &egui::Context) {
+        let tree_for = self
+            .state
+            .selected_entry()
+            .filter(|e| self.view.tab == Tab::Tree && e.peers_readable())
+            .map(|e| e.server.id);
+        if tree_for != self.view.tree_peers_for {
+            self.view.tree_peers_for = tree_for;
+            if tree_for.is_some() {
+                self.read_peers(PeersScope::Selected, false);
+            }
+        }
+        // The map shows only with a server selected: see `main_pane`.
+        if self.view.tab != Tab::Map || self.state.selected.is_none() {
+            self.view.peers_due = None;
+            return;
+        }
+        let now = ctx.input(|i| i.time);
+        let interval = self.config.peers_poll().as_secs_f64();
+        match self.view.peers_due {
+            // The tab opens: every server at once, each shown as it answers.
+            None => {
+                self.read_peers(PeersScope::All, false);
+                self.view.peers_due = Some(now + interval);
+            }
+            Some(due) if now >= due => {
+                self.read_peers(PeersScope::All, true);
+                self.view.peers_due = Some(now + interval);
+            }
+            Some(_) => {
+                // A server that could not be read when the tab opened, connected since: its
+                // first reading does not wait for the timer.
+                let first: Vec<ServerId> = self
+                    .state
+                    .servers
+                    .iter()
+                    .filter(|e| {
+                        e.peers_readable()
+                            && !e.peers.asked
+                            && e.peers.snapshot.is_none()
+                            && e.peers.failure.is_none()
+                    })
+                    .map(|e| e.server.id)
+                    .collect();
+                for id in first {
+                    if let Some(e) = self.state.entry_mut(id) {
+                        e.peers.asked = true;
+                    }
+                    let _ = self.backend.commands.send(Command::RefreshPeers {
+                        server_id: id,
+                        quiet: false,
+                    });
+                }
+            }
+        }
+        let wait = self
+            .view
+            .peers_due
+            .map_or(interval, |due| (due - now).max(0.0));
+        ctx.request_repaint_after(Duration::from_secs_f64(wait));
     }
 
     /// Keeps each connection's listens equal to its visible and pinned methods: `LISTEN` when a
@@ -669,6 +812,14 @@ impl InspectorApp {
                         server_id: id,
                         from_path: path,
                     });
+                }
+            }
+            Action::ReadPeers(scope) => {
+                self.read_peers(scope, false);
+                // The timer counts from this reading.
+                if self.view.peers_due.is_some() {
+                    let now = ctx.input(|i| i.time);
+                    self.view.peers_due = Some(now + self.config.peers_poll().as_secs_f64());
                 }
             }
             Action::Copy(text) => ctx.copy_text(text),
@@ -1302,18 +1453,33 @@ impl InspectorApp {
         ui.horizontal_wrapped(|ui| {
             ui.set_min_height(ROW_H);
             let width = ui.available_width();
+            // The four tabs are one group: nothing between them, so that the fourth takes the
+            // room of its own label and no more, and the line still holds at 1060 points.
+            let gap = ui.spacing().item_spacing.x;
+            ui.spacing_mut().item_spacing.x = 0.0;
             ui.selectable_value(&mut self.view.tab, Tab::Tree, "Tree");
             ui.selectable_value(&mut self.view.tab, Tab::Json, "JSON");
             ui.selectable_value(&mut self.view.tab, Tab::Traffic, "Traffic");
+            ui.spacing_mut().item_spacing.x = gap;
+            ui.selectable_value(&mut self.view.tab, Tab::Map, "Map");
             // Groups apart by GROUP_GAP, the item spacing included.
-            let gap = ui.spacing().item_spacing.x;
             ui.add_space(GROUP_GAP - gap);
+            let on_map = self.view.tab == Tab::Map;
             if ui
                 .button("Refresh")
-                .on_hover_text("Refresh the selected node, or the whole tree (F5)")
+                .on_hover_text(if on_map {
+                    "Read the peers of every server again (F5)"
+                } else {
+                    "Refresh the selected node, or the whole tree, and the listeners (F5)"
+                })
                 .clicked()
             {
-                actions.push(self.refresh_action());
+                if on_map {
+                    actions.push(Action::ReadPeers(PeersScope::All));
+                } else {
+                    actions.push(self.refresh_action());
+                    actions.push(Action::ReadPeers(PeersScope::Selected));
+                }
             }
             ui.add_space(GROUP_GAP - gap);
             let mut hide = self.config.hide_read_only;
@@ -1328,7 +1494,7 @@ impl InspectorApp {
                 self.save_config(ui.ctx());
             }
             ui.add_space(GROUP_GAP - gap);
-            let (filter_min, root_min) = (22.0 * GRID, 18.0 * GRID);
+            let (filter_min, root_min) = (16.0 * GRID, 18.0 * GRID);
             // In a wrapping layout `available_width` is the whole line's: what is left of it is
             // from the cursor to the right edge.
             let mut room = ui.max_rect().right() - ui.cursor().min.x;
@@ -1338,8 +1504,12 @@ impl InspectorApp {
             }
             // Three parts to the filter, two to the root, each within its least and most width.
             // A grid step of slack: two fields filling the line exactly would wrap on rounding.
+            // The root keeps its least width before the filter takes its three parts: the two
+            // never ask for more than the line has, which would send the root alone to the next.
             let share = (room - gap - GRID).max(0.0).floor();
-            let filter_w = (share * 0.6).clamp(filter_min.min(share), 64.0 * GRID);
+            let filter_w = (share * 0.6)
+                .min(share - root_min)
+                .clamp(filter_min.min(share), 64.0 * GRID);
             let root_w = (share - filter_w).clamp(root_min.min(share), 48.0 * GRID);
             let filter = ui.add(
                 egui::TextEdit::singleline(&mut self.view.filter)
@@ -1359,6 +1529,11 @@ impl InspectorApp {
             );
         });
         ui.add_space(style::ITEM_GAP);
+        // The map shows every server, whatever the state of the selected one.
+        if self.view.tab == Tab::Map {
+            self.map_tab(ui, actions);
+            return;
+        }
         let Some(entry) = self.state.entry(id) else {
             return;
         };
@@ -1398,6 +1573,56 @@ impl InspectorApp {
                     traffic_tab(ui, e, &mut self.view, started, actions);
                 }
             }
+            // Drawn above, before the selected server's tree is asked for.
+            Tab::Map => {}
+        }
+    }
+
+    /// The map tab (PRD 9.10): what the servers publish of their own connections, drawn. It
+    /// reads; it connects nothing. Zoom and pan only: the places are computed.
+    fn map_tab(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F5)) {
+            actions.push(Action::ReadPeers(PeersScope::All));
+        }
+        let interval = self.config.peers_poll();
+        let model = map::build(&self.state, Instant::now(), interval, APP_NAME);
+        let rects = map::layout(&model);
+        let bounds = map::bounds(&rects);
+        ui.horizontal_wrapped(|ui| {
+            ui.set_min_height(ROW_H);
+            // PRD 7.6: the polling is said, and never presented as live.
+            ui.weak(map_caption(interval));
+            if ui
+                .button("Fit")
+                .on_hover_text(
+                    "Show the whole map. Scroll to pan, pinch or Ctrl and scroll to zoom.",
+                )
+                .clicked()
+            {
+                self.view.map_moved = false;
+                self.view.map_fitted = None;
+            }
+        });
+        // Until the user moves the view, it follows the map as nodes come and go.
+        let outer = ui.available_size_before_wrap();
+        let zoom = egui::Rangef::new(0.2, 1.0);
+        let fitted = fit_scene(bounds, outer, zoom);
+        if !self.view.map_moved && self.view.map_fitted != Some(bounds) {
+            self.view.map_fitted = Some(bounds);
+            self.view.map_scene = Some(fitted);
+        }
+        let scene = self.view.map_scene.get_or_insert(fitted);
+        let selected = self.state.selected;
+        let response = egui::Scene::new()
+            .zoom_range(zoom)
+            .max_inner_size(bounds.size())
+            .show(ui, scene, |ui| {
+                ui.allocate_rect(bounds, egui::Sense::hover());
+                map::draw(ui, &model, &rects, selected);
+            })
+            .response;
+        if response.changed() {
+            self.view.map_moved = true;
         }
     }
 
@@ -1416,8 +1641,47 @@ impl InspectorApp {
 }
 
 impl eframe::App for InspectorApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        // What the frame before this one cost the CPU, the window's own pass and its
+        // rendering, as eframe measured it. Costs nothing when off.
+        if let Some(seconds) = frame.info().cpu_usage {
+            tracing::trace!(
+                target: "oscq_inspector::frame_time",
+                ms = f64::from(seconds) * 1000.0,
+                "previous frame"
+            );
+        }
         self.frame(ui);
+    }
+}
+
+/// The part of the map to show so that all of `bounds` is in view, in a pane of `outer` size:
+/// the whole map, at the scale that holds it, never larger than life.
+fn fit_scene(bounds: egui::Rect, outer: egui::Vec2, zoom: egui::Rangef) -> egui::Rect {
+    let scale = (outer / bounds.size()).min_elem();
+    let scale = if scale.is_finite() {
+        zoom.clamp(scale)
+    } else {
+        zoom.max
+    };
+    egui::Rect::from_center_size(bounds.center(), outer / scale)
+}
+
+/// What the map says of itself above its nodes: how it is read, and that it is not live.
+fn map_caption(interval: Duration) -> String {
+    format!(
+        "Peers as each server publishes them, read every {} while this tab is shown: not live.",
+        seconds_text(interval)
+    )
+}
+
+/// A duration in seconds, as short as it is exact: "2 s", "0.25 s".
+fn seconds_text(d: Duration) -> String {
+    let ms = d.as_millis();
+    if ms % 1000 == 0 {
+        format!("{} s", ms / 1000)
+    } else {
+        format!("{} s", ms as f64 / 1000.0)
     }
 }
 
@@ -1465,6 +1729,7 @@ fn event_kind(e: &Event) -> &'static str {
         Event::PathRenamed { .. } => "PathRenamed",
         Event::TransportState { .. } => "TransportState",
         Event::TrafficLogged(_) => "TrafficLogged",
+        Event::Peers { .. } => "Peers",
         Event::Error { .. } => "Error",
         Event::Succeeded { .. } => "Succeeded",
     }
@@ -1571,6 +1836,24 @@ static LOCAL_OFFSET: std::sync::OnceLock<time::UtcOffset> = std::sync::OnceLock:
 pub fn capture_local_offset() {
     if let Ok(offset) = time::UtcOffset::current_local_offset() {
         let _ = LOCAL_OFFSET.set(offset);
+    }
+}
+
+/// Hours, minutes and seconds of `at`, in local time, or in UTC, said so, when the local offset
+/// is unknown.
+fn clock_time_seconds(at: std::time::SystemTime) -> String {
+    let utc = time::OffsetDateTime::from(at);
+    match LOCAL_OFFSET.get() {
+        Some(offset) => {
+            let t = utc.to_offset(*offset);
+            format!("{:02}:{:02}:{:02}", t.hour(), t.minute(), t.second())
+        }
+        None => format!(
+            "{:02}:{:02}:{:02} UTC",
+            utc.hour(),
+            utc.minute(),
+            utc.second()
+        ),
     }
 }
 
@@ -1888,6 +2171,32 @@ fn tree_tab(
 
     keyboard(ui, t, &rows, view, actions);
 
+    // The metadata column says what its listener badges mean on this server, or why it has
+    // none (PRD 9.10): no badge is not the same thing on a server that publishes its peers
+    // and on one that does not.
+    let narrowed = view.tree_meta_w.is_some_and(|w| w < style::META_W);
+    let header = listeners_header(entry, narrowed);
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), 4.0 * GRID),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            // The scroll bar's place, so that the line ends where the column does.
+            ui.add_space(ui.spacing().scroll.allocated_width());
+            let colour = if header.warn {
+                ui.visuals().warn_fg_color
+            } else {
+                ui.visuals().weak_text_color()
+            };
+            ui.add(egui::Label::new(RichText::new(&header.text).small().color(colour)).truncate())
+                .on_hover_text(&header.hover);
+        },
+    );
+    // Only a reading of a server that declares its peers gives badges.
+    let listeners = match entry.peers_view() {
+        PeersView::Read { snapshot, .. } => Some(snapshot),
+        _ => None,
+    };
+
     let row_h = ROW_H;
     let selected_pos = view.selected_path.as_ref().and_then(|p| {
         rows.iter()
@@ -1910,6 +2219,7 @@ fn tree_tab(
         // The visible width: a ui can be wider than what shows of it.
         let visible = (ui.clip_rect().right() - ui.max_rect().left()).min(ui.available_width());
         let cols = Columns::tree(visible);
+        view.tree_meta_w = Some(cols.meta);
         ui.spacing_mut().item_spacing.y = 0.0;
         for i in range {
             let row = &rows[i];
@@ -1956,9 +2266,113 @@ fn tree_tab(
                 cell,
                 send_blocked.as_deref(),
                 value_supported,
+                listeners,
                 view,
                 actions,
             );
+        }
+    });
+}
+
+/// What the tree's metadata column says of its listener badges.
+struct ListenersHeader {
+    text: String,
+    hover: String,
+    warn: bool,
+}
+
+/// PRD 9.10: the column says which it is, a server whose peers listen to nothing or a server
+/// that does not publish its peers. A reading is dated by its time of day, not by its age: the
+/// tree reads its listeners when the tab opens and on Refresh, and an age would go stale on a
+/// window that does not repaint.
+fn listeners_header(e: &ServerEntry, narrowed: bool) -> ListenersHeader {
+    let plain = |text: &str, hover: &str| ListenersHeader {
+        text: text.to_owned(),
+        hover: hover.to_owned(),
+        warn: false,
+    };
+    match e.peers_view() {
+        PeersView::NotConnected => plain(
+            "listeners: not known, not connected",
+            "Who listens to the methods of this server was never read, and cannot be: it is \
+             not connected.",
+        ),
+        PeersView::HostInfoUnknown => plain(
+            "listeners: not known, HOST_INFO not read",
+            "Whether this server publishes its peers is declared in its HOST_INFO, which could \
+             not be read.",
+        ),
+        PeersView::NotPublished => plain(
+            "listeners: not published by this server",
+            "This server does not declare PEERS in its HOST_INFO: who listens to its methods \
+             is not known. No count in this column means not published, not zero.",
+        ),
+        PeersView::NotRead => plain(
+            "listeners: not read yet",
+            "This server publishes its peers; they have not been read yet.",
+        ),
+        PeersView::Failed(reason) => ListenersHeader {
+            text: format!("listeners: not read, {reason}"),
+            hover: format!(
+                "This server declares PEERS in its HOST_INFO, and reading them failed: \
+                 {reason}. Refresh reads them again."
+            ),
+            warn: true,
+        },
+        PeersView::Read { .. } if narrowed => plain(
+            "listeners: not shown at this width",
+            "The column is narrowed to the access flags: widen the pane to see who listens to \
+             each method.",
+        ),
+        PeersView::Read { snapshot, failure } => {
+            let at = clock_time_seconds(snapshot.wall);
+            let mut text = format!("listeners as of {at}");
+            if failure.is_some() {
+                text.push_str(", not read since");
+            }
+            ListenersHeader {
+                text,
+                hover: format!(
+                    "The peers of this server that listen to each method, as the server \
+                     published them at {at}: their count in this column, their names on \
+                     hover. No count: no peer listens to that method. This application is \
+                     left out: it listens to every method on screen. Refresh reads them \
+                     again.{}",
+                    failure.map_or_else(String::new, |r| format!(" The last reading failed: {r}."))
+                ),
+                warn: failure.is_some(),
+            }
+        }
+    }
+}
+
+/// The listener badge of a method (PRD 9.10): how many peers listen to exactly its full path,
+/// their names on hover. Drawn only when there is one at least.
+fn listener_badge(ui: &mut egui::Ui, snapshot: &PeersSnapshot, path: &str) {
+    let count = snapshot.listeners(path).count();
+    if count == 0 {
+        return;
+    }
+    let text = count.to_string();
+    let width = (text.len() as f32 * 2.0 * GRID + 2.0 * GRID).max(5.0 * GRID);
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, 4.0 * GRID), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 2.0 * GRID, map::EDGE_CLIENT);
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        text,
+        FontId::monospace(style::DATA),
+        Color32::BLACK,
+    );
+    response.on_hover_ui(|ui| {
+        ui.label(if count == 1 {
+            "Listened to by 1 peer:".to_owned()
+        } else {
+            format!("Listened to by {count} peers:")
+        });
+        for c in snapshot.listeners(path) {
+            ui.label(style::data(client_label(c)));
         }
     });
 }
@@ -2041,6 +2455,7 @@ fn node_row(
     cell: NameCell,
     send_blocked: Option<&str>,
     value_supported: bool,
+    listeners: Option<&PeersSnapshot>,
     view: &mut View,
     actions: &mut Vec<Action>,
 ) {
@@ -2200,7 +2615,14 @@ fn node_row(
                     if access.writable() { "w" } else { "" }
                 );
                 ui.label(style::data(flags).weak());
-                // Narrowed to the flags alone, the column holds nothing else.
+                // Narrowed to the flags alone, the column holds nothing else. The badge is
+                // a method's: a container is never listened to, and its children's listeners
+                // are not its own.
+                if cols.meta >= style::META_W
+                    && let Some(snapshot) = listeners
+                {
+                    listener_badge(ui, snapshot, &node.full_path);
+                }
                 if cols.meta >= style::META_W
                     && let Some(tags) = &node.type_raw
                 {
@@ -2272,6 +2694,7 @@ fn pinned_cells(
                 cell,
                 e.send_blocked().as_deref(),
                 e.value_supported(),
+                None,
                 view,
                 actions,
             );
@@ -2453,6 +2876,7 @@ fn keyboard(
             Some(p) => Action::RefreshValue(p),
             None => Action::RefreshTree("/".to_owned()),
         });
+        actions.push(Action::ReadPeers(PeersScope::Selected));
     }
     let copy = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)));
     if copy && let Some(p) = &view.selected_path {
@@ -4202,14 +4626,15 @@ mod tests {
     }
 
     /// On a wide window, 1060 points or more, under the default width of 1100, the side panes keep
-    /// their width, the centre takes the rest, and the toolbar holds on one line: the three tabs,
+    /// their width, the centre takes the rest, and the toolbar holds on one line: the four tabs,
     /// Refresh, Writable, the filter and the root fields side by side, frame after frame.
     #[test]
     fn the_toolbar_holds_one_line_on_a_wide_window() {
-        const CONTROLS: [&str; 7] = [
+        const CONTROLS: [&str; 8] = [
             "Tree",
             "JSON",
             "Traffic",
+            "Map",
             "Refresh",
             "Writable",
             "filter  /",
@@ -4261,7 +4686,7 @@ mod tests {
         h.frame_sized(size, Vec::new());
         let out = h.frame_sized(size, Vec::new());
         let y = |c: &str| place(&out, c).center().y;
-        for c in ["JSON", "Traffic", "Refresh"] {
+        for c in ["JSON", "Traffic", "Map", "Refresh"] {
             assert!((y(c) - y("Tree")).abs() < 2.0, "{c} beside Tree");
         }
         assert!(
@@ -4666,12 +5091,13 @@ mod tests {
     /// window: the theme and About under the server list, the status bar and its message.
     #[test]
     fn every_toolbar_control_stays_on_screen_whatever_the_width() {
-        const CONTROLS: [&str; 7] = [
+        const CONTROLS: [&str; 8] = [
             "filter  /",
             "root at path",
             "Tree",
             "JSON",
             "Traffic",
+            "Map",
             "Refresh",
             "Writable",
         ];

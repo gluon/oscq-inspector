@@ -8,6 +8,7 @@ pub mod host_info;
 pub mod model;
 pub mod osc;
 pub mod path;
+pub mod peers;
 pub mod server;
 pub mod service;
 pub mod types;
@@ -19,6 +20,7 @@ pub use host_info::{HostInfo, OscDestination, OscTransport, PortSource, SendBloc
 pub use model::{Access, ArgEntry, ClipMode, Node, PerArg, Range};
 pub use osc::{CoerceError, OscError, OscUdpSender};
 pub use path::{OscPath, PathError};
+pub use peers::{PeerClient, PeerSender, Peers, PeersError, PeersReading};
 pub use server::{
     AddressClass, DiscoveredServer, InterfaceRef, Origin, ServerAddress, ServerId, ServiceKind,
 };

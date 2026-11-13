@@ -178,6 +178,16 @@ impl HostInfo {
         self.extensions.get(key).copied().unwrap_or(false)
     }
 
+    /// The server declares that it answers `?PEERS` (PRD 7.6). Without this, it is never asked.
+    pub fn publishes_peers(&self) -> bool {
+        self.supports(crate::peers::EXT_PEERS)
+    }
+
+    /// The server declares that it takes `CLIENT_NAME` (PRD 7.6). Without this, it is never sent.
+    pub fn takes_client_name(&self) -> bool {
+        self.supports(crate::peers::EXT_CLIENT_NAME)
+    }
+
     /// The OSC receiver, applying the proposal's defaults: `OSC_IP` absent means the HTTP host,
     /// `OSC_PORT` absent means the HTTP port, `OSC_TRANSPORT` absent means UDP.
     pub fn osc_destination(
@@ -261,6 +271,32 @@ mod tests {
             (30338, PortSource::User),
             "no inference replaces the user's port"
         );
+    }
+
+    /// PRD 7.6: the extension is declared by `true` and by nothing else. A server that says
+    /// nothing, says `false`, or says something that is not a boolean, has not declared it.
+    #[test]
+    fn the_peers_extension_is_declared_by_true_and_by_nothing_else() {
+        let parse = |json: &str| HostInfo::parse(json.as_bytes()).unwrap().0;
+        let both = parse(r#"{"EXTENSIONS":{"PEERS":true,"CLIENT_NAME":true}}"#);
+        assert!(both.publishes_peers() && both.takes_client_name());
+        let one = parse(r#"{"EXTENSIONS":{"PEERS":true}}"#);
+        assert!(one.publishes_peers() && !one.takes_client_name());
+        for undeclared in [
+            "{}",
+            r#"{"EXTENSIONS":{}}"#,
+            r#"{"EXTENSIONS":{"PEERS":false,"CLIENT_NAME":false}}"#,
+            r#"{"EXTENSIONS":{"PEERS":"true","CLIENT_NAME":1}}"#,
+            r#"{"EXTENSIONS":{"peers":true,"client_name":true}}"#,
+            r#"{"EXTENSIONS":["PEERS","CLIENT_NAME"]}"#,
+            r#"{"PEERS":true,"CLIENT_NAME":true}"#,
+        ] {
+            let info = parse(undeclared);
+            assert!(
+                !info.publishes_peers() && !info.takes_client_name(),
+                "{undeclared}"
+            );
+        }
     }
 
     #[test]

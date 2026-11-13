@@ -3,13 +3,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use oscq_core::document::parse_value;
 use oscq_core::ws::{is_within, renamed};
 use oscq_core::{
     AttributeReply, Diagnostic, DiscoveredServer, Event, HostInfo, Node, Origin, OscDestination,
-    SendBlocked, ServerId, TransportState, UserFacingError,
+    PeerClient, Peers, SendBlocked, ServerId, TransportState, UserFacingError,
 };
 use rosc::OscType;
 
@@ -79,6 +79,88 @@ impl TreeState {
     }
 }
 
+/// One reading of a server's `?PEERS` (PRD 7.6): what it published, and when.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PeersSnapshot {
+    /// When the answer arrived, on the monotonic clock: what its age is counted from.
+    pub at: Instant,
+    /// The same moment on the wall clock, for the places that say a time rather than an age.
+    pub wall: SystemTime,
+    /// The reply, each client's `LISTEN` sorted and without repeats, so that one address is
+    /// looked up in it without walking it.
+    pub peers: Peers,
+    /// The client that is this application's own WebSocket on that server, when it is there.
+    pub this_client: Option<usize>,
+}
+
+impl PeersSnapshot {
+    /// The clients other than this application that listen to exactly `path`. `LISTEN` is not
+    /// recursive (PRD 7.4): a listener of `/foo` is not one of `/foo/bar`, and an address that
+    /// only starts like `path` is another address.
+    pub fn listeners<'a>(&'a self, path: &'a str) -> impl Iterator<Item = &'a PeerClient> + 'a {
+        self.peers
+            .clients
+            .iter()
+            .enumerate()
+            .filter(move |(i, c)| {
+                Some(*i) != self.this_client
+                    && c.listen
+                        .as_ref()
+                        .is_some_and(|l| l.binary_search_by(|p| p.as_str().cmp(path)).is_ok())
+            })
+            .map(|(_, c)| c)
+    }
+}
+
+/// How a client is called where it is listed: by the name it gave, or, having given none, as
+/// an unnamed client at its address and port. It is never given another's name (PRD 9.10).
+pub fn client_label(c: &PeerClient) -> String {
+    match &c.name {
+        Some(name) => name.clone(),
+        None => format!("unnamed client {}", ip_port(&c.ip, c.port)),
+    }
+}
+
+/// `ip:port`, with brackets around an IPv6 address.
+pub fn ip_port(ip: &str, port: u16) -> String {
+    if ip.contains(':') && !ip.starts_with('[') {
+        format!("[{ip}]:{port}")
+    } else {
+        format!("{ip}:{port}")
+    }
+}
+
+/// What this application holds of a server's peers.
+#[derive(Debug, Default)]
+pub struct PeersState {
+    /// The last reading that succeeded.
+    pub snapshot: Option<PeersSnapshot>,
+    /// Why the last attempt failed, when it did. A later success clears it.
+    pub failure: Option<String>,
+    /// A reading was asked for and its answer has not arrived: no other is asked meanwhile.
+    pub asked: bool,
+}
+
+/// What is known of a server's peers, and so what the map and the tree may say of them.
+#[derive(Debug, PartialEq)]
+pub enum PeersView<'a> {
+    /// Not connected, and nothing was ever read: nothing is known, its declaration included.
+    NotConnected,
+    /// Connected, but its `HOST_INFO` is not in hand: what it declares is not known.
+    HostInfoUnknown,
+    /// Its `HOST_INFO` does not declare `PEERS`: it publishes none, and is asked for none.
+    NotPublished,
+    /// It declares `PEERS`, and no reading has been made.
+    NotRead,
+    /// It declares `PEERS`, and no reading has succeeded: why the last one failed.
+    Failed(&'a str),
+    /// The last reading that succeeded, and why a later one failed, if one did.
+    Read {
+        snapshot: &'a PeersSnapshot,
+        failure: Option<&'a str>,
+    },
+}
+
 #[derive(Debug)]
 pub struct ServerEntry {
     pub server: DiscoveredServer,
@@ -92,6 +174,7 @@ pub struct ServerEntry {
     pub ws: WsState,
     /// Methods the network service has been asked to `LISTEN` to on this connection.
     pub listening: HashSet<String>,
+    pub peers: PeersState,
 }
 
 impl ServerEntry {
@@ -107,6 +190,42 @@ impl ServerEntry {
             last_error: None,
             ws: WsState::Absent,
             listening: HashSet::new(),
+            peers: PeersState::default(),
+        }
+    }
+
+    /// The server declares `PEERS` in the `HOST_INFO` of this connection (PRD 7.6). Only then
+    /// is it asked for its peers, and only then is anything it said of them shown.
+    pub fn publishes_peers(&self) -> bool {
+        self.host_info
+            .as_ref()
+            .is_some_and(HostInfo::publishes_peers)
+    }
+
+    /// Its peers may be read now: connected, and declaring them.
+    pub fn peers_readable(&self) -> bool {
+        self.conn == ConnState::Connected && self.publishes_peers()
+    }
+
+    /// What is known of its peers. A reading is shown only for a server that declares `PEERS`,
+    /// or that declared it on a connection since closed: a server connected now whose
+    /// `HOST_INFO` declares nothing has no peers to show, whatever was read before.
+    pub fn peers_view(&self) -> PeersView<'_> {
+        let connected = self.conn == ConnState::Connected;
+        if connected && self.host_info.is_none() {
+            return PeersView::HostInfoUnknown;
+        }
+        if connected && !self.publishes_peers() {
+            return PeersView::NotPublished;
+        }
+        match (&self.peers.snapshot, &self.peers.failure) {
+            (Some(snapshot), failure) => PeersView::Read {
+                snapshot,
+                failure: failure.as_deref(),
+            },
+            (None, _) if !connected => PeersView::NotConnected,
+            (None, Some(reason)) => PeersView::Failed(reason),
+            (None, None) => PeersView::NotRead,
         }
     }
 
@@ -212,6 +331,10 @@ impl AppState {
                     e.host_info = Some(info);
                     e.destination = Some(destination);
                     e.host_info_error = None;
+                    // What a server no longer declares, it no longer publishes.
+                    if !e.publishes_peers() {
+                        e.peers = PeersState::default();
+                    }
                 }
             }
             Event::HostInfoUnavailable { server_id, reason } => {
@@ -219,6 +342,43 @@ impl AppState {
                     e.host_info = None;
                     e.destination = None;
                     e.host_info_error = Some(reason);
+                    e.peers = PeersState::default();
+                }
+            }
+            Event::Peers {
+                server_id,
+                at,
+                result,
+            } => {
+                if let Some(e) = self.entry_mut(server_id) {
+                    e.peers.asked = false;
+                    // PRD 9.10: nothing is shown of the peers of a server that does not
+                    // declare them, an answer that arrives all the same included.
+                    if !e.publishes_peers() {
+                        return;
+                    }
+                    match result {
+                        Ok(reading) => {
+                            let mut peers = reading.peers;
+                            for c in &mut peers.clients {
+                                if let Some(l) = c.listen.as_mut() {
+                                    l.sort_unstable();
+                                    l.dedup();
+                                }
+                            }
+                            let wall = SystemTime::now()
+                                .checked_sub(at.elapsed())
+                                .unwrap_or_else(SystemTime::now);
+                            e.peers.snapshot = Some(PeersSnapshot {
+                                at,
+                                wall,
+                                peers,
+                                this_client: reading.this_client,
+                            });
+                            e.peers.failure = None;
+                        }
+                        Err(reason) => e.peers.failure = Some(reason),
+                    }
                 }
             }
             Event::TreeLoaded {
@@ -315,10 +475,12 @@ impl AppState {
                         TransportState::Disconnected => e.conn = ConnState::Disconnected,
                         TransportState::Failed(r) => e.conn = ConnState::Failed(r),
                     }
-                    // A new or closed connection starts with no WebSocket and no listens.
+                    // A new or closed connection starts with no WebSocket and no listens, and
+                    // with no reading on its way: an answer to the old one is dropped.
                     if !matches!(e.conn, ConnState::Connected) {
                         e.ws = WsState::Absent;
                         e.listening.clear();
+                        e.peers.asked = false;
                     }
                 }
             }
