@@ -230,3 +230,5 @@ What this application does, read in its files on 2026-11-13 and not exercised ag
 - Sends resolve their destination preferring IPv4 (`crates/oscq-core/src/osc.rs`).
 
 Not proven: that a dual stack server reached by a name which resolves to IPv6 pushes its values on the WebSocket. That case was not reproduced, against this build of libossia or any other, so the three points above bound the exposure of the discovered path only. What would prove it: such a server on this machine, reached by its name with the resolver answering IPv6 first, with the tree loaded and a value changed at the server.
+
+Condition for reopening this section: the day this application binds a UDP receiving socket of its own. What makes the observation above harmless for it today is that it has none, not anything it does with addresses, so a case without consequence for it now would have one then.
