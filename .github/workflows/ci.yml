@@ -104,6 +104,15 @@ jobs:
           if [ "$RUNNER_OS" = "Linux" ]; then run="xvfb-run -a"; fi
           $run cargo test --release --locked -p oscq-inspector --test budgets_binary -- --ignored --exact real_binary_does_not_repaint_when_idle --nocapture
 
+      # PRD 10, map budgets: no repaint at rest with the map tab hidden, one per poll interval
+      # with it shown, against eight synthetic servers that publish their peers.
+      - name: Real binary, map tab hidden and shown, repaints at rest
+        shell: bash
+        run: |
+          run=""
+          if [ "$RUNNER_OS" = "Linux" ]; then run="xvfb-run -a"; fi
+          $run cargo test --release --locked -p oscq-inspector --test budgets_binary -- --ignored real_binary_map_hidden_ real_binary_map_visible_ --nocapture --test-threads=1
+
       # Numbers for docs/decisions.md from a CI machine, not the human's; a measurement, not a gate.
       - name: Real binary budgets, measurement only
         continue-on-error: true

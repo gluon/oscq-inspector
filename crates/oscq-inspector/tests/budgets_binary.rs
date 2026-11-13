@@ -1,6 +1,8 @@
 //! PRD 10 budgets measured on the real binary, window and all, against the synthetic server's
 //! 5000 node document: cold start, idle CPU with 50 active listens, idle repaints, resident
-//! memory. Idle is measured with no input reaching the window: keep the pointer outside it.
+//! memory. Then the three map budgets, against eight synthetic servers that publish their
+//! peers: frames at rest with the map tab hidden and shown, and the frame time on the map.
+//! Idle is measured with no input reaching the window: keep the pointer outside it.
 //! Needs a display, Linux or macOS, and a release build:
 //!
 //! ```text
@@ -18,7 +20,9 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use synthetic::{OscReceiver, SyntheticServer, borrowed, large_routes};
+use synthetic::{
+    OscReceiver, PeersMode, Reply, SyntheticServer, borrowed, host_info_json, large_routes,
+};
 
 const LISTENS: usize = 50;
 const IDLE_WINDOW: Duration = Duration::from_secs(10);
@@ -115,16 +119,23 @@ impl Drop for Kill {
     }
 }
 
-/// The binary running against the synthetic server's 5000 nodes, connected by its config, with
-/// 50 pinned methods listened to, its log lines captured. Killed and cleaned up on drop.
+/// The binary running against synthetic servers, connected by its config, its log lines
+/// captured. Killed and cleaned up on drop.
 struct Launch {
     server: SyntheticServer,
+    /// The servers of the map budgets, besides `server`.
+    others: Vec<SyntheticServer>,
     child: Kill,
     lines: Arc<Mutex<Vec<(Instant, String)>>>,
     spawned: Instant,
     base: PathBuf,
     _rt: tokio::runtime::Runtime,
 }
+
+/// The servers of the map budgets (PRD 10): eight, each publishing its peers, three clients of
+/// its own besides this application, 24 peers in all, each listening to a few methods.
+const MAP_SERVERS: usize = 8;
+const MAP_PEERS_EACH: usize = 3;
 
 impl Launch {
     fn start() -> Self {
@@ -139,7 +150,77 @@ impl Launch {
             .block_on(SyntheticServer::start_ws("127.0.0.1:0", borrowed(&routes)))
             .unwrap();
         let key = format!("127.0.0.1:{}", server.addr.port());
+        let pinned: Vec<String> = (0..LISTENS).map(|i| format!("/g0/p{i}")).collect();
+        let config = serde_json::json!({
+            "window": {"x": 0.0, "y": 0.0, "width": 1100.0, "height": 700.0},
+            "manual_entries": [key],
+            "last_selected": key,
+            "pinned_paths": {key.clone(): pinned},
+        });
+        Self::spawn(rt, server, Vec::new(), config, "")
+    }
 
+    /// The eight servers of the map budgets, connected at launch, the window opened on the map
+    /// tab or on the tree, the peers read every `poll_ms`.
+    fn start_map(map: bool, poll_ms: u64) -> Self {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let osc = rt.block_on(OscReceiver::bind("127.0.0.1:0")).unwrap();
+        let mut servers: Vec<SyntheticServer> = (0..MAP_SERVERS)
+            .map(|i| {
+                let mut routes = large_routes(200, osc.port());
+                routes.push((
+                    "/?HOST_INFO".to_owned(),
+                    Reply::json(host_info_json(&format!("map {i}"), osc.port(), true)),
+                ));
+                let s = rt
+                    .block_on(SyntheticServer::start_ws("127.0.0.1:0", borrowed(&routes)))
+                    .unwrap();
+                s.ws.set_peers(PeersMode::Serve);
+                let clients = (0..MAP_PEERS_EACH)
+                    .map(|c| {
+                        serde_json::json!({
+                            "IP": format!("10.0.{i}.{}", c + 1),
+                            "PORT": 40000 + c,
+                            "NAME": format!("peer {i}.{c}"),
+                            "LISTEN": [format!("/g0/p{c}"), format!("/g1/p{c}")],
+                            "PACKETS": 10 * c,
+                        })
+                    })
+                    .collect();
+                s.ws.set_other_peers(clients, Vec::new());
+                s
+            })
+            .collect();
+        let keys: Vec<String> = servers
+            .iter()
+            .map(|s| format!("127.0.0.1:{}", s.addr.port()))
+            .collect();
+        let config = serde_json::json!({
+            "window": {"x": 0.0, "y": 0.0, "width": 1100.0, "height": 700.0},
+            "manual_entries": keys,
+            "last_selected": keys[0],
+            "peers_poll_ms": poll_ms,
+        });
+        let first = servers.remove(0);
+        let startup = if map {
+            "map,connect-all"
+        } else {
+            "connect-all"
+        };
+        Self::spawn(rt, first, servers, config, startup)
+    }
+
+    fn spawn(
+        rt: tokio::runtime::Runtime,
+        server: SyntheticServer,
+        others: Vec<SyntheticServer>,
+        config: serde_json::Value,
+        startup: &str,
+    ) -> Self {
         let base = std::env::temp_dir().join(format!(
             "oscq-inspector-budget-{}-{}",
             std::process::id(),
@@ -148,13 +229,6 @@ impl Launch {
         let _ = std::fs::remove_dir_all(&base);
         let (config_path, env_var) = config_location(&base);
         std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
-        let pinned: Vec<String> = (0..LISTENS).map(|i| format!("/g0/p{i}")).collect();
-        let config = serde_json::json!({
-            "window": {"x": 0.0, "y": 0.0, "width": 1100.0, "height": 700.0},
-            "manual_entries": [key],
-            "last_selected": key,
-            "pinned_paths": {key.clone(): pinned},
-        });
         std::fs::write(&config_path, config.to_string()).unwrap();
 
         let spawned = Instant::now();
@@ -162,8 +236,10 @@ impl Launch {
             .env(env_var, &base)
             .env(
                 "RUST_LOG",
-                "oscq_inspector::startup=info,oscq_inspector::frame=trace,oscq_inspector::event=trace",
+                "oscq_inspector::startup=info,oscq_inspector::frame=trace,\
+                 oscq_inspector::event=trace,oscq_inspector::frame_time=trace",
             )
+            .env("OSCQ_INSPECTOR_STARTUP", startup)
             .env("NO_COLOR", "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -172,12 +248,58 @@ impl Launch {
         let lines = capture(&mut child);
         Launch {
             server,
+            others,
             child: Kill(child),
             lines,
             spawned,
             base,
             _rt: rt,
         }
+    }
+
+    fn all_servers(&self) -> impl Iterator<Item = &SyntheticServer> {
+        std::iter::once(&self.server).chain(&self.others)
+    }
+
+    /// The eight servers connected, each with this application's WebSocket open and named, and,
+    /// on the map, each asked for its peers; then settled.
+    fn settle_map(&self, map: bool) {
+        wait_until("eight sockets named", Duration::from_secs(30), || {
+            self.all_servers().all(|s| {
+                s.ws.received()
+                    .first()
+                    .is_some_and(|t| t.contains("CLIENT_NAME"))
+            })
+        });
+        if map {
+            wait_until("eight servers asked", Duration::from_secs(30), || {
+                self.all_servers()
+                    .all(|s| s.ws.requests().iter().any(|t| t == "/?PEERS"))
+            });
+        }
+        std::thread::sleep(Duration::from_secs(3));
+    }
+
+    /// `?PEERS` requests received by all the servers so far.
+    fn peers_requests(&self) -> usize {
+        self.all_servers()
+            .map(|s| s.ws.requests().iter().filter(|t| *t == "/?PEERS").count())
+            .sum()
+    }
+
+    /// Each frame of the idle window that logged it, with the time its line arrived: the CPU
+    /// time eframe measured for the frame before it, its own pass and its rendering.
+    fn frame_times_since(&self, since: Instant) -> Vec<(Instant, Duration)> {
+        self.lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(at, l)| *at >= since && l.contains("oscq_inspector::frame_time"))
+            .filter_map(|(at, l)| {
+                let ms: f64 = l.split("ms=").nth(1)?.split(' ').next()?.parse().ok()?;
+                Some((*at, Duration::from_secs_f64(ms / 1000.0)))
+            })
+            .collect()
     }
 
     fn pid(&self) -> u32 {
@@ -233,16 +355,22 @@ impl Launch {
     /// and the CPU used, percent of one core.
     fn idle(&self) -> Idle {
         let pid = self.pid();
-        let frames0 = self.lines_of("oscq_inspector::frame").len();
+        let frames0 = self.frame_lines().len();
         let events0 = self.lines_of("oscq_inspector::event").len();
         let (cpu0, t0) = (cpu_time(pid), Instant::now());
         std::thread::sleep(IDLE_WINDOW);
         let (cpu1, t1) = (cpu_time(pid), Instant::now());
         Idle {
-            frames: self.lines_of("oscq_inspector::frame").split_off(frames0),
+            frames: self.frame_lines().split_off(frames0),
             events: self.lines_of("oscq_inspector::event").split_off(events0),
             cpu: (cpu1 - cpu0).as_secs_f64() / (t1 - t0).as_secs_f64() * 100.0,
         }
+    }
+
+    /// The lines of the frame trace, not those of the frame time trace, whose target starts
+    /// the same.
+    fn frame_lines(&self) -> Vec<String> {
+        self.lines_of("oscq_inspector::frame:")
     }
 }
 
@@ -320,6 +448,13 @@ impl Drop for Launch {
         let _ = self.child.0.wait();
         let _ = std::fs::remove_dir_all(&self.base);
     }
+}
+
+/// The 95th percentile of `v`, and its median and maximum.
+fn percentiles(mut v: Vec<Duration>) -> (Duration, Duration, Duration) {
+    v.sort();
+    let at = |q: f64| v[((v.len() - 1) as f64 * q).round() as usize];
+    (at(0.5), at(0.95), at(1.0))
 }
 
 /// What asked for each frame, most frequent first: the source locations egui recorded for the
@@ -438,4 +573,129 @@ fn real_binary_budgets() {
     assert!(idle.cpu < 1.0, "idle CPU");
     assert!(idle.frames.is_empty(), "idle repaints");
     assert!(memory < 150 * 1_048_576, "resident memory");
+}
+
+/// PRD 10, map budget: with the map tab not visible, zero idle repaints, as above, with eight
+/// servers that publish their peers. The tree is shown: its listeners are read once, when it
+/// opens, and nothing reads them again at rest. No server is asked for its peers during the
+/// idle window.
+#[test]
+#[ignore = "real window: display needed"]
+fn real_binary_map_hidden_does_not_repaint_when_idle() {
+    let launch = Launch::start_map(false, 2000);
+    launch.first_frame();
+    launch.settle_map(false);
+    let asked = launch.peers_requests();
+    let idle = launch.idle();
+    let asked_meanwhile = launch.peers_requests() - asked;
+    idle.print();
+    println!(
+        "BUDGET idle repaints, map tab not visible, {MAP_SERVERS} servers: {} frames in {} s, budget 0; {asked_meanwhile} PEERS requests",
+        idle.frames.len(),
+        IDLE_WINDOW.as_secs()
+    );
+    idle.assert_valid();
+    assert!(idle.frames.is_empty(), "the window repaints when idle");
+    assert_eq!(
+        asked_meanwhile, 0,
+        "a server was asked for its peers at rest"
+    );
+}
+
+/// PRD 10, map budget: with the map tab visible, eight servers, one repaint per poll interval
+/// and no more. Every frame of the idle window is asked for by the application's timer, two
+/// frames are never closer than an interval less two frames, which is how early egui wakes,
+/// and each frame reads the eight servers. The frame time of those frames is printed, a few
+/// samples; the next test takes more.
+#[test]
+#[ignore = "real window: display needed"]
+fn real_binary_map_visible_repaints_once_per_poll_interval() {
+    let poll = Duration::from_millis(2000);
+    let launch = Launch::start_map(true, poll.as_millis() as u64);
+    launch.first_frame();
+    launch.settle_map(true);
+    let asked = launch.peers_requests();
+    let start = Instant::now();
+    let idle = launch.idle();
+    let asked_meanwhile = launch.peers_requests() - asked;
+    idle.print();
+    let times = launch.frame_times_since(start);
+    let beats: Vec<Instant> = times.iter().map(|(at, _)| *at).collect();
+    let gaps: Vec<f64> = beats
+        .windows(2)
+        .map(|w| (w[1] - w[0]).as_secs_f64())
+        .collect();
+    println!(
+        "BUDGET idle repaints, map tab visible, {MAP_SERVERS} servers: {} frames in {} s, \
+         budget one per {} ms poll interval; gaps {gaps:.3?} s; {asked_meanwhile} PEERS requests",
+        idle.frames.len(),
+        IDLE_WINDOW.as_secs(),
+        poll.as_millis()
+    );
+    idle.assert_valid();
+    let most = (IDLE_WINDOW.as_secs_f64() / poll.as_secs_f64()).floor() as usize + 1;
+    assert!(
+        idle.frames.len() <= most,
+        "{} frames in {} s, more than one per interval",
+        idle.frames.len(),
+        IDLE_WINDOW.as_secs()
+    );
+    assert!(
+        idle.frames.len() >= most - 2,
+        "{} frames: the map is not read on its timer",
+        idle.frames.len()
+    );
+    for (n, cause) in causes(&idle.frames) {
+        assert!(
+            cause.contains("src/app.rs"),
+            "{n} frames asked for by {cause}, not by the timer"
+        );
+    }
+    for gap in &gaps {
+        assert!(
+            *gap > poll.as_secs_f64() - 0.1,
+            "two frames {gap:.3} s apart"
+        );
+    }
+    assert!(
+        asked_meanwhile >= MAP_SERVERS * (idle.frames.len() - 1)
+            && asked_meanwhile <= MAP_SERVERS * idle.frames.len(),
+        "{asked_meanwhile} PEERS requests for {} frames",
+        idle.frames.len()
+    );
+}
+
+/// PRD 10, map budget: frame time on the map tab, eight servers and 24 peers, under 8 ms at
+/// p95. The CPU time eframe measures for each frame, the window's pass and its rendering, of
+/// the frames the map's timer asks for, read every 250 ms here to have samples enough. A
+/// measurement, printed; the budget is asserted.
+#[test]
+#[ignore = "budget: real window, display and release build needed"]
+fn real_binary_map_frame_time() {
+    if cfg!(debug_assertions) {
+        panic!("budgets are measured on a release build: cargo test --release");
+    }
+    let launch = Launch::start_map(true, 250);
+    launch.first_frame();
+    launch.settle_map(true);
+    let start = Instant::now();
+    let idle = launch.idle();
+    idle.assert_valid();
+    let times: Vec<Duration> = launch
+        .frame_times_since(start)
+        .into_iter()
+        .map(|(_, d)| d)
+        .collect();
+    let n = times.len();
+    assert!(n >= 20, "only {n} frames measured");
+    let (median, p95, max) = percentiles(times);
+    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+    println!(
+        "BUDGET frame time on the map tab, {MAP_SERVERS} servers and {} peers: n {n} median {:.3} ms, p95 {:.3} ms, max {:.3} ms, budget 8 ms",
+        MAP_SERVERS * MAP_PEERS_EACH,
+        ms(median),
+        ms(p95),
+        ms(max)
+    );
+    assert!(p95 < Duration::from_millis(8), "frame time on the map");
 }

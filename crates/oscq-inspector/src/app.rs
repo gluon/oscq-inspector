@@ -6929,6 +6929,73 @@ mod tests {
             assert!(report("frame while scrolling 5050 rows", budget, times) < budget);
         }
 
+        /// Map budget: frames of the map tab, eight servers and 24 peers, under 8 ms at p95,
+        /// the pointer moving over the map and the map read again on every frame. Measured on
+        /// the CPU, headless: the whole frame plus tessellation, GPU time not included. The
+        /// real binary test measures the same with its rendering.
+        #[test]
+        #[ignore = "budget, release build"]
+        fn budget_frame_time_map_8_servers_24_peers() {
+            release_only();
+            let mut h = harness();
+            let doc = large_document(200);
+            let ids: Vec<ServerId> = (0..8)
+                .map(|i| {
+                    peer_server(
+                        &mut h,
+                        &format!("map {i}"),
+                        &format!("10.0.0.{}", i + 1),
+                        5000,
+                        true,
+                        &doc,
+                    )
+                })
+                .collect();
+            let reading = |i: usize| {
+                let clients: Vec<serde_json::Value> = (0..3)
+                    .map(|c| {
+                        serde_json::json!({
+                            "IP": format!("10.1.{i}.{}", c + 1), "PORT": 40000 + c,
+                            "NAME": format!("peer {i}.{c}"),
+                            "LISTEN": [format!("/g0/p{c}"), format!("/g1/p{c}")],
+                            "PACKETS": 10 * c
+                        })
+                    })
+                    .collect();
+                serde_json::json!({ "CLIENTS": clients })
+            };
+            h.app.view.tab = Tab::Map;
+            h.frame(Vec::new());
+            let mut times = Vec::new();
+            for f in 0..400 {
+                // A new reading of every server on each frame: the model is built again.
+                for (i, id) in ids.iter().enumerate() {
+                    h.events
+                        .send(peers_read(*id, Duration::ZERO, reading(i), None))
+                        .unwrap();
+                }
+                let x = 300.0 + (f % 100) as f32 * 5.0;
+                let t0 = Instant::now();
+                let out = h.frame(vec![egui::Event::PointerMoved(egui::pos2(x, 350.0))]);
+                let _ = h.ctx.tessellate(out.shapes, out.pixels_per_point);
+                times.push(t0.elapsed());
+                h.sent();
+            }
+            let model = map::build(
+                &h.app.state,
+                Instant::now(),
+                h.app.config.peers_poll(),
+                APP_NAME,
+            );
+            assert_eq!(
+                (model.nodes.len(), model.edges.len()),
+                (8 + 24, 24),
+                "eight servers and 24 peers drawn"
+            );
+            let budget = Duration::from_millis(8);
+            assert!(report("frame on the map, 8 servers and 24 peers", budget, times) < budget);
+        }
+
         /// Budget 5: connected, WebSocket live, 50 pinned listens: an idle frame asks for no
         /// repaint and sends nothing.
         #[test]

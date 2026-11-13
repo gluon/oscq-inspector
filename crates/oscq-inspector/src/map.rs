@@ -238,9 +238,11 @@ fn server_node(e: &ServerEntry, now: Instant, interval: Duration) -> Node {
     }
 }
 
-/// Where the edge of a `CLIENTS` entry starts (PRD 7.6): on `NAME` first, then, failing that,
-/// on `IP` alone, never on `PORT`. A name or an address that several known servers share
-/// matches none of them: the application does not guess.
+/// Where the edge of a `CLIENTS` entry starts (PRD 7.6): on `NAME` first, then, a name that is
+/// no known server's failing that, on `IP` alone, never on `PORT`. A client that gave no name is
+/// a node of its own, labelled by its address and port, and is never drawn as a server that
+/// happens to share its address (PRD 9.10). A name or an address that several known servers
+/// share matches none of them: the application does not guess.
 fn client_origin(c: &PeerClient, servers: &[ServerEntry]) -> (Origin, How, Option<String>) {
     let own = || match &c.name {
         Some(name) => Origin::Named {
@@ -252,17 +254,18 @@ fn client_origin(c: &PeerClient, servers: &[ServerEntry]) -> (Origin, How, Optio
             port: c.port,
         },
     };
-    if let Some(name) = &c.name {
-        let named: Vec<usize> = (0..servers.len())
-            .filter(|i| names(&servers[*i]).any(|n| n == name))
-            .collect();
-        match named[..] {
-            [one] => return (Origin::Server(one), How::Name, None),
-            [] => {}
-            _ => {
-                let note = format!("name of {} known servers: not matched", named.len());
-                return (own(), How::Ambiguous, Some(note));
-            }
+    let Some(name) = &c.name else {
+        return (own(), How::Own, None);
+    };
+    let named: Vec<usize> = (0..servers.len())
+        .filter(|i| names(&servers[*i]).any(|n| n == name))
+        .collect();
+    match named[..] {
+        [one] => return (Origin::Server(one), How::Name, None),
+        [] => {}
+        _ => {
+            let note = format!("name of {} known servers: not matched", named.len());
+            return (own(), How::Ambiguous, Some(note));
         }
     }
     let at: Vec<usize> = canonical_ip(&c.ip).map_or_else(Vec::new, |ip| {
@@ -861,9 +864,11 @@ mod tests {
         found[0]
     }
 
-    /// PRD 7.6: a client is matched to a known server on its name first; with no name to go
-    /// by, on its address alone; never on its port. What matches nothing is a node of its own,
-    /// a client with no name labelled as unnamed by its address and port.
+    /// PRD 7.6 and 9.10: a client is matched to a known server on its name first; a name that
+    /// is no known server's, on its address alone; never on its port. A client that gave no
+    /// name is a node of its own, labelled by its address and port, even at the address of a
+    /// known server: it is never given that server's name. What matches nothing is a node of
+    /// its own.
     #[test]
     fn a_client_is_matched_on_its_name_then_on_its_address_never_on_its_port() {
         let mut state = AppState::default();
@@ -878,12 +883,12 @@ mod tests {
             json!({"CLIENTS": [
                 // By name: B, though it is seen at C's address.
                 {"IP": "10.0.0.3", "PORT": 40001, "NAME": "B", "PACKETS": 7},
-                // No name: by address, C. Its port is B's server port, which says nothing.
-                {"IP": "::ffff:10.0.0.3", "PORT": 5000},
+                // A name no server has, at C's address: C, by address, named on its edge.
+                {"IP": "::ffff:10.0.0.3", "PORT": 40002, "NAME": "TouchDesigner"},
+                // No name, at C's address, its port B's server port: neither C nor B.
+                {"IP": "10.0.0.3", "PORT": 5000},
                 // A name no server has, at an address no server has: its own node.
-                {"IP": "10.0.0.9", "PORT": 40003, "NAME": "TouchDesigner"},
-                // No name, no known address: an unnamed client.
-                {"IP": "10.0.0.8", "PORT": 40004}
+                {"IP": "10.0.0.9", "PORT": 40003, "NAME": "Ghost"}
             ]}),
             None,
         );
@@ -901,17 +906,13 @@ mod tests {
             got,
             [
                 (node_of(&m, "B"), How::Name, "7 packets"),
-                (
-                    node_of(&m, "C"),
-                    How::Address,
-                    "unnamed client [::ffff:10.0.0.3]:5000, by address"
-                ),
-                (node_of(&m, "TouchDesigner"), How::Own, ""),
+                (node_of(&m, "C"), How::Address, "TouchDesigner, by address"),
                 (node_of(&m, "unnamed client"), How::Own, ""),
+                (node_of(&m, "Ghost"), How::Own, ""),
             ]
         );
         let unnamed = &m.nodes[node_of(&m, "unnamed client")];
-        assert_eq!(unnamed.lines, [("10.0.0.8:40004".to_owned(), Tone::Plain)]);
+        assert_eq!(unnamed.lines, [("10.0.0.3:5000".to_owned(), Tone::Plain)]);
         assert_eq!(
             m.nodes.len(),
             5,
