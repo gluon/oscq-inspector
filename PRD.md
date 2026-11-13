@@ -23,6 +23,7 @@ There is no portable, fast client that both browses an address space and lets yo
 5. Let the user edit values with a widget appropriate to the declared type and range, and send the resulting OSC immediately.
 6. Show raw JSON and a timestamped OSC traffic log, for debugging other people's implementations.
 7. Ship as a single self contained binary per platform, started from CI.
+8. Show who is connected to each server and which addresses each of those peers listens to, wherever the server publishes it, so that a setup of several devices can be read at a glance and a parameter can be told connected from unconnected.
 
 ## 3. Non goals for v1
 
@@ -34,7 +35,7 @@ Do not build these. They are listed so that the temptation is answered once.
 - No mobile or tablet build, no web UI, no remote control of this app by another app.
 - No theming system beyond one dark theme and one light theme, following the OS setting by default, either one forceable.
 - No session persistence beyond the small set described in section 9.7. Pinned nodes (9.8) and the sixteen preset slots (9.9) are in scope since M6; nothing beyond them.
-- No widget layout editor, no mapping or controller building. Hiding read only nodes, kept in reserve at M6, is in scope since v0.2.2 (9.2).
+- No widget layout editor, no mapping or controller building. Hiding read only nodes, kept in reserve at M6, is in scope since v0.2.2 (9.2). The peers map of 9.10 reads what servers publish about their own connections; it never creates, alters or removes a connection between two servers, and there is no routing editor.
 - No plugin system, no embedded scripting language, no automation or sequencing.
 - No code signing or notarisation in v1. The CI produces unsigned artifacts.
 - No OSC sending to a server whose `HOST_INFO` declares `OSC_TRANSPORT` `TCP`. The proposal defines no OSC over TCP framing. Its nodes keep the access the server declares; the writable ones say "cannot send", with the reason displayed. They are never shown as read only.
@@ -49,6 +50,7 @@ Anything that smells like "while we are here, we could also" is out of scope unt
 - VVOSCQueryProtocol, the reference Objective C implementation, useful when the written spec is ambiguous: https://github.com/Vidvox/VVOSCQueryProtocol
 - ossia, a second independent implementation to test interoperability against: https://ossia.io
 - Open Stage Control, reference for control widget ergonomics only, explicitly not an architectural model: https://framagit.org/jean-emmanuel/open-stage-control
+- The `PEERS` and `CLIENT_NAME` extension, drafted and implemented outside this repository, is the source of 7.6 and 9.10. It is an extension, not part of the proposal: a server that does not declare it is not at fault, and the application works without it.
 
 Precedence on protocol questions: the proposal wins. Where the proposal contradicts itself, VVOSCQueryProtocol wins. The answers, with sources, live in `docs/protocol-notes.md`.
 
@@ -237,6 +239,33 @@ UDP is the default transport for sending. OSC over the WebSocket is opt in, per 
 
 Every sent and received message is appended to the traffic log, with a monotonic timestamp, direction, path and arguments.
 
+### 7.6 Peers, an extension
+
+The proposal has no way to ask a server who is connected to it. The `PEERS` and `CLIENT_NAME` extension (section 4) fills that hole, and this application is its client. Everything in this section is conditional on the server declaring it.
+
+**Declaration.** A server declares in `HOST_INFO`:
+
+```json
+"EXTENSIONS": { "PEERS": true, "CLIENT_NAME": true }
+```
+
+Never send `CLIENT_NAME` to a server that does not declare it, and never query `?PEERS` on one. A server that declares neither is a normal server, not a broken one.
+
+**`CLIENT_NAME`.** On opening the WebSocket to a server that declares it, send once `{"COMMAND": "CLIENT_NAME", "DATA": "<name>"}`, the name being this application's own, so that the server and every other client can tell this application apart from the rest. Re-send it after each reconnection.
+
+**`?PEERS`.** `GET /?PEERS` at the root only. The reply holds two lists:
+
+- `CLIENTS`, one entry per open WebSocket connection on that server, each with `IP` and `PORT`, optionally `NAME` from `CLIENT_NAME`, `OSC_PORT` and `SENDER_PORT` from `START_OSC_STREAMING`, `LISTEN`, the list of addresses that client listens to, and `PACKETS`, the number of values received from it.
+- `SENDERS`, UDP sources not matched to any WebSocket client, each with `IP`, `PORT`, `PACKETS` and `LAST_MS`, the milliseconds since its last packet. The list is bounded by the server.
+
+A field the server cannot fill is absent. An absent field is absent in the interface too, never a zero, never a dash standing in for a value nobody published.
+
+**Reading.** Query `?PEERS` on a server when its tab is opened, on explicit refresh, and, while the map of 9.10 is the visible tab, on a timer whose default is 2000 ms. Never on a timer when the map is not visible, which is what keeps the idle budget of section 10. The extension has no change notification yet, so this polling is stated in the interface, with the age of the last reading, and is never presented as live.
+
+**Identity.** Matching a `CLIENTS` entry back to a discovered server is done on `NAME` first, then, failing that, on `IP` alone, never on `PORT`, which is ephemeral on the client side. Two discovered servers sharing one `NAME` make the match ambiguous: the edge is drawn as ambiguous and says so. The application does not guess, and it does not invent a device identity the protocol does not carry.
+
+A server reporting a client whose `NAME` is its own name is reporting a connection to itself. It is drawn, as a loop on that one node. Dropping it would hide a real connection.
+
 ## 8. Discovery
 
 ### 8.1 Strategy, LOCKED
@@ -358,7 +387,7 @@ The UI must never imply state it has not observed. Specifically:
 
 ### 9.7 Persistence
 
-A single config file in the OS standard config directory, written atomically on change. It contains: window size and position, manual server entries, last selected server, theme preference, pinned paths per server (`pinned_paths`, 9.8), the OSC ports set by the user per server (`osc_ports`, 7.2), the sixteen preset slots (`presets`, 9.9), whether the tree shows writable nodes only (`hide_read_only`, 9.2), and whether the preset section is open (`presets_open`, 9.9). Nothing else. No database.
+A single config file in the OS standard config directory, written atomically on change. It contains: window size and position, manual server entries, last selected server, theme preference, pinned paths per server (`pinned_paths`, 9.8), the OSC ports set by the user per server (`osc_ports`, 7.2), the sixteen preset slots (`presets`, 9.9), whether the tree shows writable nodes only (`hide_read_only`, 9.2), whether the preset section is open (`presets_open`, 9.9), and the peers poll interval in milliseconds (`peers_poll_ms`, 9.10, default 2000). Nothing else. No database. The map keeps no layout, no node position and no history.
 
 ### 9.8 Pinned nodes
 
@@ -372,6 +401,26 @@ Sixteen slots, for debugging, not for performance: one click captures, one click
 - A slot records the server it came from (`host:port` and name), each method's path, type tags and arguments.
 - Recall sends every captured value to the selected server at once, as separate messages to the OSC destination (7.5), shown in the traffic log as one block (9.5). Against another server, or a server whose tree changed, it sends what matches, a writable method at the same path with the same type tags, and reports the rest as a short count. It never blocks.
 - Slots are kept in the config (9.7).
+
+### 9.10 Map tab
+
+A fourth tab, beside Tree, JSON and Traffic, drawing the setup as it is published rather than as the user remembers it. It is the answer to one question: is this parameter connected, and to what.
+
+**The map.** One node per discovered or manually entered server, whatever its state. One node per peer that is not itself a known server: a client identified only by `IP` and `PORT`, or an unmatched `SENDERS` entry. One edge per `CLIENTS` entry, drawn from the peer to the server it is connected to, carrying its `PACKETS` count. `SENDERS` edges are drawn in a second, visibly distinct way, because a UDP source that holds no WebSocket is a weaker fact than a named client.
+
+Every node says what is known about it and nothing more:
+
+- A server that does not declare `EXTENSIONS.PEERS` is drawn, and labelled as not publishing its peers. It has no edges. No edge is ever inferred from traffic, from mDNS or from a port number.
+- A server that declares it but whose `?PEERS` fails is labelled with the failure and its reason.
+- A client with no `NAME` is labelled by `IP` and `PORT`, as an unnamed client. It is never given the name of a server that happens to share its address.
+- The node that is this application identifies itself as such, since the application appears in the `?PEERS` of every server it is connected to.
+- The map states the age of its last reading, per server. A reading older than three poll intervals is marked stale rather than redrawn as current.
+
+Layout is computed, not authored: there is no node dragging, no saved positions, no canvas to design. Zoom and pan only. A setup of four or five devices is the case to serve; a hundred nodes is not.
+
+**The tree.** In the metadata column of 9.2, a method whose full path appears in the `LISTEN` list of at least one peer carries a listener badge with the count, and the peers' names on hover. Matching is exact, because `LISTEN` is not recursive (7.4): a container never carries the badge, and a listener on `/foo` never marks `/foo/bar`. A server that does not publish its peers shows no badge at all, which is not the same as a badge showing zero, and the column says which of the two it is.
+
+**What this is not.** The map reads. It does not connect, disconnect, reroute or persist anything (section 3).
 
 ## 10. Performance budgets
 
@@ -387,12 +436,17 @@ These are requirements, and M4 verifies them with a committed benchmark against 
 | Slider drag to UDP packet leaving the socket | under 2 ms |
 | Resident memory with 5000 nodes connected | under 150 MB |
 | Release binary size, macOS aarch64 | under 25 MB |
+| Frame time on the map tab, 8 servers and 24 peers | under 8 ms at p95 |
+| Idle repaints with the map tab visible, 8 servers | one per poll interval and no more |
+| Idle repaints with the map tab not visible | zero, as above |
 
 If a budget cannot be met, record the measured number and the reason in `docs/decisions.md`. Do not quietly relax the table.
 
 Idle means no input reaching the window. Each input event that does reach it costs at least 3 frames in `egui`: the frame of the event, the repaint `egui` asks for after any input, and the second pass it runs after every immediate request. That floor belongs to `egui`; it is documented, not worked around. Amended on 2026-10-12 by the human's ruling.
 
 Closed on 2026-10-12: every budget is measured and met, with the final numbers and how each was taken in `docs/decisions.md`.
+
+The three map lines were added with 9.10. The zero idle repaint budget is kept by polling `?PEERS` only while the map is the visible tab: the map is the one place in the application where a timer may wake the window, and it is why it may not do so from behind another tab.
 
 The `eframe` renderer stays `wgpu`. If the binary size budget fails at M5, switch to `glow` then, not before.
 
@@ -460,6 +514,9 @@ Done when: the artifacts from a tagged CI run launch and connect on all three pl
 
 **M6, interface rework and working surface.** The visual system of 9.1, the three column tree of 9.2, the one line status bar, the server list with removable manual entries and the OSC port field in the server pane, pinned nodes (9.8), presets (9.9), the traffic direction filter and the right click copy of a path. Every budget of section 10 still holds, measured again with the real binary tests.
 Done when: every section 10 budget is met with the real binary tests passing; headless tests lock the removal of a manual entry, the pinned panel, a capture and recall cycle including a recall against another server, and the traffic direction filter; CI is green; the human has looked at the window on the Mac.
+
+**M7, peers and the map.** The `PEERS` and `CLIENT_NAME` extension in `oscq-core` (7.6), the map tab (9.10), the listener badge in the tree, and the three map budgets of section 10. The synthetic server gains `EXTENSIONS`, `?PEERS` and `CLIENT_NAME` so that the whole path is testable in CI, including a server that declares the extension and then fails on `?PEERS`, and a server that declares nothing.
+Done when, in CI: headless tests lock the absent declaration drawing no edge and no badge, the exact and non recursive match of the listener badge, the loop edge of a server connected to itself, the ambiguous edge of two servers sharing one name, the stale marking past three intervals, and zero idle repaints with the map tab not visible; the three map budgets are measured with the real binary tests. Done when, on the human's machine, which CI cannot prove: two servers that declare the extension are both drawn with the edge between them, and the badge appears on exactly the methods their peers listen to and leaves when a peer stops listening.
 
 ## 15. Conventions
 
