@@ -158,7 +158,26 @@ Setup: the synthetic server of section 3 running, Max 9 with its patch as in sec
 
 Proves: the interface rework seen by a person, the server list removal, the pinned panel across tabs and restarts, a capture and recall cycle on the same server and on another one, the traffic direction filter. Cannot prove: anything beyond this Mac and these two servers.
 
-## 6. Publication
+## 6. Peers and the map
+
+Setup: two applications that implement the `PEERS` and `CLIENT_NAME` extension and declare it in their `HOST_INFO`, called A and B here, A connected to B as a client of its WebSocket, on this Mac or the LAN; and Max 9 as in section 2, which declares nothing. The synthetic server cannot stand for A: it is never itself a client of another server. Enter all three with **+ manual**, or let discovery find them, and select each once so that the app connects to it.
+
+1. Open the **Map** tab.
+   Expected: one node per server in the list, the three included. An arrow from A to B, its label the number of values A sent; the node of A titled A, not "unnamed client". A node "OSCQuery Inspector", "this application", with an arrow to A and one to B. Max 9 drawn, "does not publish its peers", no arrow to or from it. Above the map: read every 2 s while this tab is shown, not live. Under A and B: read 0 or 1 s ago, never more than 2.
+2. In A, make it listen to one method of B. Select B, open the **Tree** tab, find that method.
+   Expected: on that method's row, in the metadata column, a badge "1"; on hover, A's name. No badge on its container, its siblings or its children. The line above the tree: listeners as of a time of day a few seconds ago.
+3. In A, stop listening to it. Press **Refresh**.
+   Expected: the badge leaves.
+4. Select Max 9, **Tree** tab.
+   Expected: no badge anywhere; the line above the tree says the listeners are not published by this server.
+5. Back on **Map**, quit A.
+   Expected: within a reading, A's arrow to B leaves; B no longer lists it.
+6. With the map shown, the pointer outside the window, watch the CPU of OSCQuery Inspector in Activity Monitor for ten seconds; then the same on the **Tree** tab.
+   Expected: about 0 % on both.
+
+Proves: the extension read from two real implementations, the edge between them, the badge on exactly the methods a peer listens to and its leaving, a server without the extension drawn with neither edge nor badge. Cannot prove: implementations other than the two run, and a setup larger than the one on the table.
+
+## 7. Publication
 
 Last, and only when every section run above gave what was expected.
 
