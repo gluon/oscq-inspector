@@ -1,8 +1,10 @@
-# Void OSCQ
+# OSCQuery Inspector
 
-Void OSCQ is a desktop application for macOS, Windows and Linux that connects to OSCQuery servers. OSCQuery is a protocol by which an application publishes its OSC address space, the list of everything it can be controlled with, as JSON over HTTP. Void OSCQ finds those servers on the local network, shows their address space as a tree, shows each value, and lets you change them: every change is sent as an OSC message. It keeps the values live when a server pushes them over its WebSocket, but none of the three servers it was tested with pushes its values: only the synthetic server of this repository does, so live updates are proven against it alone.
+OSCQuery Inspector is a desktop application for macOS, Windows and Linux that connects to OSCQuery servers. OSCQuery is a protocol by which an application publishes its OSC address space, the list of everything it can be controlled with, as JSON over HTTP. OSCQuery Inspector finds those servers on the local network, shows their address space as a tree, shows each value, and lets you change them: every change is sent as an OSC message. It keeps the values live when a server pushes them over its WebSocket, but none of the three servers it was tested with pushes its values: only the synthetic server of this repository does, so live updates are proven against it alone.
 
 It is meant for people who build or debug OSC setups: checking what a server really publishes, driving it by hand, and watching the messages that go out and come back.
+
+Formerly void-oscq, shown as Void OSCQ: the versions published under that name, 0.2.3 and earlier, keep it in their downloads, `void-oscq-VERSION-...`, which hold **Void OSCQ.app** on macOS. It is the same application under a new name, and the downloads named below are those of the versions after 0.2.3.
 
 **Download**: the [Releases page](https://github.com/gluon/void-oscq/releases), one file per system, free, unsigned. See [Download and first launch](#download-and-first-launch) for opening an unsigned app the first time. Changes between versions are in [CHANGELOG.md](CHANGELOG.md).
 
@@ -44,44 +46,44 @@ Systems:
 
 Each version is on the [Releases page](https://github.com/gluon/void-oscq/releases), with one file per system. The apps are not signed: your system warns you the first time you open one, and the steps below get past that warning once.
 
-Every download carries the license texts: the GNU GPL, its additional permission and the licenses of the bundled fonts, in a `licenses` folder, inside `Void OSCQ.app/Contents/Resources` on macOS.
+Every download carries the license texts: the GNU GPL, its additional permission and the licenses of the bundled fonts, in a `licenses` folder, inside `OSCQuery Inspector.app/Contents/Resources` on macOS.
 
 ### macOS 12 or later, Apple Silicon or Intel
 
-Download `void-oscq-VERSION-macos-universal.zip`. Unzip it to get **Void OSCQ.app**, and move it to your Applications folder.
+Download `oscq-inspector-VERSION-macos-universal.zip`. Unzip it to get **OSCQuery Inspector.app**, and move it to your Applications folder.
 
 The app is not signed by an identified developer, so macOS stops it the first time:
 
-1. Double click **Void OSCQ**. macOS says it cannot verify the app. Close that dialog: **Done**, **OK** or **Cancel** depending on the macOS version, never **Move to Trash**.
-2. Open **System Settings**, then **Privacy & Security**. Scroll down to **Security**: a line says Void OSCQ was blocked. Click **Open Anyway**, then confirm with your password or Touch ID.
+1. Double click **OSCQuery Inspector**. macOS says it cannot verify the app. Close that dialog: **Done**, **OK** or **Cancel** depending on the macOS version, never **Move to Trash**.
+2. Open **System Settings**, then **Privacy & Security**. Scroll down to **Security**: a line says OSCQuery Inspector was blocked. Click **Open Anyway**, then confirm with your password or Touch ID.
 3. Click **Open** in the last dialog. From now on the app opens normally.
 
 On macOS 12 to 14 there is a shorter way: Control click the app, choose **Open**, then **Open** again.
 
-The first time the app looks for servers, macOS asks whether Void OSCQ may find devices on your local network. Click **Allow**. If you clicked **Don't Allow**, turn it on later in **System Settings**, **Privacy & Security**, **Local Network**. A server on the same Mac, at `localhost`, works either way.
+The first time the app looks for servers, macOS asks whether OSCQuery Inspector may find devices on your local network. Click **Allow**. If you clicked **Don't Allow**, turn it on later in **System Settings**, **Privacy & Security**, **Local Network**. A server on the same Mac, at `localhost`, works either way.
 
 ### Windows 10 or later, 64 bit
 
-Download `void-oscq-VERSION-windows-x86_64.zip` and unzip it: a folder holding `void-oscq-VERSION-windows-x86_64.exe` and a `licenses` folder. The `.exe` is the whole application: no installer, put it where you like.
+Download `oscq-inspector-VERSION-windows-x86_64.zip` and unzip it: a folder holding `oscq-inspector-VERSION-windows-x86_64.exe` and a `licenses` folder. The `.exe` is the whole application: no installer, put it where you like.
 
 The program is not signed, so Windows SmartScreen stops it the first time:
 
 1. Double click the `.exe`. A blue window says **Windows protected your PC**.
 2. Click **More info**, then **Run anyway**.
 
-If Windows Defender Firewall asks whether to allow Void OSCQ on networks, allow it on **private networks**: discovery and the values pushed by servers need it.
+If Windows Defender Firewall asks whether to allow OSCQuery Inspector on networks, allow it on **private networks**: discovery and the values pushed by servers need it.
 
 ### Linux, x86_64
 
-Download `void-oscq-VERSION-linux-x86_64.tar.gz`, unpack it and run the binary:
+Download `oscq-inspector-VERSION-linux-x86_64.tar.gz`, unpack it and run the binary:
 
 ```
-tar -xzf void-oscq-0.2.3-linux-x86_64.tar.gz
-cd void-oscq-0.2.3-linux-x86_64
-./void-oscq
+tar -xzf oscq-inspector-VERSION-linux-x86_64.tar.gz
+cd oscq-inspector-VERSION-linux-x86_64
+./oscq-inspector
 ```
 
-To have it in your application menu with its icon, copy the binary to `~/.local/bin`, the `.desktop` file to `~/.local/share/applications`, and `void-oscq.png` to `~/.local/share/icons/hicolor/256x256/apps`.
+To have it in your application menu with its icon, copy the binary to `~/.local/bin`, the `.desktop` file to `~/.local/share/applications`, and `oscq-inspector.png` to `~/.local/share/icons/hicolor/256x256/apps`.
 
 What the system needs to run it: X11 or Wayland, `libxkbcommon-x11-0` on X11, and a Vulkan or OpenGL driver (Mesa is enough). It needs glibc 2.35 or newer, as on Ubuntu 22.04 or later. The release build prints this requirement, measured on the binary.
 
@@ -97,15 +99,15 @@ What the system needs to run it: X11 or Wayland, `libxkbcommon-x11-0` on X11, an
 - **Pinning.** Right click a row: **Pin** puts it in the pinned panel, where its widget works as in the tree; **Unpin** removes it, and so does the **×** at the end of its row in the panel. **Copy path** copies its full path. Pins are kept per server; a pinned path the server no longer has is shown as absent.
 - **Presets.** **+ PRESETS** opens the section, folded until then. **Capture** on a slot stores the values of the writable nodes, the pinned ones only when nodes are pinned; **Recall** sends them back, all at once, logged as one block in the Traffic tab. Recalled on another server, only the nodes at the same path with the same type are sent; the status bar counts those not found. No confirmation either way: a capture replaces the slot.
 - **Setting the OSC port.** When the server does not advertise its OSC port, the server pane shows "port inferred from the HTTP port" under **OSC destination**, and an OSC port field. Type the port the server receives OSC on, then **Set OSC port** or Enter: the server pane says "port set by the user", sends go there, and the port is kept for that server in the config, used again at every connection and after a restart. **Infer OSC port** goes back to the HTTP port and forgets the setting. A port the server advertises is not editable and always wins, even over a port set earlier: the setting fills a silence of the server, it never contradicts what the server declares.
-- Settings are saved in your system's configuration folder, in `void-oscq/config.json`: window size and place, manual entries, the last selected server, the theme, pinned paths, the OSC ports you set, the preset slots. JSON and traffic exports go to `void-oscq/exports/` beside it.
+- Settings are saved in your system's configuration folder, in `void-oscq/config.json`: window size and place, manual entries, the last selected server, the theme, pinned paths, the OSC ports you set, the preset slots. JSON and traffic exports go to `void-oscq/exports/` beside it. The folder keeps the name the application had before: an installed copy finds its settings again.
 
 ## License
 
-Copyright (C) 2026 Julien Bayle, Structure Void. Void OSCQ is free software under the GNU General Public License, version 3 or any later version ([LICENSE](LICENSE)), with an additional permission for the fonts compiled into the application ([LICENSE-EXCEPTION](LICENSE-EXCEPTION)). The fonts keep their own licenses, in [licenses/fonts](licenses/fonts).
+Copyright (C) 2026 Julien Bayle, Structure Void. OSCQuery Inspector is free software under the GNU General Public License, version 3 or any later version ([LICENSE](LICENSE)), with an additional permission for the fonts compiled into the application ([LICENSE-EXCEPTION](LICENSE-EXCEPTION)). The fonts keep their own licenses, in [licenses/fonts](licenses/fonts).
 
 ## Status
 
-Latest published version: 0.2.3, tagged and released on 2026-10-14, the first whose files are on the Releases page. Its macOS download was installed and checked by hand on a Mac against Max 9; earlier versions were checked the same way, and against OSCQuery Helper on a local network. What each check proved is recorded in [docs/acceptance.md](docs/acceptance.md), under "Acceptance record".
+Latest published version: 0.2.3, tagged and released on 2026-10-14, the first whose files are on the Releases page, published under the application's former name. Its macOS download was installed and checked by hand on a Mac against Max 9; earlier versions were checked the same way, and against OSCQuery Helper on a local network. What each check proved is recorded in [docs/acceptance.md](docs/acceptance.md), under "Acceptance record".
 
 Backlog:
 
@@ -135,7 +137,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 Rust stable, then:
 
 ```
-cargo run -p void-oscq --release
+cargo run -p oscq-inspector --release
 ```
 
 Linux build dependencies, as installed in CI:
@@ -160,7 +162,7 @@ cargo test --workspace --locked
 | --- | --- |
 | `crates/oscq-core` | protocol: address space model, document parser, HTTP client, `HOST_INFO`, WebSocket client, OSC sending |
 | `crates/oscq-discovery` | mDNS browsing and manual entry, depends on `oscq-core` |
-| `crates/void-oscq` | the `eframe` application, UI only |
+| `crates/oscq-inspector` | the `eframe` application, UI only |
 
 `oscq-core` and `oscq-discovery` never depend on `egui` or `eframe`; CI enforces it. Every crate takes the one workspace version, which a release tag must match.
 
@@ -168,10 +170,10 @@ Protocol answers with their sources are in [docs/protocol-notes.md](docs/protoco
 
 ### Tools
 
-The application icon is drawn in code, `crates/void-oscq/src/icon.rs`: the window icon, the macOS `.icns`, the Windows executable's icon and the Linux `.png` all come from it, and no image file is stored. The release packaging writes the image files with:
+The application icon is drawn in code, `crates/oscq-inspector/src/icon.rs`: the window icon, the macOS `.icns`, the Windows executable's icon and the Linux `.png` all come from it, and no image file is stored. The release packaging writes the image files with:
 
 ```
-cargo run -p void-oscq --example icons -- OUT_DIR
+cargo run -p oscq-inspector --example icons -- OUT_DIR
 ```
 
 `oscq_discover` lists OSCQuery and OSC servers live, with each address and the interface it was seen on:
@@ -204,7 +206,7 @@ cargo test --release --workspace -- --ignored budget_ --nocapture --test-threads
 The real binary, window included, against the synthetic server; needs a display, Linux or macOS, and the pointer outside the window:
 
 ```
-cargo test --release -p void-oscq --test budgets_binary -- --ignored --nocapture --test-threads=1
+cargo test --release -p oscq-inspector --test budgets_binary -- --ignored --nocapture --test-threads=1
 ```
 
 ### Release

@@ -4,7 +4,7 @@
 //! Needs a display, Linux or macOS, and a release build:
 //!
 //! ```text
-//! cargo test --release -p void-oscq --test budgets_binary -- --ignored --nocapture --test-threads=1
+//! cargo test --release -p oscq-inspector --test budgets_binary -- --ignored --nocapture --test-threads=1
 //! ```
 
 #![allow(clippy::unwrap_used)] // test code, unwrap is allowed outside production paths (PRD 11)
@@ -141,7 +141,7 @@ impl Launch {
         let key = format!("127.0.0.1:{}", server.addr.port());
 
         let base = std::env::temp_dir().join(format!(
-            "void-oscq-budget-{}-{}",
+            "oscq-inspector-budget-{}-{}",
             std::process::id(),
             server.addr.port()
         ));
@@ -158,11 +158,11 @@ impl Launch {
         std::fs::write(&config_path, config.to_string()).unwrap();
 
         let spawned = Instant::now();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_void-oscq"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_oscq-inspector"))
             .env(env_var, &base)
             .env(
                 "RUST_LOG",
-                "void_oscq::startup=info,void_oscq::frame=trace,void_oscq::event=trace",
+                "oscq_inspector::startup=info,oscq_inspector::frame=trace,oscq_inspector::event=trace",
             )
             .env("NO_COLOR", "1")
             .stdout(Stdio::piped())
@@ -233,14 +233,14 @@ impl Launch {
     /// and the CPU used, percent of one core.
     fn idle(&self) -> Idle {
         let pid = self.pid();
-        let frames0 = self.lines_of("void_oscq::frame").len();
-        let events0 = self.lines_of("void_oscq::event").len();
+        let frames0 = self.lines_of("oscq_inspector::frame").len();
+        let events0 = self.lines_of("oscq_inspector::event").len();
         let (cpu0, t0) = (cpu_time(pid), Instant::now());
         std::thread::sleep(IDLE_WINDOW);
         let (cpu1, t1) = (cpu_time(pid), Instant::now());
         Idle {
-            frames: self.lines_of("void_oscq::frame").split_off(frames0),
-            events: self.lines_of("void_oscq::event").split_off(events0),
+            frames: self.lines_of("oscq_inspector::frame").split_off(frames0),
+            events: self.lines_of("oscq_inspector::event").split_off(events0),
             cpu: (cpu1 - cpu0).as_secs_f64() / (t1 - t0).as_secs_f64() * 100.0,
         }
     }
@@ -324,7 +324,7 @@ impl Drop for Launch {
 
 /// What asked for each frame, most frequent first: the source locations egui recorded for the
 /// repaint requests of the frame before, or none when the frame was woken by the operating
-/// system or by input. `void-oscq/src/app.rs` at the notify callback means a network or
+/// system or by input. `oscq-inspector/src/app.rs` at the notify callback means a network or
 /// discovery event.
 fn causes(frames: &[String]) -> Vec<(usize, String)> {
     let mut counts: std::collections::BTreeMap<String, usize> = Default::default();

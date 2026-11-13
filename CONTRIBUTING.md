@@ -1,12 +1,12 @@
 # Contributing
 
-Void OSCQ is developed by Julien Bayle for his own use, building and debugging OSC setups, and published in case it serves others. There is no team behind it and no roadmap beyond the backlog in the [README](README.md#status).
+OSCQuery Inspector is developed by Julien Bayle for his own use, building and debugging OSC setups, and published in case it serves others. There is no team behind it and no roadmap beyond the backlog in the [README](README.md#status).
 
 ## Issues
 
 Issues are read. The most useful ones say:
 
-- the version of Void OSCQ, from its About box, and the system it runs on;
+- the version of OSCQuery Inspector, from its About box, and the system it runs on;
 - the server: its name and version, and whether it is advertised over Bonjour or added by hand;
 - what you did, what you expected, what you saw; the status bar's message, and the Traffic tab exported as text when messages are involved.
 
@@ -28,4 +28,4 @@ Repository text and code are in English. The [documents in this repository](READ
 
 ## License
 
-Void OSCQ is under the GNU General Public License, version 3 or any later version ([LICENSE](LICENSE)), with an additional permission under its section 7 for the fonts compiled into the application ([LICENSE-EXCEPTION](LICENSE-EXCEPTION)). A contribution is accepted under the same terms, the additional permission included.
+OSCQuery Inspector is under the GNU General Public License, version 3 or any later version ([LICENSE](LICENSE)), with an additional permission under its section 7 for the fonts compiled into the application ([LICENSE-EXCEPTION](LICENSE-EXCEPTION)). A contribution is accepted under the same terms, the additional permission included.

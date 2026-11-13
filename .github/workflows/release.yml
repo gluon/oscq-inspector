@@ -22,10 +22,10 @@ on:
       - "LICENSE"
       - "LICENSE-EXCEPTION"
       - "licenses/**"
-      - "crates/void-oscq/build.rs"
-      - "crates/void-oscq/examples/icons.rs"
-      - "crates/void-oscq/src/icon.rs"
-      - "crates/void-oscq/src/winres.rs"
+      - "crates/oscq-inspector/build.rs"
+      - "crates/oscq-inspector/examples/icons.rs"
+      - "crates/oscq-inspector/src/icon.rs"
+      - "crates/oscq-inspector/src/winres.rs"
 
 permissions:
   contents: read
@@ -60,15 +60,15 @@ jobs:
 
       - name: Build aarch64 and x86_64
         run: |
-          cargo build --release --locked -p void-oscq --target aarch64-apple-darwin
-          cargo build --release --locked -p void-oscq --target x86_64-apple-darwin
+          cargo build --release --locked -p oscq-inspector --target aarch64-apple-darwin
+          cargo build --release --locked -p oscq-inspector --target x86_64-apple-darwin
 
       - name: Bundle, universal binary, icon, ad hoc signature
         run: ./packaging/macos/bundle.sh "${{ steps.version.outputs.version }}" dist
 
       - name: The bundle's version keys match the crates and the tag
         run: |
-          plist="dist/Void OSCQ.app/Contents/Info.plist"
+          plist="dist/OSCQuery Inspector.app/Contents/Info.plist"
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then ./ci/release-version.sh "$GITHUB_REF_NAME" --plist "$plist"; else ./ci/release-version.sh --plist "$plist"; fi
 
       # Signing and notarisation, disabled in v1 (PRD 13: no signing, no notarisation). Enabling it
@@ -98,29 +98,29 @@ jobs:
           security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$keychain"
           security import "$RUNNER_TEMP/certificate.p12" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
           security list-keychain -d user -s "$keychain"
-          codesign --force --deep --options runtime --timestamp --sign "$MACOS_SIGNING_IDENTITY" "dist/Void OSCQ.app"
-          ditto -c -k --keepParent "dist/Void OSCQ.app" "$RUNNER_TEMP/notarise.zip"
+          codesign --force --deep --options runtime --timestamp --sign "$MACOS_SIGNING_IDENTITY" "dist/OSCQuery Inspector.app"
+          ditto -c -k --keepParent "dist/OSCQuery Inspector.app" "$RUNNER_TEMP/notarise.zip"
           xcrun notarytool submit "$RUNNER_TEMP/notarise.zip" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
-          xcrun stapler staple "dist/Void OSCQ.app"
+          xcrun stapler staple "dist/OSCQuery Inspector.app"
 
       - name: The bundled binary starts
-        run: ./ci/smoke-start.sh "dist/Void OSCQ.app/Contents/MacOS/void-oscq"
+        run: ./ci/smoke-start.sh "dist/OSCQuery Inspector.app/Contents/MacOS/oscq-inspector"
 
       - name: Zip
         id: zip
         run: |
-          zip="dist/void-oscq-${{ steps.version.outputs.version }}-macos-universal.zip"
-          ditto -c -k --keepParent "dist/Void OSCQ.app" "$zip"
+          zip="dist/oscq-inspector-${{ steps.version.outputs.version }}-macos-universal.zip"
+          ditto -c -k --keepParent "dist/OSCQuery Inspector.app" "$zip"
           echo "path=$zip" >> "$GITHUB_OUTPUT"
 
       - name: The zip carries the license texts
         run: |
           ditto -x -k "${{ steps.zip.outputs.path }}" "$RUNNER_TEMP/unzipped"
-          ./ci/check-licenses.sh "$RUNNER_TEMP/unzipped/Void OSCQ.app/Contents/Resources/licenses"
+          ./ci/check-licenses.sh "$RUNNER_TEMP/unzipped/OSCQuery Inspector.app/Contents/Resources/licenses"
 
       - uses: actions/upload-artifact@v7
         with:
-          name: void-oscq-${{ steps.version.outputs.version }}-macos-universal
+          name: oscq-inspector-${{ steps.version.outputs.version }}-macos-universal
           path: ${{ steps.zip.outputs.path }}
           if-no-files-found: error
 
@@ -144,14 +144,14 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Build
-        run: cargo build --release --locked -p void-oscq
+        run: cargo build --release --locked -p oscq-inspector
 
       # build.rs links the icon as a resource; Explorer reads it with the same call as this check.
       - name: The executable carries its icon
         shell: pwsh
         run: |
           Add-Type -Namespace Win32 -Name Shell -MemberDefinition '[DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern uint ExtractIconEx(string file, int index, IntPtr[] large, IntPtr[] small, uint count);'
-          $exe = (Resolve-Path target/release/void-oscq.exe).Path
+          $exe = (Resolve-Path target/release/oscq-inspector.exe).Path
           $count = [Win32.Shell]::ExtractIconEx($exe, -1, $null, $null, 0)
           $large = New-Object IntPtr[] 1
           $extracted = [Win32.Shell]::ExtractIconEx($exe, 0, $large, $null, 1)
@@ -166,9 +166,9 @@ jobs:
         id: exe
         shell: bash
         run: |
-          dir="dist/void-oscq-${{ steps.version.outputs.version }}-windows-x86_64"
+          dir="dist/oscq-inspector-${{ steps.version.outputs.version }}-windows-x86_64"
           mkdir -p "$dir"
-          cp target/release/void-oscq.exe "$dir/void-oscq-${{ steps.version.outputs.version }}-windows-x86_64.exe"
+          cp target/release/oscq-inspector.exe "$dir/oscq-inspector-${{ steps.version.outputs.version }}-windows-x86_64.exe"
           ./packaging/licenses.sh "$dir/licenses"
           echo "dir=$dir" >> "$GITHUB_OUTPUT"
           echo "zip=$dir.zip" >> "$GITHUB_OUTPUT"
@@ -182,13 +182,13 @@ jobs:
         run: |
           mkdir -p unpacked
           pwsh -Command "Expand-Archive -Path '${{ steps.exe.outputs.zip }}' -DestinationPath unpacked"
-          base="unpacked/void-oscq-${{ steps.version.outputs.version }}-windows-x86_64"
+          base="unpacked/oscq-inspector-${{ steps.version.outputs.version }}-windows-x86_64"
           ./ci/check-licenses.sh "$base/licenses"
-          ./ci/smoke-start.sh "$base/void-oscq-${{ steps.version.outputs.version }}-windows-x86_64.exe"
+          ./ci/smoke-start.sh "$base/oscq-inspector-${{ steps.version.outputs.version }}-windows-x86_64.exe"
 
       - uses: actions/upload-artifact@v7
         with:
-          name: void-oscq-${{ steps.version.outputs.version }}-windows-x86_64
+          name: oscq-inspector-${{ steps.version.outputs.version }}-windows-x86_64
           path: ${{ steps.exe.outputs.zip }}
           if-no-files-found: error
 
@@ -218,7 +218,7 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Build
-        run: cargo build --release --locked -p void-oscq
+        run: cargo build --release --locked -p oscq-inspector
 
       - name: Tarball with the .desktop file
         id: tarball
@@ -228,13 +228,13 @@ jobs:
         run: |
           mkdir -p unpacked
           tar -C unpacked -xzf "${{ steps.tarball.outputs.path }}"
-          file "unpacked/void-oscq-${{ steps.version.outputs.version }}-linux-x86_64/void-oscq.png" | grep "PNG image data, 256 x 256"
-          ./ci/check-licenses.sh "unpacked/void-oscq-${{ steps.version.outputs.version }}-linux-x86_64/licenses"
-          xvfb-run -a ./ci/smoke-start.sh "unpacked/void-oscq-${{ steps.version.outputs.version }}-linux-x86_64/void-oscq"
+          file "unpacked/oscq-inspector-${{ steps.version.outputs.version }}-linux-x86_64/oscq-inspector.png" | grep "PNG image data, 256 x 256"
+          ./ci/check-licenses.sh "unpacked/oscq-inspector-${{ steps.version.outputs.version }}-linux-x86_64/licenses"
+          xvfb-run -a ./ci/smoke-start.sh "unpacked/oscq-inspector-${{ steps.version.outputs.version }}-linux-x86_64/oscq-inspector"
 
       - uses: actions/upload-artifact@v7
         with:
-          name: void-oscq-${{ steps.version.outputs.version }}-linux-x86_64
+          name: oscq-inspector-${{ steps.version.outputs.version }}-linux-x86_64
           path: ${{ steps.tarball.outputs.path }}
           if-no-files-found: error
 
@@ -278,7 +278,7 @@ jobs:
           ls -l dist
           v="${GITHUB_REF_NAME#v}"
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
-            --title "Void OSCQ $v" --notes-file dist/notes.md \
-            "dist/void-oscq-$v-macos-universal.zip" \
-            "dist/void-oscq-$v-windows-x86_64.zip" \
-            "dist/void-oscq-$v-linux-x86_64.tar.gz"
+            --title "OSCQuery Inspector $v" --notes-file dist/notes.md \
+            "dist/oscq-inspector-$v-macos-universal.zip" \
+            "dist/oscq-inspector-$v-windows-x86_64.zip" \
+            "dist/oscq-inspector-$v-linux-x86_64.tar.gz"

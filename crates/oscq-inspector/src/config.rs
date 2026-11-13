@@ -116,7 +116,8 @@ mod tests {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("void-oscq-test-{name}-{}", std::process::id()));
+        let d =
+            std::env::temp_dir().join(format!("oscq-inspector-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d
     }

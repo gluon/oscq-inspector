@@ -17,7 +17,7 @@ define_class!(
     // SAFETY: NSObject has no subclassing requirements, and the class adds no ivars and no Drop.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[name = "VoidOscqAboutTarget"]
+    #[name = "OscqInspectorAboutTarget"]
     struct AboutTarget;
 
     impl AboutTarget {
@@ -65,7 +65,10 @@ pub fn install(ctx: &egui::Context) -> bool {
         about.setTarget(Some(&target));
         about.setAction(Some(sel!(showAbout:)));
     }
-    about.setTitle(&NSString::from_str("About Void OSCQ"));
+    about.setTitle(&NSString::from_str(&format!(
+        "About {}",
+        crate::app::APP_NAME
+    )));
     std::mem::forget(target);
     true
 }

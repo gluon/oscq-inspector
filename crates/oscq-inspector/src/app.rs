@@ -28,6 +28,10 @@ use crate::traffic;
 use crate::tree::{self, Hit, NodeIndex, Row};
 use crate::widget::{self, WidgetKind};
 
+/// The application's name, wherever it is shown: the window title, the about box, the macOS
+/// application menu.
+pub const APP_NAME: &str = "OSCQuery Inspector";
+
 /// Events applied per frame at most, so a flood cannot starve rendering.
 const EVENTS_PER_FRAME: usize = 512;
 /// Window geometry is saved once it has been stable this long.
@@ -166,7 +170,7 @@ struct Owned {
     discovery: oscq_discovery::MdnsSdDiscovery,
 }
 
-pub struct VoidApp {
+pub struct InspectorApp {
     state: AppState,
     backend: Backend,
     config: Config,
@@ -184,7 +188,7 @@ pub struct VoidApp {
     launched: Option<Instant>,
 }
 
-impl VoidApp {
+impl InspectorApp {
     /// The application as it runs: network service and discovery on `runtime`.
     pub fn start(
         launched: Instant,
@@ -288,14 +292,14 @@ impl VoidApp {
         let ctx = ui.ctx().clone();
         // Why this frame runs: where the previous pass asked for it. Costs nothing when off.
         tracing::trace!(
-            target: "void_oscq::frame",
+            target: "oscq_inspector::frame",
             causes = ?ctx.repaint_causes(),
             inputs = ?input_kinds(&ctx),
             "frame"
         );
         if let Some(t) = self.launched.take() {
             tracing::info!(
-                target: "void_oscq::startup",
+                target: "oscq_inspector::startup",
                 "first frame {:.1} ms after launch",
                 t.elapsed().as_secs_f64() * 1000.0
             );
@@ -420,7 +424,7 @@ impl VoidApp {
                     moved(p);
                 }
             }
-            tracing::trace!(target: "void_oscq::event", kind = event_kind(&event));
+            tracing::trace!(target: "oscq_inspector::event", kind = event_kind(&event));
             self.state.apply(event);
             if let Some(id) = restore {
                 self.act(ctx, Action::SelectServer(id));
@@ -1411,13 +1415,13 @@ impl VoidApp {
     }
 }
 
-impl eframe::App for VoidApp {
+impl eframe::App for InspectorApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.frame(ui);
     }
 }
 
-impl Drop for VoidApp {
+impl Drop for InspectorApp {
     fn drop(&mut self) {
         let _ = self.backend.commands.send(Command::Shutdown);
         if let Some(mut owned) = self.owned.take() {
@@ -1543,7 +1547,7 @@ enum AboutLine {
 
 fn about_lines() -> Vec<AboutLine> {
     let mut lines = vec![
-        AboutLine::Title("Void OSCQ"),
+        AboutLine::Title(APP_NAME),
         AboutLine::Text(format!("version {}", env!("CARGO_PKG_VERSION"))),
         AboutLine::Text(format!("{}, Structure Void", env!("CARGO_PKG_AUTHORS"))),
     ];
@@ -3002,7 +3006,7 @@ mod tests {
 
     struct Harness {
         ctx: egui::Context,
-        app: VoidApp,
+        app: InspectorApp,
         commands: flume::Receiver<Command>,
         events: flume::Sender<Event>,
         _rt: tokio::runtime::Runtime,
@@ -3020,7 +3024,7 @@ mod tests {
         let (cmd_tx, cmd_rx) = flume::unbounded();
         let (ev_tx, ev_rx) = flume::unbounded();
         let ctx = egui::Context::default();
-        let mut app = VoidApp::with_backend(
+        let mut app = InspectorApp::with_backend(
             &ctx,
             Backend {
                 commands: cmd_tx,
@@ -3994,7 +3998,7 @@ mod tests {
         let (ev_tx, ev_rx) = flume::unbounded();
         let commands = oscq_core::service::spawn(rt.handle(), ev_tx, Arc::new(|| {}));
         let ctx = egui::Context::default();
-        let app = VoidApp::with_backend(
+        let app = InspectorApp::with_backend(
             &ctx,
             Backend {
                 commands,
@@ -4019,7 +4023,7 @@ mod tests {
         (h, server, osc)
     }
 
-    fn wait_for(h: &mut Harness, what: &str, done: impl Fn(&VoidApp) -> bool) {
+    fn wait_for(h: &mut Harness, what: &str, done: impl Fn(&InspectorApp) -> bool) {
         let end = Instant::now() + Duration::from_secs(10);
         while !done(&h.app) {
             assert!(Instant::now() < end, "timed out waiting for {what}");
@@ -4048,7 +4052,7 @@ mod tests {
         let (ev_tx, ev_rx) = flume::unbounded();
         let commands = oscq_core::service::spawn(rt.handle(), ev_tx, Arc::new(|| {}));
         let ctx = egui::Context::default();
-        let app = VoidApp::with_backend(
+        let app = InspectorApp::with_backend(
             &ctx,
             Backend {
                 commands,
@@ -4807,7 +4811,7 @@ mod tests {
         let version = format!("version {}", env!("CARGO_PKG_VERSION"));
         let license_line = format!("License {license}");
         let six: [(&str, &str); 6] = [
-            ("the name", "Void OSCQ"),
+            ("the name", "OSCQuery Inspector"),
             ("the version", &version),
             ("the author", "Julien Bayle"),
             ("the studio", "Structure Void"),
@@ -5061,7 +5065,7 @@ mod tests {
         let (ev_tx, ev_rx) = flume::unbounded();
         let commands = oscq_core::service::spawn(rt.handle(), ev_tx, Arc::new(|| {}));
         let ctx = egui::Context::default();
-        let app = VoidApp::with_backend(
+        let app = InspectorApp::with_backend(
             &ctx,
             Backend {
                 commands,
@@ -5087,7 +5091,7 @@ mod tests {
                 .selected_entry()
                 .is_some_and(|e| e.conn == ConnState::Connected && e.tree.is_some())
         });
-        let rows = |a: &VoidApp| {
+        let rows = |a: &InspectorApp| {
             let e = a.state.selected_entry().unwrap();
             let t = e.tree.as_ref().unwrap();
             ["/declared", "/inferred"].map(|p| {
@@ -5151,7 +5155,7 @@ mod tests {
         let (ev_tx, ev_rx) = flume::unbounded();
         let commands = oscq_core::service::spawn(rt.handle(), ev_tx, Arc::new(|| {}));
         let ctx = egui::Context::default();
-        let app = VoidApp::with_backend(
+        let app = InspectorApp::with_backend(
             &ctx,
             Backend {
                 commands,
@@ -5212,7 +5216,7 @@ mod tests {
             ..Config::default()
         });
         let port_of =
-            |a: &VoidApp| match a.state.selected_entry().and_then(|e| e.destination.clone()) {
+            |a: &InspectorApp| match a.state.selected_entry().and_then(|e| e.destination.clone()) {
                 Some(Ok(d)) => Some((d.port, d.port_source)),
                 _ => None,
             };
@@ -5263,7 +5267,7 @@ mod tests {
         ));
 
         // The config as saved, read back: a restart connects with the user's port.
-        let dir = std::env::temp_dir().join(format!("void-oscq-port-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("oscq-inspector-port-{}", std::process::id()));
         let path = config::config_path(&dir);
         config::write_atomic(&path, &h.app.config.to_bytes()).unwrap();
         let (saved, warning) = Config::load(&path);
@@ -5325,7 +5329,7 @@ mod tests {
             "/g0/p1".into(),
             vec![OscType::Float(0.75)],
         ));
-        let shown = |a: &VoidApp, path: &str| {
+        let shown = |a: &InspectorApp, path: &str| {
             a.state
                 .selected_entry()
                 .and_then(|e| e.tree.as_ref())
@@ -5414,7 +5418,7 @@ mod tests {
     }
 
     /// PRD 10, measured on the synthetic server's 5000 node document. Run on a release build:
-    /// `cargo test --release -p void-oscq -- --ignored budget_ --nocapture --test-threads=1`.
+    /// `cargo test --release -p oscq-inspector -- --ignored budget_ --nocapture --test-threads=1`.
     mod budgets {
         use super::*;
         use crate::synthetic::large_document;
@@ -5635,7 +5639,7 @@ mod tests {
             manual_entries: vec!["10.0.0.2:2345".into(), "bad".into()],
             ..Config::default()
         };
-        let app = VoidApp::with_backend(
+        let app = InspectorApp::with_backend(
             &egui::Context::default(),
             Backend {
                 commands: cmd_tx,
@@ -5663,7 +5667,7 @@ mod tests {
             last_selected: Some("10.0.0.2:2345".into()),
             ..Config::default()
         };
-        let app = VoidApp::with_backend(
+        let app = InspectorApp::with_backend(
             &egui::Context::default(),
             Backend {
                 commands: cmd_tx,

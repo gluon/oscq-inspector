@@ -175,7 +175,7 @@ Listed for the human during M0. All items were ruled on 2026-10-09: the proposal
 18. PRD 9.3, colour picker for "`r` or `ffff` named as a colour by `EXTENDED_TYPE`": SPEC treats `r` as a colour on its own (SPEC#L129, SPEC#L190). For `ffff`, the colour names are inconsistent inside the proposal: EXT lists `color.rgb.[rgba]` (EXT line 44) while SPEC's example uses `color.rgba.r` (SPEC#L477 to L480). Both spellings must be accepted.
 19. PRD 11, error cases: "returned a non 200 status" as an error. SPEC defines 204 as a legitimate "inappropriate request" answer, and REF answers unsupported attributes with 200 and `{}`. A single value refresh must treat 204, 400 and `{}` as "value not available", not as a transport error. Also SPEC#L64 and SPEC#L71 contradict each other on 204 vs 400 (section 9).
 20. PRD 8.1, `_osc._udp.local.`: not part of the OSCQuery proposal. Its use is a product choice, not a spec requirement. Registration status not proven here (section 1).
-21. PRD header, crate name `void-oscq` free on crates.io: confirmed on 2026-10-09, `GET https://crates.io/api/v1/crates/void-oscq` returned 404, control request for `rosc` returned 200. All three crates are `publish = false` until a publication decision.
+21. PRD header, crate name `void-oscq` free on crates.io: confirmed on 2026-10-09, `GET https://crates.io/api/v1/crates/void-oscq` returned 404, control request for `rosc` returned 200. All three crates are `publish = false` until a publication decision. The application crate was renamed `oscq-inspector` on 2026-11-13; that name has not been checked on crates.io.
 
 ## 11. Behaviour of real servers
 

@@ -1,8 +1,12 @@
 # Changelog
 
-Every published version of Void OSCQ, newest first. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html). A version's date is the date of its tag.
+Every published version of OSCQuery Inspector, formerly void-oscq and published under that name up to 0.2.3, newest first. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html). A version's date is the date of its tag.
 
 ## [Unreleased]
+
+### Changed
+
+- **Name**: the application is OSCQuery Inspector. Its crate, its binary, its downloads and its `.desktop` file are `oscq-inspector`; on macOS the bundle is **OSCQuery Inspector.app**. The macOS bundle identifier and the settings folder keep the former name, so that an installed copy stays the same application to its system and finds its settings again.
 
 ## [0.2.3] - 2026-10-14
 

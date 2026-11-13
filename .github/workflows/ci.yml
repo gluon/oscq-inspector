@@ -71,8 +71,8 @@ jobs:
       - name: Release binary size
         shell: bash
         run: |
-          cargo build --release --locked -p void-oscq
-          ./ci/binary-size.sh target/release/void-oscq${{ runner.os == 'Windows' && '.exe' || '' }}
+          cargo build --release --locked -p oscq-inspector
+          ./ci/binary-size.sh target/release/oscq-inspector${{ runner.os == 'Windows' && '.exe' || '' }}
 
   real-binary:
     name: real binary (${{ matrix.os }})
@@ -102,7 +102,7 @@ jobs:
         run: |
           run=""
           if [ "$RUNNER_OS" = "Linux" ]; then run="xvfb-run -a"; fi
-          $run cargo test --release --locked -p void-oscq --test budgets_binary -- --ignored --exact real_binary_does_not_repaint_when_idle --nocapture
+          $run cargo test --release --locked -p oscq-inspector --test budgets_binary -- --ignored --exact real_binary_does_not_repaint_when_idle --nocapture
 
       # Numbers for docs/decisions.md from a CI machine, not the human's; a measurement, not a gate.
       - name: Real binary budgets, measurement only
@@ -111,7 +111,7 @@ jobs:
         run: |
           run=""
           if [ "$RUNNER_OS" = "Linux" ]; then run="xvfb-run -a"; fi
-          $run cargo test --release --locked -p void-oscq --test budgets_binary -- --ignored real_binary_ --nocapture --test-threads=1
+          $run cargo test --release --locked -p oscq-inspector --test budgets_binary -- --ignored real_binary_ --nocapture --test-threads=1
 
   guards:
     name: guards

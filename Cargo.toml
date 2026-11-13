@@ -3,7 +3,7 @@ resolver = "3"
 members = [
     "crates/oscq-core",
     "crates/oscq-discovery",
-    "crates/void-oscq",
+    "crates/oscq-inspector",
 ]
 
 # One version for every crate and for the release tag, checked by ci/check-release-version.sh.

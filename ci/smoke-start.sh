@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Starts a built void-oscq with an empty configuration and fails unless it draws its first frame
+# Starts a built oscq-inspector with an empty configuration and fails unless it draws its first frame
 # within 30 s. Needs a display. Argument: path to the binary.
 set -euo pipefail
 bin="$1"
 home=$(mktemp -d)
 log="$home/log.txt"
 HOME="$home" XDG_CONFIG_HOME="$home" APPDATA="$home" NO_COLOR=1 \
-    RUST_LOG=void_oscq::startup=info "$bin" >"$log" 2>&1 &
+    RUST_LOG=oscq_inspector::startup=info "$bin" >"$log" 2>&1 &
 pid=$!
 for _ in $(seq 1 300); do
     if grep -q "first frame" "$log"; then

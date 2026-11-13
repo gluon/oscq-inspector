@@ -1,5 +1,5 @@
 [package]
-name = "void-oscq"
+name = "oscq-inspector"
 version.workspace = true
 authors.workspace = true
 license.workspace = true

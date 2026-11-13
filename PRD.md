@@ -1,8 +1,8 @@
-# Void OSCQ: Product Requirements Document
+# OSCQuery Inspector: Product Requirements Document
 
-Status: v1 spec, locked for implementation. Amended on 2026-10-09 with the human's rulings on the M0 protocol discrepancies, see `docs/protocol-notes.md` section 10. Amended on 2026-10-12 with the human's rulings after M5: "cannot send" in place of "read only" (sections 3, 7.2, 9.6), the user's OSC port (7.2, 9.6, 9.7). Amended on 2026-10-13 for milestone M6: visual system, server list, pinned nodes, presets, traffic direction filter (sections 3, 9, 14, 17). Amended again on 2026-10-13, after the human found Refresh off screen: the toolbar and the narrow window rule (9.1). Then the narrow tree, the pane handles, the discovery line and the about box (9.1). Amended for v0.2.2: the filter path only on ambiguity, Writable only, the folding preset section, the light theme (sections 3, 9.1, 9.2, 9.7, 9.9). Amended after v0.2.2: the check box labelled Writable, the one line threshold at 1060 points (9.1, 9.2).
+Status: v1 spec, locked for implementation. Amended on 2026-10-09 with the human's rulings on the M0 protocol discrepancies, see `docs/protocol-notes.md` section 10. Amended on 2026-10-12 with the human's rulings after M5: "cannot send" in place of "read only" (sections 3, 7.2, 9.6), the user's OSC port (7.2, 9.6, 9.7). Amended on 2026-10-13 for milestone M6: visual system, server list, pinned nodes, presets, traffic direction filter (sections 3, 9, 14, 17). Amended again on 2026-10-13, after the human found Refresh off screen: the toolbar and the narrow window rule (9.1). Then the narrow tree, the pane handles, the discovery line and the about box (9.1). Amended for v0.2.2: the filter path only on ambiguity, Writable only, the folding preset section, the light theme (sections 3, 9.1, 9.2, 9.7, 9.9). Amended after v0.2.2: the check box labelled Writable, the one line threshold at 1060 points (9.1, 9.2). Amended on 2026-11-13: the application renamed OSCQuery Inspector, crate and binary `oscq-inspector` (this header, 6.1).
 Audience: the engineer (human or agent) implementing the app from scratch.
-Name: `void-oscq`, final. Binary `void-oscq`, app display name "Void OSCQ", repository `gluon/void-oscq`, public since 2026-10-12. The crate name `void-oscq` was free on crates.io at the time of writing; verify again before any publication.
+Name: OSCQuery Inspector, since 2026-11-13. Crate and binary `oscq-inspector`, app display name "OSCQuery Inspector". Two things keep the name the application had before, so that an installed copy stays the same application to its system: the macOS bundle identifier, and the folder of the config file (9.7); the reason is in `docs/decisions.md`, 2026-10-14 and 2026-11-13. The repository, public since 2026-10-12, is `gluon/void-oscq` until the human renames it. Whether the crate name `oscq-inspector` is free on crates.io has not been checked; every crate is `publish = false`, verify before any publication.
 
 Read this whole document before writing code. Everything marked LOCKED is a decision, not a suggestion. Everything marked VERIFY must be checked against a primary source before you rely on it, and the result written into `docs/protocol-notes.md`.
 
@@ -85,12 +85,12 @@ Minimum supported platforms: macOS 12 on aarch64 and x86_64, Windows 10 on x86_6
 A Cargo workspace with three crates. This split exists so the protocol can be tested without a GUI, and so that a future headless tool can reuse it.
 
 ```
-void-oscq/
+oscq-inspector/
   Cargo.toml              workspace
   crates/
     oscq-core/            protocol: types, HTTP client, WebSocket client, OSC send
     oscq-discovery/       mDNS browsing behind a trait, plus manual entry
-    void-oscq/            the eframe application, UI only
+    oscq-inspector/       the eframe application, UI only
   tests/
     fixtures/             captured JSON documents from real servers
   docs/
@@ -100,7 +100,7 @@ void-oscq/
 
 `oscq-core` and `oscq-discovery` must not depend on `egui` or `eframe`. If a UI concern leaks into them, the split has failed.
 
-`oscq-discovery` depends on `oscq-core` for shared types. Never the reverse. `void-oscq` depends on both.
+`oscq-discovery` depends on `oscq-core` for shared types. Never the reverse. `oscq-inspector` depends on both.
 
 ### 6.2 Threading model
 

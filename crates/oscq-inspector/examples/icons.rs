@@ -1,8 +1,8 @@
 //! Writes the icon files the release packaging needs, drawn by the application's own icon code:
-//! `AppIcon.iconset/`, the PNG set `iconutil` turns into the macOS `.icns`, and `void-oscq.png`,
+//! `AppIcon.iconset/`, the PNG set `iconutil` turns into the macOS `.icns`, and `oscq-inspector.png`,
 //! 256 pixels, for Linux.
 //!
-//! cargo run -p void-oscq --example icons -- OUT_DIR
+//! cargo run -p oscq-inspector --example icons -- OUT_DIR
 
 #[allow(dead_code)]
 #[path = "../src/icon.rs"]
@@ -29,7 +29,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Layout::MacOs,
         )?;
     }
-    write_png(&Path::new(&out).join("void-oscq.png"), 256, Layout::Full)?;
+    write_png(
+        &Path::new(&out).join("oscq-inspector.png"),
+        256,
+        Layout::Full,
+    )?;
     println!("{out}");
     Ok(())
 }
