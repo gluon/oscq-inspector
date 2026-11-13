@@ -428,22 +428,55 @@ impl Idle {
         inputs
     }
 
-    /// An idle window that received input did not measure idle: each input event costs frames
-    /// and CPU, three frames at least. Fails as an invalid measurement, never as a budget overrun.
-    fn assert_valid(&self) {
-        let inputs = self.inputs();
-        if inputs.is_empty() {
-            return;
+    /// The network and discovery events of the window, by kind.
+    fn event_kinds(&self) -> std::collections::BTreeMap<&str, usize> {
+        let mut kinds: std::collections::BTreeMap<&str, usize> = Default::default();
+        for e in &self.events {
+            let kind = e
+                .split("kind=")
+                .nth(1)
+                .unwrap_or("?")
+                .trim()
+                .trim_matches('"');
+            *kinds.entry(kind).or_default() += 1;
         }
-        let kinds: Vec<String> = inputs.iter().map(|(k, n)| format!("{n} {k}")).collect();
-        panic!(
-            "invalid measurement, not a budget overrun: {} input events reached the window \
-             during the {} s idle window ({}). Keep the pointer outside the window, touch \
-             nothing, and run again.",
-            inputs.values().sum::<usize>(),
-            IDLE_WINDOW.as_secs(),
-            kinds.join(", ")
-        );
+        kinds
+    }
+
+    /// An idle window that received input did not measure idle: each input event costs frames
+    /// and CPU, three frames at least. Neither did one in which the window learnt something it
+    /// had to show: a server found or gone stale on the local network wakes it as rightly as a
+    /// value would, and only `expected` event kinds, those the test itself provokes, leave the
+    /// window with nothing new. Both fail as an invalid measurement, never as a budget overrun.
+    fn assert_valid(&self, expected: &[&str]) {
+        let inputs = self.inputs();
+        if !inputs.is_empty() {
+            let kinds: Vec<String> = inputs.iter().map(|(k, n)| format!("{n} {k}")).collect();
+            panic!(
+                "invalid measurement, not a budget overrun: {} input events reached the window \
+                 during the {} s idle window ({}). Keep the pointer outside the window, touch \
+                 nothing, and run again.",
+                inputs.values().sum::<usize>(),
+                IDLE_WINDOW.as_secs(),
+                kinds.join(", ")
+            );
+        }
+        let unexpected: Vec<String> = self
+            .event_kinds()
+            .into_iter()
+            .filter(|(kind, _)| !expected.contains(kind))
+            .map(|(kind, n)| format!("{n} {kind}"))
+            .collect();
+        if !unexpected.is_empty() {
+            panic!(
+                "invalid measurement, not a budget overrun: the window was told something \
+                 during the {} s idle window ({}), and drawing it is its job. Discovery \
+                 events come from the local network: run this on a network where no OSCQuery \
+                 or OSC service appears or expires, or in CI, which has none.",
+                IDLE_WINDOW.as_secs(),
+                unexpected.join(", ")
+            );
+        }
     }
 
     /// What woke the window, so that one failing run names the cause.
@@ -461,12 +494,7 @@ impl Idle {
         for (kind, n) in self.inputs() {
             println!("  {n} input events {kind}");
         }
-        let mut kinds: std::collections::BTreeMap<&str, usize> = Default::default();
-        for e in &self.events {
-            let kind = e.split("kind=").nth(1).unwrap_or("?").trim();
-            *kinds.entry(kind).or_default() += 1;
-        }
-        for (kind, n) in kinds {
+        for (kind, n) in self.event_kinds() {
             println!("  {n} events {kind}");
         }
     }
@@ -528,7 +556,7 @@ fn real_binary_does_not_repaint_when_idle() {
     launch.settle();
     let idle = launch.idle();
     idle.print();
-    idle.assert_valid();
+    idle.assert_valid(&[]);
     assert!(idle.frames.is_empty(), "the window repaints when idle");
 }
 
@@ -599,10 +627,41 @@ fn real_binary_budgets() {
         memory as f64 / 1_048_576.0
     );
     assert_eq!(listens, LISTENS);
-    idle.assert_valid();
+    idle.assert_valid(&[]);
     assert!(idle.cpu < 1.0, "idle CPU");
     assert!(idle.frames.is_empty(), "idle repaints");
     assert!(memory < 150 * 1_048_576, "resident memory");
+}
+
+/// An idle window holding only the events the test provokes itself is a measurement of the
+/// window at rest. These two need no window: they hold what `Idle::assert_valid` refuses.
+fn window_told(kinds: &[&str]) -> Idle {
+    Idle {
+        frames: Vec::new(),
+        events: kinds
+            .iter()
+            .map(|k| format!("2026-11-13T00:00:00Z TRACE oscq_inspector::event: kind=\"{k}\""))
+            .collect(),
+        cpu: 0.0,
+    }
+}
+
+#[test]
+fn an_idle_window_holding_only_what_the_test_asked_for_is_a_measurement() {
+    window_told(&[]).assert_valid(&[]);
+    window_told(&["Peers", "Peers"]).assert_valid(&["Peers"]);
+}
+
+/// A server found on the local network is not a budget overrun: the window drew it because it
+/// learnt it, which is its job. The measurement is refused, and names what it was told.
+#[test]
+#[should_panic(
+    expected = "invalid measurement, not a budget overrun: the window was told \
+                           something during the 10 s idle window (1 ServerChanged, \
+                           2 ServerFound)"
+)]
+fn an_idle_window_told_of_a_server_is_not_a_measurement() {
+    window_told(&["Peers", "ServerFound", "ServerChanged", "ServerFound"]).assert_valid(&["Peers"]);
 }
 
 /// PRD 10, map budget: with the map tab not visible, zero idle repaints, as above, with eight
@@ -624,7 +683,7 @@ fn real_binary_map_hidden_does_not_repaint_when_idle() {
         idle.frames.len(),
         IDLE_WINDOW.as_secs()
     );
-    idle.assert_valid();
+    idle.assert_valid(&[]);
     assert!(idle.frames.is_empty(), "the window repaints when idle");
     assert_eq!(
         asked_meanwhile, 0,
@@ -661,7 +720,7 @@ fn real_binary_map_visible_repaints_once_per_poll_interval() {
         IDLE_WINDOW.as_secs(),
         poll.as_millis()
     );
-    idle.assert_valid();
+    idle.assert_valid(&["Peers"]);
     // The timer keeps its own beat, so a window holds as many of its beats as the interval
     // divides into it, or one more when the window opens just before one.
     let beats = (IDLE_WINDOW.as_secs_f64() / interval).floor() as usize;
@@ -714,7 +773,7 @@ fn real_binary_map_frame_time() {
     launch.settle_map(true);
     let start = Instant::now();
     let idle = launch.idle();
-    idle.assert_valid();
+    idle.assert_valid(&["Peers"]);
     let times: Vec<Duration> = launch
         .frame_times_since(start)
         .into_iter()
