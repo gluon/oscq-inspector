@@ -30,7 +30,7 @@ const IDLE_WINDOW: Duration = Duration::from_secs(10);
 /// the timer's: half an interval. It is not a tolerance on the interval, which they do not
 /// assert: it separates one beat from the next. Two repaints for one beat land milliseconds
 /// apart, a beat missed is a whole interval, and the furthest a frame has strayed from its
-/// beat on the machine that strays most, the macOS CI one, is 5.6 percent of an interval
+/// beat on the machine that strays most, the macOS CI one, is 5.6 percent of an interval,
 /// (docs/decisions.md, 2026-11-13, "M7, the map poll tolerance").
 const BEAT_SLACK: f64 = 0.5;
 
@@ -697,7 +697,7 @@ fn real_binary_map_hidden_does_not_repaint_when_idle() {
 /// reading the eight servers, and the span they cover. The gaps between them are printed and
 /// not asserted one by one: a single gap is the interval plus the difference of two
 /// deliveries by the operating system, and strays 5.6 percent of an interval on the macOS CI
-/// machine while the span of four holds within 0.75 percent (docs/decisions.md, 2026-11-13).
+/// machine, where the span of four strays 1.3 percent (docs/decisions.md, 2026-11-13).
 #[test]
 #[ignore = "real window: display needed"]
 fn real_binary_map_visible_repaints_once_per_poll_interval() {
