@@ -179,12 +179,13 @@ Listed for the human during M0. All items were ruled on 2026-10-09: the proposal
 
 ## 11. Behaviour of real servers
 
-Observed on captures in `tests/fixtures`, not in the sources above.
+Observed on captures in `tests/fixtures`, not in the sources above. A row that points to a section of its own carries that section's origin, which may be neither.
 
 | Server | Observation | Client behaviour |
 | --- | --- | --- |
 | OSCQuery Helper | `ACCESS` 2 on every node, `?VALUE` answered `{}` | values sent stay shown as unconfirmed, no refresh after a send |
 | Max 9 | see section 12 | |
+| libossia, ossia pull request 876 | see section 13 | |
 
 ## 12. Max 9
 
@@ -212,3 +213,20 @@ The default stays: inferring the HTTP port is what the proposal says when nothin
 | Observation | Client behaviour |
 | --- | --- |
 | Receives OSC on UDP 30338, serves OSCQuery on HTTP 30339, links them nowhere | the inferred port, 30339, is wrong; the user sets 30338 for `localhost:30339`, and sends reach Max |
+
+## 13. libossia, dual stack and IPv6
+
+Reported on 2026-11-13 by another session working on libossia on this machine. Not reproduced here, and not measured by this project. Recorded because the failure it describes, a tree that loads and values that never arrive, is one a user would bring to this application.
+
+| Observation | Client behaviour |
+| --- | --- |
+| libossia built from ossia pull request 876 listens dual stack and streams its OSC values to the IPv6 address the client connected from | a client whose OSC receiver is IPv4 only, and which reached the server by a name that resolves to `::1` or to a link local address before IPv4, gets the tree and never a value |
+| The PRISM build of libossia listens on IPv4 by default, dual stack behind an option | the case above does not arise against that build unless the option is set |
+
+What this application does, read in its files on 2026-11-13 and not exercised against such a server:
+
+- A discovered server is reached by an address, best first, and that order puts IPv4 ahead of IPv6 (`crates/oscq-discovery/src/address.rs`, where `merge` orders by class and not by arrival). `DiscoveredServer::http_base` takes that best address and skips IPv6 link local (`crates/oscq-core/src/server.rs`). A dual stack server found over mDNS is therefore reached on its IPv4 address, and the system resolver's order never applies to it. The host name is used only when no address is known: a manual entry typed as a name, or a record resolved without one.
+- Values arrive over the WebSocket, on the HTTP address and port (`crates/oscq-inspector/src/app.rs`, PRD 7.4 and section 10 item 10). The application declares no OSC listening destination and binds no UDP receiver outside its tests, so a server that streams values to the address its client connected from has nothing to miss here.
+- Sends resolve their destination preferring IPv4 (`crates/oscq-core/src/osc.rs`).
+
+Not proven: that a dual stack server reached by a name which resolves to IPv6 pushes its values on the WebSocket. That case was not reproduced, against this build of libossia or any other, so the three points above bound the exposure of the discovered path only. What would prove it: such a server on this machine, reached by its name with the resolver answering IPv6 first, with the tree loaded and a value changed at the server.
