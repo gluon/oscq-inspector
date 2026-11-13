@@ -26,6 +26,17 @@ use synthetic::{
 
 const LISTENS: usize = 50;
 const IDLE_WINDOW: Duration = Duration::from_secs(10);
+/// Windows measured in a row before a test that has refused every one of them fails instead.
+/// A refused measurement is no verdict, and a test that cannot conclude guards nothing: past
+/// this many, the machine is the finding and the test says so (docs/decisions.md, 2026-11-13).
+const MEASUREMENT_ATTEMPTS: usize = 3;
+/// How far from its beat a frame may land before the map tests call it something other than
+/// the timer's: half an interval. It is not a tolerance on the interval, which they do not
+/// assert: it separates one beat from the next. Two repaints for one beat land milliseconds
+/// apart, a beat missed is a whole interval, and the furthest a frame has strayed from its
+/// beat on the machine that strays most, the macOS CI one, is 5.6 percent of an interval,
+/// (docs/decisions.md, 2026-11-13, "M7, the map poll tolerance").
+const BEAT_SLACK: f64 = 0.5;
 
 /// The config file location the binary computes, under a fresh base directory, and the
 /// environment variable that points the binary at that base.
@@ -357,6 +368,7 @@ impl Launch {
         let pid = self.pid();
         let frames0 = self.frame_lines().len();
         let events0 = self.lines_of("oscq_inspector::event").len();
+        let asked0 = self.peers_requests();
         let (cpu0, t0) = (cpu_time(pid), Instant::now());
         std::thread::sleep(IDLE_WINDOW);
         let (cpu1, t1) = (cpu_time(pid), Instant::now());
@@ -364,28 +376,60 @@ impl Launch {
             frames: self.frame_lines().split_off(frames0),
             events: self.lines_of("oscq_inspector::event").split_off(events0),
             cpu: (cpu1 - cpu0).as_secs_f64() / (t1 - t0).as_secs_f64() * 100.0,
+            peers_requests: self.peers_requests() - asked0,
         }
     }
 
-    /// The lines of the frame trace, not those of the frame time trace, whose target starts
-    /// the same.
-    fn frame_lines(&self) -> Vec<String> {
-        self.lines_of("oscq_inspector::frame:")
+    /// A window nothing disturbed, measured again while the machine keeps disturbing it, and
+    /// at most [`MEASUREMENT_ATTEMPTS`] times: see [`measured`].
+    fn idle_measured(&self, expected: &[&str]) -> Idle {
+        measured(expected, |_| self.idle())
+    }
+
+    /// The lines of the frame trace, with the time each arrived; not those of the frame time
+    /// trace, whose target starts the same.
+    fn frame_lines(&self) -> Vec<(Instant, String)> {
+        self.lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, l)| l.contains("oscq_inspector::frame:"))
+            .cloned()
+            .collect()
     }
 }
 
 struct Idle {
-    frames: Vec<String>,
+    /// Each frame of the window: when its line arrived, and the line.
+    frames: Vec<(Instant, String)>,
     events: Vec<String>,
     cpu: f64,
+    /// `?PEERS` requests every server of the launch received during the window.
+    peers_requests: usize,
 }
 
 impl Idle {
+    /// The seconds between consecutive frames.
+    fn gaps(&self) -> Vec<f64> {
+        self.frames
+            .windows(2)
+            .map(|w| (w[1].0 - w[0].0).as_secs_f64())
+            .collect()
+    }
+
+    /// Seconds from the first frame of the window to its last.
+    fn span(&self) -> f64 {
+        match (self.frames.first(), self.frames.last()) {
+            (Some(first), Some(last)) => (last.0 - first.0).as_secs_f64(),
+            _ => 0.0,
+        }
+    }
+
     /// The input events that reached the window during the idle window, by kind, as each frame
     /// logged them: a pointer move, a key, a focus change.
     fn inputs(&self) -> std::collections::BTreeMap<&str, usize> {
         let mut inputs: std::collections::BTreeMap<&str, usize> = Default::default();
-        for f in &self.frames {
+        for (_, f) in &self.frames {
             let list = f
                 .split("inputs=[")
                 .nth(1)
@@ -398,22 +442,48 @@ impl Idle {
         inputs
     }
 
-    /// An idle window that received input did not measure idle: each input event costs frames
-    /// and CPU, three frames at least. Fails as an invalid measurement, never as a budget overrun.
-    fn assert_valid(&self) {
-        let inputs = self.inputs();
-        if inputs.is_empty() {
-            return;
+    /// The network and discovery events of the window, by kind.
+    fn event_kinds(&self) -> std::collections::BTreeMap<&str, usize> {
+        let mut kinds: std::collections::BTreeMap<&str, usize> = Default::default();
+        for e in &self.events {
+            let kind = e
+                .split("kind=")
+                .nth(1)
+                .unwrap_or("?")
+                .trim()
+                .trim_matches('"');
+            *kinds.entry(kind).or_default() += 1;
         }
-        let kinds: Vec<String> = inputs.iter().map(|(k, n)| format!("{n} {k}")).collect();
-        panic!(
-            "invalid measurement, not a budget overrun: {} input events reached the window \
-             during the {} s idle window ({}). Keep the pointer outside the window, touch \
-             nothing, and run again.",
-            inputs.values().sum::<usize>(),
-            IDLE_WINDOW.as_secs(),
-            kinds.join(", ")
-        );
+        kinds
+    }
+
+    /// What disturbed this window, if anything did. Input: each event costs frames and CPU,
+    /// three frames at least, so the window was not at rest. Events other than the `expected`
+    /// kinds, those the test provokes itself: the window learnt something and drew it, a
+    /// server found or gone stale on the local network waking it as rightly as a value would.
+    /// Neither is a budget overrun, and neither leaves a window the budget can be read from.
+    fn disturbance(&self, expected: &[&str]) -> Option<String> {
+        let inputs = self.inputs();
+        if !inputs.is_empty() {
+            let kinds: Vec<String> = inputs.iter().map(|(k, n)| format!("{n} {k}")).collect();
+            return Some(format!(
+                "{} input events reached the window ({})",
+                inputs.values().sum::<usize>(),
+                kinds.join(", ")
+            ));
+        }
+        let unexpected: Vec<String> = self
+            .event_kinds()
+            .into_iter()
+            .filter(|(kind, _)| !expected.contains(kind))
+            .map(|(kind, n)| format!("{n} {kind}"))
+            .collect();
+        (!unexpected.is_empty()).then(|| {
+            format!(
+                "the window was told something and drew it ({})",
+                unexpected.join(", ")
+            )
+        })
     }
 
     /// What woke the window, so that one failing run names the cause.
@@ -431,12 +501,7 @@ impl Idle {
         for (kind, n) in self.inputs() {
             println!("  {n} input events {kind}");
         }
-        let mut kinds: std::collections::BTreeMap<&str, usize> = Default::default();
-        for e in &self.events {
-            let kind = e.split("kind=").nth(1).unwrap_or("?").trim();
-            *kinds.entry(kind).or_default() += 1;
-        }
-        for (kind, n) in kinds {
+        for (kind, n) in self.event_kinds() {
             println!("  {n} events {kind}");
         }
     }
@@ -450,6 +515,31 @@ impl Drop for Launch {
     }
 }
 
+/// The first window of [`MEASUREMENT_ATTEMPTS`] that nothing disturbed, `window` giving one
+/// per attempt. Panics when none of them is one: a measurement refused is no verdict, and a
+/// test that only ever refuses guards nothing, so past this many windows the machine itself is
+/// the finding and the test fails on it (docs/decisions.md, 2026-11-13).
+fn measured(expected: &[&str], mut window: impl FnMut(usize) -> Idle) -> Idle {
+    let mut refused = Vec::new();
+    for attempt in 1..=MEASUREMENT_ATTEMPTS {
+        let idle = window(attempt);
+        match idle.disturbance(expected) {
+            None => return idle,
+            Some(what) => {
+                println!("  window {attempt} of {MEASUREMENT_ATTEMPTS} refused: {what}");
+                refused.push(format!("{attempt}: {what}"));
+            }
+        }
+    }
+    panic!(
+        "no window of the {MEASUREMENT_ATTEMPTS} measured held still, so this machine cannot \
+         be held to the budget now, which is the finding and not an absence of one. {}. Run \
+         this with the pointer away from the window, on a network where no OSCQuery or OSC \
+         service appears or expires, or in CI, which has neither.",
+        refused.join("; ")
+    )
+}
+
 /// The 95th percentile of `v`, and its median and maximum.
 fn percentiles(mut v: Vec<Duration>) -> (Duration, Duration, Duration) {
     v.sort();
@@ -461,9 +551,9 @@ fn percentiles(mut v: Vec<Duration>) -> (Duration, Duration, Duration) {
 /// repaint requests of the frame before, or none when the frame was woken by the operating
 /// system or by input. `oscq-inspector/src/app.rs` at the notify callback means a network or
 /// discovery event.
-fn causes(frames: &[String]) -> Vec<(usize, String)> {
+fn causes(frames: &[(Instant, String)]) -> Vec<(usize, String)> {
     let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
-    for f in frames {
+    for (_, f) in frames {
         let cause = f
             .split("causes=")
             .nth(1)
@@ -496,9 +586,8 @@ fn real_binary_does_not_repaint_when_idle() {
     let launch = Launch::start();
     launch.first_frame();
     launch.settle();
-    let idle = launch.idle();
+    let idle = launch.idle_measured(&[]);
     idle.print();
-    idle.assert_valid();
     assert!(idle.frames.is_empty(), "the window repaints when idle");
 }
 
@@ -548,7 +637,7 @@ fn real_binary_budgets() {
     let launch = Launch::start();
     launch.first_frame();
     launch.settle();
-    let idle = launch.idle();
+    let idle = launch.idle_measured(&[]);
     let memory = rss(launch.pid());
     let listens = launch.server.ws.listens().len();
     drop(launch);
@@ -569,10 +658,71 @@ fn real_binary_budgets() {
         memory as f64 / 1_048_576.0
     );
     assert_eq!(listens, LISTENS);
-    idle.assert_valid();
     assert!(idle.cpu < 1.0, "idle CPU");
     assert!(idle.frames.is_empty(), "idle repaints");
     assert!(memory < 150 * 1_048_576, "resident memory");
+}
+
+/// An idle window holding only the events the test provokes itself is a measurement of the
+/// window at rest. These four need no window: they hold what is refused, and what a machine
+/// that refuses every window costs the test.
+fn window_told(kinds: &[&str]) -> Idle {
+    Idle {
+        frames: Vec::new(),
+        events: kinds
+            .iter()
+            .map(|k| format!("2026-11-13T00:00:00Z TRACE oscq_inspector::event: kind=\"{k}\""))
+            .collect(),
+        cpu: 0.0,
+        peers_requests: 0,
+    }
+}
+
+#[test]
+fn an_idle_window_holding_only_what_the_test_asked_for_is_a_measurement() {
+    assert_eq!(window_told(&[]).disturbance(&[]), None);
+    assert_eq!(
+        window_told(&["Peers", "Peers"]).disturbance(&["Peers"]),
+        None
+    );
+}
+
+/// A server found on the local network is not a budget overrun: the window drew it because it
+/// learnt it, which is its job. The measurement is refused, and names what it was told.
+#[test]
+fn an_idle_window_told_of_a_server_is_not_a_measurement() {
+    let what = window_told(&["Peers", "ServerFound", "ServerChanged", "ServerFound"])
+        .disturbance(&["Peers"])
+        .expect("a window told of a server is refused");
+    assert_eq!(
+        what,
+        "the window was told something and drew it (1 ServerChanged, 2 ServerFound)"
+    );
+}
+
+/// A window disturbed once is measured again: the machine is given MEASUREMENT_ATTEMPTS of
+/// them before the test holds the machine itself against the budget.
+#[test]
+fn a_window_disturbed_once_is_measured_again() {
+    let mut attempts = 0;
+    let idle = measured(&["Peers"], |attempt| {
+        attempts = attempt;
+        if attempt == 1 {
+            window_told(&["ServerFound"])
+        } else {
+            window_told(&["Peers"])
+        }
+    });
+    assert_eq!(attempts, 2, "the disturbed window was measured again");
+    assert_eq!(idle.disturbance(&["Peers"]), None);
+}
+
+/// A machine that never holds still fails the test. A measurement refused is no verdict, and a
+/// test that only ever refuses guards nothing: the bound is what makes it a verdict again.
+#[test]
+#[should_panic(expected = "no window of the 3 measured held still")]
+fn a_machine_that_never_holds_still_fails_the_test() {
+    measured(&["Peers"], |_| window_told(&["ServerFound"]));
 }
 
 /// PRD 10, map budget: with the map tab not visible, zero idle repaints, as above, with eight
@@ -585,16 +735,14 @@ fn real_binary_map_hidden_does_not_repaint_when_idle() {
     let launch = Launch::start_map(false, 2000);
     launch.first_frame();
     launch.settle_map(false);
-    let asked = launch.peers_requests();
-    let idle = launch.idle();
-    let asked_meanwhile = launch.peers_requests() - asked;
+    let idle = launch.idle_measured(&[]);
+    let asked_meanwhile = idle.peers_requests;
     idle.print();
     println!(
         "BUDGET idle repaints, map tab not visible, {MAP_SERVERS} servers: {} frames in {} s, budget 0; {asked_meanwhile} PEERS requests",
         idle.frames.len(),
         IDLE_WINDOW.as_secs()
     );
-    idle.assert_valid();
     assert!(idle.frames.is_empty(), "the window repaints when idle");
     assert_eq!(
         asked_meanwhile, 0,
@@ -603,10 +751,12 @@ fn real_binary_map_hidden_does_not_repaint_when_idle() {
 }
 
 /// PRD 10, map budget: with the map tab visible, eight servers, one repaint per poll interval
-/// and no more. Every frame of the idle window is asked for by the application's timer, two
-/// frames are never closer than an interval less two frames, which is how early egui wakes,
-/// and each frame reads the eight servers. The frame time of those frames is printed, a few
-/// samples; the next test takes more.
+/// and no more. That budget is a rate, and the rate is what this test holds: the number of
+/// frames of the idle window, every one of them asked for by the application's timer, each
+/// reading the eight servers, and the span they cover. The gaps between them are printed and
+/// not asserted one by one: a single gap is the interval plus the difference of two
+/// deliveries by the operating system, and strays 5.6 percent of an interval on the macOS CI
+/// machine, where the span of four strays 1.3 percent (docs/decisions.md, 2026-11-13).
 #[test]
 #[ignore = "real window: display needed"]
 fn real_binary_map_visible_repaints_once_per_poll_interval() {
@@ -614,36 +764,30 @@ fn real_binary_map_visible_repaints_once_per_poll_interval() {
     let launch = Launch::start_map(true, poll.as_millis() as u64);
     launch.first_frame();
     launch.settle_map(true);
-    let asked = launch.peers_requests();
-    let start = Instant::now();
-    let idle = launch.idle();
-    let asked_meanwhile = launch.peers_requests() - asked;
+    let idle = launch.idle_measured(&["Peers"]);
+    let asked_meanwhile = idle.peers_requests;
     idle.print();
-    let times = launch.frame_times_since(start);
-    let beats: Vec<Instant> = times.iter().map(|(at, _)| *at).collect();
-    let gaps: Vec<f64> = beats
-        .windows(2)
-        .map(|w| (w[1] - w[0]).as_secs_f64())
-        .collect();
+    let (gaps, span) = (idle.gaps(), idle.span());
+    let interval = poll.as_secs_f64();
+    let nominal = gaps.len() as f64 * interval;
     println!(
         "BUDGET idle repaints, map tab visible, {MAP_SERVERS} servers: {} frames in {} s, \
-         budget one per {} ms poll interval; gaps {gaps:.3?} s; {asked_meanwhile} PEERS requests",
+         budget one per {} ms poll interval; gaps {gaps:.3?} s, spanning {span:.3} s of a \
+         nominal {nominal:.3} s; {asked_meanwhile} PEERS requests",
         idle.frames.len(),
         IDLE_WINDOW.as_secs(),
         poll.as_millis()
     );
-    idle.assert_valid();
-    let most = (IDLE_WINDOW.as_secs_f64() / poll.as_secs_f64()).floor() as usize + 1;
+    // The timer keeps its own beat, so a window holds as many of its beats as the interval
+    // divides into it, or one more when the window opens just before one.
+    let beats = (IDLE_WINDOW.as_secs_f64() / interval).floor() as usize;
     assert!(
-        idle.frames.len() <= most,
-        "{} frames in {} s, more than one per interval",
+        (beats..=beats + 1).contains(&idle.frames.len()),
+        "{} frames in {} s at one per {} ms: neither {beats} nor {}",
         idle.frames.len(),
-        IDLE_WINDOW.as_secs()
-    );
-    assert!(
-        idle.frames.len() >= most - 2,
-        "{} frames: the map is not read on its timer",
-        idle.frames.len()
+        IDLE_WINDOW.as_secs(),
+        poll.as_millis(),
+        beats + 1
     );
     for (n, cause) in causes(&idle.frames) {
         assert!(
@@ -651,12 +795,18 @@ fn real_binary_map_visible_repaints_once_per_poll_interval() {
             "{n} frames asked for by {cause}, not by the timer"
         );
     }
+    let slack = BEAT_SLACK * interval;
     for gap in &gaps {
         assert!(
-            *gap > poll.as_secs_f64() - 0.1,
-            "two frames {gap:.3} s apart"
+            *gap > interval - slack,
+            "two frames {gap:.3} s apart, nearer than half an interval: one beat drew twice"
         );
     }
+    assert!(
+        (span - nominal).abs() < slack,
+        "{} frames spanning {span:.3} s, not the {nominal:.3} s of as many beats",
+        idle.frames.len()
+    );
     assert!(
         asked_meanwhile >= MAP_SERVERS * (idle.frames.len() - 1)
             && asked_meanwhile <= MAP_SERVERS * idle.frames.len(),
@@ -679,10 +829,13 @@ fn real_binary_map_frame_time() {
     launch.first_frame();
     launch.settle_map(true);
     let start = Instant::now();
-    let idle = launch.idle();
-    idle.assert_valid();
+    let idle = launch.idle_measured(&["Peers"]);
+    idle.print();
+    // The frames of the window that was kept: the windows refused before it, if any, are not
+    // in it, so the samples are taken from where the last window can have started.
+    let since = start + IDLE_WINDOW * u32::try_from(MEASUREMENT_ATTEMPTS - 1).unwrap_or(0);
     let times: Vec<Duration> = launch
-        .frame_times_since(start)
+        .frame_times_since(since.min(Instant::now()))
         .into_iter()
         .map(|(_, d)| d)
         .collect();
