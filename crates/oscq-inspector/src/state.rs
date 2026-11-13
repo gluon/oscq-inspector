@@ -121,6 +121,33 @@ pub fn client_label(c: &PeerClient) -> String {
     }
 }
 
+/// A failure's reason without the address of the request it names, for a place that already
+/// says which server it is and which request failed: "answered HTTP 500" for
+/// "http://10.0.0.2:5000/?PEERS answered HTTP 500". The reason whole stays on hover.
+pub fn short_reason(reason: &str) -> String {
+    let mut words: Vec<String> = Vec::new();
+    for word in reason.split_whitespace() {
+        if word.starts_with("http://") || word.starts_with("https://") {
+            if matches!(words.last().map(String::as_str), Some("from" | "to")) {
+                words.pop();
+            }
+            // Its punctuation stays, on the word before it.
+            if let Some(last) = words.last_mut()
+                && word.ends_with(':')
+            {
+                last.push(':');
+            }
+            continue;
+        }
+        words.push(word.to_owned());
+    }
+    if words.is_empty() {
+        reason.to_owned()
+    } else {
+        words.join(" ")
+    }
+}
+
 /// `ip:port`, with brackets around an IPv6 address.
 pub fn ip_port(ip: &str, port: u16) -> String {
     if ip.contains(':') && !ip.starts_with('[') {
@@ -564,6 +591,98 @@ mod tests {
     use super::*;
     use oscq_core::{ServiceKind, parse_document};
     use serde_json::json;
+
+    /// PRD 9.10: an answer about the peers of a server that does not declare them is not kept,
+    /// even one that arrives: had it been, the server declaring them later would show, as its
+    /// own, a reading made before it published anything.
+    #[test]
+    fn an_answer_from_a_server_that_does_not_declare_peers_is_not_kept() {
+        let mut st = AppState::default();
+        let s = server();
+        let id = s.id;
+        st.apply(Event::ServerFound(s));
+        st.apply(Event::TransportState {
+            server_id: id,
+            state: TransportState::HttpOnly,
+        });
+        let host_info = |json: &str| {
+            let (info, _) = HostInfo::parse(json.as_bytes()).unwrap();
+            let destination = info.osc_destination("studio.local", 2345);
+            Event::HostInfo {
+                server_id: id,
+                info,
+                destination,
+            }
+        };
+        let answer = || {
+            let (peers, _) = oscq_core::Peers::parse(
+                br#"{"CLIENTS":[{"IP":"10.0.0.9","PORT":1,"LISTEN":["/a"]}]}"#,
+            )
+            .unwrap();
+            Event::Peers {
+                server_id: id,
+                at: Instant::now(),
+                result: Ok(oscq_core::PeersReading {
+                    peers,
+                    this_client: None,
+                }),
+            }
+        };
+        st.apply(host_info(r#"{"EXTENSIONS":{}}"#));
+        st.apply(answer());
+        let e = st.entry(id).unwrap();
+        assert_eq!(e.peers.snapshot, None, "not kept");
+        assert_eq!(e.peers_view(), PeersView::NotPublished);
+        st.apply(host_info(r#"{"EXTENSIONS":{"PEERS":true}}"#));
+        assert_eq!(
+            st.entry(id).unwrap().peers_view(),
+            PeersView::NotRead,
+            "declared now, and nothing read since"
+        );
+        st.apply(answer());
+        assert!(matches!(
+            st.entry(id).unwrap().peers_view(),
+            PeersView::Read { .. }
+        ));
+        // Declared no more: what it published before is not shown, nor kept.
+        st.apply(host_info(r#"{"EXTENSIONS":{"PEERS":false}}"#));
+        let e = st.entry(id).unwrap();
+        assert_eq!(e.peers_view(), PeersView::NotPublished);
+        assert_eq!(e.peers.snapshot, None);
+    }
+
+    /// The reasons the client gives for a failed `?PEERS`, each without its address.
+    #[test]
+    fn a_short_reason_drops_the_address_and_keeps_the_rest() {
+        let url = "http://10.0.0.2:5000/?PEERS";
+        for (reason, short) in [
+            (format!("{url} answered HTTP 500"), "answered HTTP 500"),
+            (
+                format!("{url} answered 204 with no document"),
+                "answered 204 with no document",
+            ),
+            (
+                format!("could not connect to {url}: tcp connect error: Connection refused"),
+                "could not connect: tcp connect error: Connection refused",
+            ),
+            (
+                format!("no answer from {url} within the timeout"),
+                "no answer within the timeout",
+            ),
+            (
+                format!("invalid PEERS reply from {url}: CLIENTS is not a list"),
+                "invalid PEERS reply: CLIENTS is not a list",
+            ),
+            (
+                format!("response from {url} is larger than 9 bytes"),
+                "response is larger than 9 bytes",
+            ),
+            ("not connected".to_owned(), "not connected"),
+            (url.to_owned(), url),
+        ] {
+            assert_eq!(short_reason(&reason), short, "{reason}");
+        }
+    }
 
     fn server() -> DiscoveredServer {
         DiscoveredServer {

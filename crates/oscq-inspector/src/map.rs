@@ -11,7 +11,7 @@ use oscq_core::peers::{canonical, canonical_ip};
 use oscq_core::{PeerClient, ServerId, ServiceKind};
 
 use crate::state::{
-    AppState, ConnState, PeersSnapshot, PeersView, ServerEntry, client_label, ip_port,
+    AppState, ConnState, PeersSnapshot, PeersView, ServerEntry, client_label, ip_port, short_reason,
 };
 use crate::style::{self, GRID};
 
@@ -50,6 +50,8 @@ pub struct Node {
     pub title: String,
     /// What is known of it, one statement a line, and nothing more.
     pub lines: Vec<(String, Tone)>,
+    /// What a line says in short, whole, shown on hover.
+    pub detail: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,6 +182,7 @@ fn connection_line(e: &ServerEntry) -> (String, Tone) {
 /// A server's node: what is known of it and nothing more (PRD 9.10).
 fn server_node(e: &ServerEntry, now: Instant, interval: Duration) -> Node {
     let mut lines = vec![(e.key(), Tone::Plain), connection_line(e)];
+    let mut detail = Vec::new();
     if e.server.kind == ServiceKind::OscQuery {
         match e.peers_view() {
             PeersView::NotConnected => {}
@@ -192,7 +195,11 @@ fn server_node(e: &ServerEntry, now: Instant, interval: Duration) -> Node {
             }
             PeersView::NotRead => lines.push(("peers not read yet".to_owned(), Tone::Plain)),
             PeersView::Failed(reason) => {
-                lines.push((format!("peers not read: {reason}"), Tone::Warn))
+                lines.push((
+                    format!("peers not read: {}", short_reason(reason)),
+                    Tone::Warn,
+                ));
+                detail.push(format!("peers not read: {reason}"));
             }
             PeersView::Read { snapshot, failure } => {
                 lines.push((
@@ -214,7 +221,11 @@ fn server_node(e: &ServerEntry, now: Instant, interval: Duration) -> Node {
                     lines.push((format!("read {age} s ago"), Tone::Plain));
                 }
                 if let Some(reason) = failure {
-                    lines.push((format!("not read since: {reason}"), Tone::Warn));
+                    lines.push((
+                        format!("not read since: {}", short_reason(reason)),
+                        Tone::Warn,
+                    ));
+                    detail.push(format!("not read since: {reason}"));
                 }
             }
         }
@@ -223,6 +234,7 @@ fn server_node(e: &ServerEntry, now: Instant, interval: Duration) -> Node {
         kind: NodeKind::Server(e.server.id),
         title: e.server.name.clone(),
         lines,
+        detail,
     }
 }
 
@@ -406,6 +418,7 @@ pub fn build(state: &AppState, now: Instant, interval: Duration, app_name: &str)
                 kind: NodeKind::ThisApp,
                 title: app_name.to_owned(),
                 lines: vec![("this application".to_owned(), Tone::Plain)],
+                detail: Vec::new(),
             },
             Origin::Named { name, ip } => Node {
                 kind: NodeKind::Client,
@@ -413,6 +426,7 @@ pub fn build(state: &AppState, now: Instant, interval: Duration, app_name: &str)
                 lines: std::iter::once((ip.clone(), Tone::Plain))
                     .chain(tone(notes))
                     .collect(),
+                detail: Vec::new(),
             },
             Origin::Unnamed { ip, port } => Node {
                 kind: NodeKind::Client,
@@ -420,11 +434,13 @@ pub fn build(state: &AppState, now: Instant, interval: Duration, app_name: &str)
                 lines: std::iter::once((ip_port(ip, *port), Tone::Plain))
                     .chain(tone(notes))
                     .collect(),
+                detail: Vec::new(),
             },
             Origin::Sender { ip, port } => Node {
                 kind: NodeKind::Sender,
                 title: "UDP source".to_owned(),
                 lines: vec![(ip_port(ip, *port), Tone::Plain)],
+                detail: Vec::new(),
             },
         };
         index.insert(origin, nodes.len());
@@ -727,6 +743,9 @@ pub fn draw(ui: &mut egui::Ui, model: &Model, rects: &[Rect], selected: Option<S
             .on_hover_ui(|ui| {
                 ui.label(egui::RichText::new(&node.title).strong());
                 for (text, _) in &node.lines {
+                    ui.label(text);
+                }
+                for text in &node.detail {
                     ui.label(text);
                 }
             });

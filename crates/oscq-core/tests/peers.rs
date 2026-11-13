@@ -2,6 +2,8 @@
 //! synthetic server: a server that declares it, one that declares nothing, one that declares it
 //! and then fails, and replies no server should send.
 
+#![allow(clippy::unwrap_used)] // test code, unwrap is allowed outside production paths (PRD 11)
+
 mod common;
 
 use std::sync::atomic::Ordering;
