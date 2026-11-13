@@ -102,6 +102,9 @@ Case: 166 to 169 MB with the defaults, 145.8 MB with `WGPU_BACKEND=vulkan`, 130.
 
 ## Tests
 
+A duration measured on the macOS CI machine strays more than 5 percent from the one asked for: a 2000 ms timer has been seen delivering one frame 112 ms late and the next 110 ms early. The Linux CI machine and the human's Mac print 2.000 s every time, under a millisecond. A test that asserts a duration with a small tolerance therefore passes on both of those and on four runs out of five there, which is what hid it: the strays before were 53 to 56 ms, under the 100 ms floor the test allowed. Assert what the application decides, a count of frames over a window or the span of several intervals, not one interval measured once.
+Case: `real_binary_map_visible_repaints_once_per_poll_interval`, gaps 1.988, 1.993, 2.112, 1.890 s against a floor of 1.900 s, run 43442955538 on `main`, 2026-11-13. The numbers of every window measured are in docs/decisions.md, "M7, the map poll tolerance".
+
 `cargo test -- --skip NAME` skips every test whose name contains `NAME`. `--skip ipv6_only` also skipped `ipv6_only_advertisement`. Use `--exact` or run the skipped one explicitly.
 
 The test filter is a substring too. A real binary test named `budget_cold_start...` was picked up by the in process `budget_` filter and failed in CI for want of a display. Real binary tests are named `real_binary_...`.

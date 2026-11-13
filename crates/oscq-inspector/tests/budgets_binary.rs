@@ -26,6 +26,13 @@ use synthetic::{
 
 const LISTENS: usize = 50;
 const IDLE_WINDOW: Duration = Duration::from_secs(10);
+/// How far from its beat a frame may land before the map tests call it something other than
+/// the timer's: half an interval. It is not a tolerance on the interval, which they do not
+/// assert: it separates one beat from the next. Two repaints for one beat land milliseconds
+/// apart, a beat missed is a whole interval, and the furthest a frame has strayed from its
+/// beat on the machine that strays most, the macOS CI one, is 5.6 percent of an interval
+/// (docs/decisions.md, 2026-11-13, "M7, the map poll tolerance").
+const BEAT_SLACK: f64 = 0.5;
 
 /// The config file location the binary computes, under a fresh base directory, and the
 /// environment variable that points the binary at that base.
@@ -367,25 +374,48 @@ impl Launch {
         }
     }
 
-    /// The lines of the frame trace, not those of the frame time trace, whose target starts
-    /// the same.
-    fn frame_lines(&self) -> Vec<String> {
-        self.lines_of("oscq_inspector::frame:")
+    /// The lines of the frame trace, with the time each arrived; not those of the frame time
+    /// trace, whose target starts the same.
+    fn frame_lines(&self) -> Vec<(Instant, String)> {
+        self.lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, l)| l.contains("oscq_inspector::frame:"))
+            .cloned()
+            .collect()
     }
 }
 
 struct Idle {
-    frames: Vec<String>,
+    /// Each frame of the window: when its line arrived, and the line.
+    frames: Vec<(Instant, String)>,
     events: Vec<String>,
     cpu: f64,
 }
 
 impl Idle {
+    /// The seconds between consecutive frames.
+    fn gaps(&self) -> Vec<f64> {
+        self.frames
+            .windows(2)
+            .map(|w| (w[1].0 - w[0].0).as_secs_f64())
+            .collect()
+    }
+
+    /// Seconds from the first frame of the window to its last.
+    fn span(&self) -> f64 {
+        match (self.frames.first(), self.frames.last()) {
+            (Some(first), Some(last)) => (last.0 - first.0).as_secs_f64(),
+            _ => 0.0,
+        }
+    }
+
     /// The input events that reached the window during the idle window, by kind, as each frame
     /// logged them: a pointer move, a key, a focus change.
     fn inputs(&self) -> std::collections::BTreeMap<&str, usize> {
         let mut inputs: std::collections::BTreeMap<&str, usize> = Default::default();
-        for f in &self.frames {
+        for (_, f) in &self.frames {
             let list = f
                 .split("inputs=[")
                 .nth(1)
@@ -461,9 +491,9 @@ fn percentiles(mut v: Vec<Duration>) -> (Duration, Duration, Duration) {
 /// repaint requests of the frame before, or none when the frame was woken by the operating
 /// system or by input. `oscq-inspector/src/app.rs` at the notify callback means a network or
 /// discovery event.
-fn causes(frames: &[String]) -> Vec<(usize, String)> {
+fn causes(frames: &[(Instant, String)]) -> Vec<(usize, String)> {
     let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
-    for f in frames {
+    for (_, f) in frames {
         let cause = f
             .split("causes=")
             .nth(1)
@@ -603,10 +633,12 @@ fn real_binary_map_hidden_does_not_repaint_when_idle() {
 }
 
 /// PRD 10, map budget: with the map tab visible, eight servers, one repaint per poll interval
-/// and no more. Every frame of the idle window is asked for by the application's timer, two
-/// frames are never closer than an interval less two frames, which is how early egui wakes,
-/// and each frame reads the eight servers. The frame time of those frames is printed, a few
-/// samples; the next test takes more.
+/// and no more. That budget is a rate, and the rate is what this test holds: the number of
+/// frames of the idle window, every one of them asked for by the application's timer, each
+/// reading the eight servers, and the span they cover. The gaps between them are printed and
+/// not asserted one by one: a single gap is the interval plus the difference of two
+/// deliveries by the operating system, and strays 5.6 percent of an interval on the macOS CI
+/// machine while the span of four holds within 0.75 percent (docs/decisions.md, 2026-11-13).
 #[test]
 #[ignore = "real window: display needed"]
 fn real_binary_map_visible_repaints_once_per_poll_interval() {
@@ -615,35 +647,31 @@ fn real_binary_map_visible_repaints_once_per_poll_interval() {
     launch.first_frame();
     launch.settle_map(true);
     let asked = launch.peers_requests();
-    let start = Instant::now();
     let idle = launch.idle();
     let asked_meanwhile = launch.peers_requests() - asked;
     idle.print();
-    let times = launch.frame_times_since(start);
-    let beats: Vec<Instant> = times.iter().map(|(at, _)| *at).collect();
-    let gaps: Vec<f64> = beats
-        .windows(2)
-        .map(|w| (w[1] - w[0]).as_secs_f64())
-        .collect();
+    let (gaps, span) = (idle.gaps(), idle.span());
+    let interval = poll.as_secs_f64();
+    let nominal = gaps.len() as f64 * interval;
     println!(
         "BUDGET idle repaints, map tab visible, {MAP_SERVERS} servers: {} frames in {} s, \
-         budget one per {} ms poll interval; gaps {gaps:.3?} s; {asked_meanwhile} PEERS requests",
+         budget one per {} ms poll interval; gaps {gaps:.3?} s, spanning {span:.3} s of a \
+         nominal {nominal:.3} s; {asked_meanwhile} PEERS requests",
         idle.frames.len(),
         IDLE_WINDOW.as_secs(),
         poll.as_millis()
     );
     idle.assert_valid();
-    let most = (IDLE_WINDOW.as_secs_f64() / poll.as_secs_f64()).floor() as usize + 1;
+    // The timer keeps its own beat, so a window holds as many of its beats as the interval
+    // divides into it, or one more when the window opens just before one.
+    let beats = (IDLE_WINDOW.as_secs_f64() / interval).floor() as usize;
     assert!(
-        idle.frames.len() <= most,
-        "{} frames in {} s, more than one per interval",
+        (beats..=beats + 1).contains(&idle.frames.len()),
+        "{} frames in {} s at one per {} ms: neither {beats} nor {}",
         idle.frames.len(),
-        IDLE_WINDOW.as_secs()
-    );
-    assert!(
-        idle.frames.len() >= most - 2,
-        "{} frames: the map is not read on its timer",
-        idle.frames.len()
+        IDLE_WINDOW.as_secs(),
+        poll.as_millis(),
+        beats + 1
     );
     for (n, cause) in causes(&idle.frames) {
         assert!(
@@ -651,12 +679,18 @@ fn real_binary_map_visible_repaints_once_per_poll_interval() {
             "{n} frames asked for by {cause}, not by the timer"
         );
     }
+    let slack = BEAT_SLACK * interval;
     for gap in &gaps {
         assert!(
-            *gap > poll.as_secs_f64() - 0.1,
-            "two frames {gap:.3} s apart"
+            *gap > interval - slack,
+            "two frames {gap:.3} s apart, nearer than half an interval: one beat drew twice"
         );
     }
+    assert!(
+        (span - nominal).abs() < slack,
+        "{} frames spanning {span:.3} s, not the {nominal:.3} s of as many beats",
+        idle.frames.len()
+    );
     assert!(
         asked_meanwhile >= MAP_SERVERS * (idle.frames.len() - 1)
             && asked_meanwhile <= MAP_SERVERS * idle.frames.len(),

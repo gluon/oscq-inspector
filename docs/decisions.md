@@ -193,6 +193,7 @@ One line per decision. Newest entries at the bottom. A dependency not listed in 
 | 2026-11-13 | M7, the map shows only with a server selected, as the other tabs | The centre shows "Select a server" with none selected; every server is connected by selecting it |
 | 2026-11-13 | The variable `OSCQ_INSPECTOR_STARTUP`, read once at launch, takes `map`, to open on the map tab, and `connect-all`, to connect every known server. Nothing of it is kept | The real binary tests of the map have no hand to click the tab or eight servers. A variable reaches the binary without touching the config or its format |
 | 2026-11-13 | The trace target `oscq_inspector::frame_time` logs, on each frame, the CPU time eframe measured for the frame before: the window's pass and its rendering, `IntegrationInfo::cpu_usage` | The map's frame time budget is measured on the real binary, rendering included; the in process measure leaves out the GPU side |
+| 2026-11-13 | `real_binary_map_visible_repaints_once_per_poll_interval` holds the rate and not the spacing: the number of frames of the idle window, every one asked for by the application's timer, each reading the eight servers, and the span they cover. The assertion that no two frames were closer than the interval less 100 ms is removed. What replaces it, with half an interval for its one constant: no two frames nearer than half an interval, and the span within half an interval of as many beats. The frame count is tightened from four to six frames to five or six, the beats a 10 s window holds at 2 s | PRD 10 reads "one per poll interval and no more": the budget is a rate, and a rate over a window is a count. A single gap is not a property of this application: the timer keeps its own beat, so a gap is the interval plus the difference between two deliveries of a wake by the operating system, and a late frame is followed by an early one. Measured on the macOS CI machine, below: a single gap strays up to 112 ms, 5.6 percent of the interval, while the span of four holds within 60 ms, 0.75 percent, and the one gap at +112 ms was followed by one at -110 ms, the beat recovered within 2 ms. The old assertion was a tolerance on a quantity the application does not control, and its 100 ms were chosen, not measured. Half an interval is not a tolerance either: it separates one beat from the next, two repaints for one beat landing milliseconds apart and a missed beat a whole interval away, an order of magnitude from the 5.6 percent measured and from both defects |
 
 ## License audit, 2026-10-13
 
@@ -299,3 +300,21 @@ Release build, commit `fbc3c56`. Eight synthetic servers of 200 methods each, al
 | The same, in process, frame plus tessellation, GPU not included | n 400, median 0.326, p95 1.062, max 10.180 ms | p95 0.218 ms | p95 0.219 ms; Windows p95 0.817 ms | Met |
 
 The idle CPU with the map shown, not a budget of its own, was 0.89 % and 0.70 % on the macOS CI machine and 1.40 % and 1.30 % on the Linux one, under software rendering: five frames of the map in ten seconds. In the same run the measurement step, not a gate, found the macOS CI machine's cold start at 193.9 to 303.4 ms, one launch over 300 ms; that machine's cold start has ranged from 180 to 569 ms before, as recorded above, and the verdict on cold start remains the human's Mac. The other budgets of that run are within, as before.
+
+### M7, 2026-11-13, the map poll tolerance
+
+Why `real_binary_map_visible_repaints_once_per_poll_interval` asserts the rate and not the spacing. Every window of the map budget run so far, release build, eight synthetic servers, `peers_poll_ms` 2000, four gaps between the five frames of a 10 s window. The macOS CI machine is `macos-latest`, an Apple Silicon virtual machine; the Linux one is `ubuntu-22.04` under Xvfb; the human's Mac is the machine the application is written on.
+
+| Where | Run, commit | Gaps, s | Largest single stray | Span of the four, s | Stray of the span |
+| --- | --- | --- | --- | --- | --- |
+| macOS CI | 43419986506, `fbc3c56` | 2.007, 2.053, 2.004, 1.996 | +53 ms | 8.060 | +60 ms |
+| macOS CI | 43419986506, `fbc3c56` | 1.997, 2.056, 1.984, 1.965 | +56 ms | 8.002 | +2 ms |
+| macOS CI | 43420534402, `cced60e` | 2.056, 2.001, 1.982, 2.018 | +56 ms | 8.057 | +57 ms |
+| macOS CI | 43420534402, `cced60e` | 2.000, 2.054, 1.949, 2.023 | +54 ms | 8.026 | +26 ms |
+| macOS CI | 43442955538, `4d639cd` | 1.988, 1.993, 2.112, 1.890 | +112 ms | 7.983 | -17 ms |
+| Linux CI | the same three runs, six windows | 2.000 four times, every window | under 1 ms | 8.000 | under 1 ms |
+| Human's Mac | 2026-11-13, `fbc3c56` | 2.000, 2.000, 2.000, 2.000 | under 1 ms | 8.000 | under 1 ms |
+
+The last macOS window is the one that failed the old assertion, at 1.890 s against a floor of 1.900 s. Its +112 ms gap is followed by a -110 ms one: the timer did not drift, it was woken late once and found the next beat where it had left it. That is why the span holds within 0.75 percent while a single gap strays 5.6 percent, and why the span is what the test asserts.
+
+Not measured: the delivery itself. What is timed here is when each frame's trace line reached the test process, which carries the window's wake, its pass, and the pipe to the test. The three are not told apart, and nothing in this run says which of them strays. Telling them apart would need a timestamp taken inside the window at the top of the frame, which no trace carries today.
