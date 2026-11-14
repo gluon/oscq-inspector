@@ -1,5 +1,9 @@
 # OSCQuery Inspector
 
+![The Map tab of OSCQuery Inspector](docs/images/map.png)
+
+The map: this application in the middle, connected to three synthetic servers and to a real Ableton Live server, LiveOSCQuery, which two UDP sources feed, dotted, with their packet counts; Capteurs, a fourth synthetic server, does not publish its peers and is drawn alone, saying so.
+
 OSCQuery Inspector is a desktop application for macOS, Windows and Linux that connects to OSCQuery servers. OSCQuery is a protocol by which an application publishes its OSC address space, the list of everything it can be controlled with, as JSON over HTTP. OSCQuery Inspector finds those servers on the local network, shows their address space as a tree, shows each value, and lets you change them: every change is sent as an OSC message. It keeps the values live when a server pushes them over its WebSocket, but none of the three servers it was tested with pushes its values: only the synthetic server of this repository does, so live updates are proven against it alone.
 
 It is meant for people who build or debug OSC setups: checking what a server really publishes, driving it by hand, and watching the messages that go out and come back.
