@@ -1421,14 +1421,34 @@ pub fn draw(
             .collect();
         labels.push((places, i));
     }
-    let hover = |ui: &mut egui::Ui, node: &Node| {
-        ui.label(egui::RichText::new(&node.title).strong());
-        for (text, _) in &node.lines {
-            ui.label(text);
-        }
-        for text in &node.detail {
-            ui.label(text);
-        }
+    // What a node's hover gives: what its box does not show whole, the title, each line, cut
+    // short or not drawn, and its detail; nothing it already shows. A hover repeating the box
+    // drew a second box, alike, under the pointer resting on the node (2026-11-14).
+    let hover =
+        |node: &Node, title_whole: bool, lines_whole: &[bool]| -> Option<Vec<(String, bool)>> {
+            let mut said: Vec<(String, bool)> = Vec::new();
+            if !title_whole {
+                said.push((node.title.clone(), true));
+            }
+            for (k, (text, _)) in node.lines.iter().enumerate() {
+                if !lines_whole.get(k).copied().unwrap_or(false) {
+                    said.push((text.clone(), false));
+                }
+            }
+            said.extend(node.detail.iter().map(|d| (d.clone(), false)));
+            (!said.is_empty()).then_some(said)
+        };
+    let show = |response: egui::Response, said: Option<Vec<(String, bool)>>| match said {
+        Some(said) => response.on_hover_ui(|ui| {
+            for (text, strong) in &said {
+                if *strong {
+                    ui.label(egui::RichText::new(text).strong());
+                } else {
+                    ui.label(text);
+                }
+            }
+        }),
+        None => response,
     };
     for (i, (node, rect)) in model.nodes.iter().zip(rects).enumerate() {
         let warns = node.lines.iter().any(|(_, t)| *t == Tone::Warn);
@@ -1467,6 +1487,7 @@ pub fn draw(
                 gesture.released = Some(i);
             }
         };
+        let mut title_whole = false;
         if compact {
             let mut zone = *rect;
             if matches!(node.kind, NodeKind::Server(_)) {
@@ -1479,6 +1500,7 @@ pub fn draw(
                     strong,
                     rect.width() - 2.0 * PAD,
                 );
+                title_whole = !title.elided;
                 painter.galley(rect.center() - title.size() / 2.0, title, strong);
             } else {
                 let colour = tint(
@@ -1492,14 +1514,16 @@ pub fn draw(
                 painter.circle_filled(rect.center(), DOT / 2.0 - 1.0, colour);
                 if let (true, Some(at)) = (titles, places.names[i]) {
                     let name = single_line(ui, &node.title, body.clone(), text, at.width());
+                    title_whole = !name.elided;
                     painter.galley(at.min, name, text);
                     zone = zone.union(at);
                 }
             }
-            react(
-                ui.interact(zone.expand(GRID), ui.id().with(("map node", i)), sense)
-                    .on_hover_ui(|ui| hover(ui, node)),
-            );
+            // In compact, a node shows its name alone: its lines are in its hover.
+            react(show(
+                ui.interact(zone.expand(GRID), ui.id().with(("map node", i)), sense),
+                hover(node, title_whole, &[]),
+            ));
             continue;
         }
         painter.rect(*rect, 1.5 * GRID, fill, edge, egui::StrokeKind::Inside);
@@ -1507,6 +1531,7 @@ pub fn draw(
         let mut at = rect.min + Vec2::splat(PAD);
         if titles {
             let title = single_line(ui, &node.title, body.clone(), strong, width);
+            title_whole = !title.elided;
             painter.galley(
                 at + Vec2::new(0.0, (TITLE_H - title.size().y) / 2.0),
                 title,
@@ -1514,12 +1539,14 @@ pub fn draw(
             );
         }
         at.y += TITLE_H;
-        for (text, tone) in node.lines.iter().filter(|_| lines) {
+        let mut lines_whole = vec![false; node.lines.len()];
+        for (k, (text, tone)) in node.lines.iter().enumerate().filter(|_| lines) {
             let colour = match tone {
                 Tone::Plain => weak,
                 Tone::Warn => warn,
             };
             let line = single_line(ui, text, small.clone(), colour, width);
+            lines_whole[k] = !line.elided;
             painter.galley(
                 at + Vec2::new(0.0, (LINE_H - line.size().y) / 2.0),
                 line,
@@ -1527,10 +1554,10 @@ pub fn draw(
             );
             at.y += LINE_H;
         }
-        react(
-            ui.interact(*rect, ui.id().with(("map node", i)), sense)
-                .on_hover_ui(|ui| hover(ui, node)),
-        );
+        react(show(
+            ui.interact(*rect, ui.id().with(("map node", i)), sense),
+            hover(node, title_whole, &lines_whole),
+        ));
     }
     // A label covers nothing drawn: not a node, a name or another label. It takes the first of
     // its places that covers nothing, or is not drawn (decision of 2026-11-14).

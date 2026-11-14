@@ -150,6 +150,9 @@ Case: the map after Release, 1600 by 1000, 2026-11-14; locked by `a_centre_and_i
 A threshold set where a measure of the defect lands is no threshold. A largest gap of 180 degrees allowed was proposed, and the placement with its defect measured 180.0 exactly. Measure the defect and the fix, and set the bound between them, nearer the fix.
 Case: the same test, 2026-11-14, `docs/decisions.md`.
 
+A thing drawn twice on screen may be one thing and its hover. egui shows a tooltip under a pointer at rest, and a pointer is at rest on what it has just dragged. A map node whose hover repeated its box looked drawn twice, and only after a drag; counting nodes, or drawing with the pointer elsewhere, never shows it. Reproduce with the pointer where the hand leaves it, a pixel moved, time passing.
+Case: Plancher drawn twice with positions set by hand, the human's screen, 2026-11-14; the hypothesis of a key mismatch did not reproduce, the hover did, `a_server_moved_by_hand_is_drawn_once`.
+
 A test that names a tree row by the leftmost text at its height takes a container's expander, `-` or `+`, for its name.
 Case: `drawn_badges` reported the badge of `/foo` on a row named `-`, 2026-11-13.
 

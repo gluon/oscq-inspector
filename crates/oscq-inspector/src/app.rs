@@ -7038,6 +7038,116 @@ mod tests {
         }
     }
 
+    /// One node for one server, seen once. Met on screen on 2026-11-14: with positions set by
+    /// hand, Plancher drawn twice, two like boxes overlapping, one with its edge; after Release,
+    /// once. Not two nodes: the model and the boxes held one. The second was the node's tooltip,
+    /// shown under the pointer resting on the node just dragged, repeating its title and every
+    /// line of its box; after Release the pointer rests on the button. Here a server entered by
+    /// hand, declaring its name, is given a position in the config, drawn, then dragged and the
+    /// pointer left on it: its name and its address are drawn once, and one box.
+    #[test]
+    fn a_server_moved_by_hand_is_drawn_once() {
+        let size = egui::vec2(1600.0, 1000.0);
+        let mut config = Config::default();
+        config.set_map_position("server 127.0.0.1:5803", egui::vec2(0.3, 0.3));
+        let mut h = harness_with(config);
+        h.size = size;
+        five_servers_and_a_udp_source(&mut h);
+        // Counted outside the server list, which names the entry by its address: on the map and
+        // over it, tooltips included.
+        let once = |h: &Harness, out: &egui::FullOutput, when: &str| {
+            let list = egui::PanelState::load(&h.ctx, egui::Id::new("servers"))
+                .unwrap()
+                .outer_rect;
+            let count = |text: &str| {
+                shown_texts(out)
+                    .iter()
+                    .filter(|(t, r, _)| t == text && !list.contains_rect(*r))
+                    .count()
+            };
+            assert_eq!(count("Plancher"), 1, "{when}: Plancher drawn once");
+            assert_eq!(count("127.0.0.1:5803"), 1, "{when}: its address drawn once");
+            let (_, nodes, _) = drawn_map(h, out);
+            assert_eq!(nodes.len(), 6, "{when}: one box a node");
+        };
+        fitted_map(&mut h, size);
+        let out = h.frame_at(10.0, Vec::new());
+        once(&h, &out, "placed from the config");
+
+        let start = map_place(&h, &out, "Plancher").center();
+        let end = start + egui::vec2(120.0, -90.0);
+        let press = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        h.frame_at(10.1, vec![egui::Event::PointerMoved(start)]);
+        h.frame_at(10.2, vec![press(start, true)]);
+        for (k, t) in [(1.0, 10.3), (2.0, 10.4), (3.0, 10.5)] {
+            h.frame_at(
+                t,
+                vec![egui::Event::PointerMoved(start + (end - start) * k / 3.0)],
+            );
+        }
+        h.frame_at(10.6, vec![press(end, false)]);
+        // The hand at rest on the node, as it is once it lets go: a pixel moved, time passing.
+        h.frame_at(
+            10.7,
+            vec![egui::Event::PointerMoved(end + egui::vec2(1.0, 0.0))],
+        );
+        for t in [11.5, 12.5, 13.0] {
+            let out = h.frame_at(t, Vec::new());
+            once(
+                &h,
+                &out,
+                &format!("dragged, the pointer resting on it at {t} s"),
+            );
+        }
+    }
+
+    /// A node's hover gives what its box does not show whole, and nothing it shows: a reading of
+    /// peers failed since the last one, "not read since: answered HTTP 500" in the box, is whole
+    /// on hover, its address included, and the node's name is not repeated there.
+    #[test]
+    fn a_node_hover_gives_what_its_box_does_not_show() {
+        let size = egui::vec2(1600.0, 1000.0);
+        let mut h = harness();
+        h.size = size;
+        let ids = five_servers_and_a_udp_source(&mut h);
+        let reason = "http://127.0.0.1:5804/?PEERS answered HTTP 500";
+        h.events
+            .send(Event::Peers {
+                server_id: ids[3],
+                at: Instant::now(),
+                result: Err(reason.to_owned()),
+            })
+            .unwrap();
+        fitted_map(&mut h, size);
+        let out = h.frame_at(10.0, Vec::new());
+        let title = map_place(&h, &out, "Capteurs");
+        h.frame_at(10.1, vec![egui::Event::PointerMoved(title.center())]);
+        h.frame_at(
+            10.2,
+            vec![egui::Event::PointerMoved(
+                title.center() + egui::vec2(1.0, 0.0),
+            )],
+        );
+        h.frame_at(11.5, Vec::new());
+        let out = h.frame_at(12.5, Vec::new());
+        let drawn: Vec<String> = shown_texts(&out).into_iter().map(|(t, _, _)| t).collect();
+        let whole = format!("not read since: {reason}");
+        assert!(
+            drawn.contains(&whole),
+            "the whole reason on hover: {drawn:?}"
+        );
+        assert_eq!(
+            drawn.iter().filter(|t| *t == "Capteurs").count(),
+            1,
+            "its name not repeated on hover"
+        );
+    }
+
     /// Where on screen the map draws `text`, once.
     fn map_place(h: &Harness, out: &egui::FullOutput, text: &str) -> egui::Rect {
         let (_, _, texts) = drawn_map(h, out);
