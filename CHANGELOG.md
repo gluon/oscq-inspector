@@ -4,6 +4,8 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-14
+
 ### Added
 
 - **Map**, a fourth tab: every server, and what each one that publishes its peers says of its connections, one arrow per client, UDP sources apart, this application named as itself. Read when the tab opens, then every two seconds while it is shown, never behind another tab; each server says how old its reading is, and past three intervals it is marked stale. A server that does not publish its peers is drawn and says so, with no arrow.
@@ -19,8 +21,9 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 
 ### Changed
 
-- **The map's places**: nodes are placed by forces, those connected together drawn together, spread over the map's area, and still once placed. A server carries the name its `HOST_INFO` declares, even when entered by hand, its address below.
+- **The map's places**: nodes are placed by forces, those connected together drawn together, spread over the map's area, and still once placed.
 - **A readable map**: every server's name is always drawn at a readable size. When the map does not hold with every detail readable, it is drawn compact, a server as its name, a peer as a dot with its name, the rest on hover; when room is short an edge's label goes first, then a client's name, never a server's. **Fit** shows the whole map when it can be read, the rest is panned to otherwise. A text too small to read is not drawn.
+- **Declared names**: a server is called by the name its `HOST_INFO` declares, even when entered by hand: on the map, in the server list, in the status bar and in a preset slot. Its address comes second, below on the map, first on hover elsewhere.
 - **Name**: the application is OSCQuery Inspector. Its crate, its binary, its downloads and its `.desktop` file are `oscq-inspector`; on macOS the bundle is **OSCQuery Inspector.app**. The macOS bundle identifier and the settings folder keep the former name, so that an installed copy stays the same application to its system and finds its settings again.
 
 ## [0.2.3] - 2026-10-14
@@ -101,7 +104,8 @@ The first version whose files are on the Releases page.
 
 - First release: discovery over Bonjour and manual entries, the address space as a tree, values read and sent with widgets fitting their types, values live over the WebSocket where the server pushes them, the JSON and Traffic tabs. Unsigned artifacts for macOS (universal), Windows and Linux.
 
-[Unreleased]: https://github.com/gluon/void-oscq/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/gluon/void-oscq/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/gluon/void-oscq/compare/v0.2.3...v0.3.0
 [0.2.3]: https://github.com/gluon/void-oscq/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/gluon/void-oscq/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/gluon/void-oscq/compare/v0.2.0...v0.2.1
