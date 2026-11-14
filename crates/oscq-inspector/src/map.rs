@@ -15,6 +15,11 @@ use crate::state::{
 };
 use crate::style::{self, GRID};
 
+/// The least size, in points on screen, at which a text of the map is drawn: below it, a
+/// node is drawn without its text, whole on hover. egui's own smallest text style, `Small`,
+/// is 9 points (egui 0.36, `style.rs`, the default text styles).
+pub const READABLE: f32 = 9.0;
+
 /// A reading older than this many poll intervals is marked stale (PRD 9.10).
 pub const STALE_AFTER_INTERVALS: u32 = 3;
 
@@ -465,15 +470,20 @@ pub fn build(state: &AppState, now: Instant, interval: Duration, app_name: &str)
 
 // ---------------------------------------------------------------------------- places
 
-const NODE_W: f32 = 52.0 * GRID;
+pub(crate) const NODE_W: f32 = 52.0 * GRID;
 const TITLE_H: f32 = 5.0 * GRID;
 const LINE_H: f32 = 4.0 * GRID;
 const PAD: f32 = 2.0 * GRID;
 /// Room a node takes along its ring, and the least distance between the two rings.
 const SLOT: f32 = NODE_W + 16.0 * GRID;
 const RING_GAP: f32 = 56.0 * GRID;
-/// The rings are ellipses, wider than tall, as the nodes are.
-const STRETCH: Vec2 = Vec2::new(1.25, 0.75);
+/// The least stretch of the rings across and down, the ellipse the map had before its shape
+/// followed the canvas: what an edge between the two rings needs. Across, the rings at their
+/// sides are `1.25 * RING_GAP` apart, 280 points: a node, 208, and 72 of edge. Down, at their
+/// top, `0.75 * RING_GAP`, 168 points: half of two nodes and about 90 of edge. At stretch 1
+/// across, an edge was 16 points long, four dashes, which
+/// `a_name_two_servers_share_draws_an_ambiguous_edge_that_says_so` caught.
+const STRETCH_MIN: Vec2 = Vec2::new(1.25, 0.75);
 const MARGIN: f32 = 12.0 * GRID;
 
 fn node_size(node: &Node) -> Vec2 {
@@ -485,34 +495,46 @@ fn node_size(node: &Node) -> Vec2 {
 
 /// The places of the nodes: computed, never authored (PRD 9.10). The servers on a ring, in
 /// their order; every other node on a ring around it, towards the servers it is connected to.
-/// The same model gives the same places.
-pub fn layout(model: &Model) -> Vec<Rect> {
+/// The rings are ellipses shaped to `aspect`, the width over the height of the canvas, so that
+/// the map fits it on both sides and not on one alone; each as small as the nodes allow, so that
+/// it is drawn as large as the canvas allows. The same model and aspect give the same places.
+pub fn layout(model: &Model, aspect: f32) -> Vec<Rect> {
     let servers: Vec<usize> = (0..model.nodes.len())
         .filter(|i| matches!(model.nodes[*i].kind, NodeKind::Server(_)))
         .collect();
     let others: Vec<usize> = (0..model.nodes.len())
         .filter(|i| !matches!(model.nodes[*i].kind, NodeKind::Server(_)))
         .collect();
-    let on_ring = |radius: f32, angle: f32| {
-        Vec2::new(
-            radius * STRETCH.x * angle.cos(),
-            radius * STRETCH.y * angle.sin(),
-        )
-    };
     let tau = std::f32::consts::TAU;
-    let mut centres = vec![Vec2::ZERO; model.nodes.len()];
     let inner = if servers.len() <= 1 {
         0.0
     } else {
         (servers.len() as f32 * SLOT / tau).max(40.0 * GRID)
     };
+    let outer = if others.is_empty() {
+        inner
+    } else {
+        (inner + RING_GAP).max(others.len() as f32 * SLOT / tau)
+    };
+    let tallest = model
+        .nodes
+        .iter()
+        .map(|n| node_size(n).y)
+        .fold(0.0, f32::max);
+    let stretch = stretch_for(aspect, outer, Vec2::new(NODE_W, tallest));
+    let on_ring = |radius: f32, angle: f32| {
+        Vec2::new(
+            radius * stretch.x * angle.cos(),
+            radius * stretch.y * angle.sin(),
+        )
+    };
+    let mut centres = vec![Vec2::ZERO; model.nodes.len()];
     for (k, i) in servers.iter().enumerate() {
         // The first on the left, then clockwise.
         let angle = std::f32::consts::PI + k as f32 * tau / servers.len() as f32;
         centres[*i] = on_ring(inner, angle);
     }
     if !others.is_empty() {
-        let outer = (inner + RING_GAP).max(others.len() as f32 * SLOT / tau);
         let step = tau / others.len() as f32;
         // Where each would rather be: towards the servers it is connected to.
         let wish = |i: usize| -> Option<f32> {
@@ -564,6 +586,24 @@ pub fn layout(model: &Model) -> Vec<Rect> {
             )
         })
         .collect()
+}
+
+/// The stretch of the rings, across and down, for a canvas of `aspect`: one at its least, the
+/// other as large as the map's box, `2 * radius * stretch + node + 2 * MARGIN` on each side,
+/// needs to take the aspect of the canvas. A degenerate aspect keeps the least stretch.
+fn stretch_for(aspect: f32, radius: f32, node: Vec2) -> Vec2 {
+    if radius <= 0.0 || !aspect.is_finite() || aspect <= 0.0 {
+        return STRETCH_MIN;
+    }
+    let extra = node + Vec2::splat(2.0 * MARGIN);
+    // The least stretch down, and across what the aspect then asks.
+    let across = (aspect * (2.0 * radius * STRETCH_MIN.y + extra.y) - extra.x) / (2.0 * radius);
+    if across >= STRETCH_MIN.x {
+        return Vec2::new(across, STRETCH_MIN.y);
+    }
+    // A canvas too narrow for that: the least across, and down what the aspect asks.
+    let down = ((2.0 * radius * STRETCH_MIN.x + extra.x) / aspect - extra.y) / (2.0 * radius);
+    Vec2::new(STRETCH_MIN.x, down.max(STRETCH_MIN.y))
 }
 
 /// The rectangle holding every node and what is drawn around them.
@@ -667,6 +707,13 @@ pub fn draw(ui: &mut egui::Ui, model: &Model, rects: &[Rect], selected: Option<S
     let visuals = ui.visuals().clone();
     let small = FontId::proportional(style::SMALL);
     let body = FontId::proportional(style::BODY);
+    // A text under the readable size on screen is not drawn: what it says is on hover.
+    let scale = ui
+        .ctx()
+        .layer_transform_to_global(ui.layer_id())
+        .map_or(1.0, |t| t.scaling);
+    let readable = |font: &FontId| font.size * scale >= READABLE;
+    let (titles, lines, labels_shown) = (readable(&body), readable(&small), readable(&small));
     let painter = ui.painter().clone();
     // The labels, drawn last: where, what, and the edge they belong to.
     let mut labels: Vec<(Pos2, usize)> = Vec::new();
@@ -716,20 +763,22 @@ pub fn draw(ui: &mut egui::Ui, model: &Model, rects: &[Rect], selected: Option<S
         painter.rect(*rect, 1.5 * GRID, fill, edge, egui::StrokeKind::Inside);
         let width = rect.width() - 2.0 * PAD;
         let mut at = rect.min + Vec2::splat(PAD);
-        let title = single_line(
-            ui,
-            &node.title,
-            body.clone(),
-            visuals.strong_text_color(),
-            width,
-        );
-        painter.galley(
-            at + Vec2::new(0.0, (TITLE_H - title.size().y) / 2.0),
-            title,
-            visuals.strong_text_color(),
-        );
+        if titles {
+            let title = single_line(
+                ui,
+                &node.title,
+                body.clone(),
+                visuals.strong_text_color(),
+                width,
+            );
+            painter.galley(
+                at + Vec2::new(0.0, (TITLE_H - title.size().y) / 2.0),
+                title,
+                visuals.strong_text_color(),
+            );
+        }
         at.y += TITLE_H;
-        for (text, tone) in &node.lines {
+        for (text, tone) in node.lines.iter().filter(|_| lines) {
             let colour = match tone {
                 Tone::Plain => visuals.weak_text_color(),
                 Tone::Warn => visuals.warn_fg_color,
@@ -753,7 +802,7 @@ pub fn draw(ui: &mut egui::Ui, model: &Model, rects: &[Rect], selected: Option<S
                 }
             });
     }
-    for (pos, i) in labels {
+    for (pos, i) in labels.into_iter().filter(|_| labels_shown) {
         let edge = &model.edges[i];
         if edge.label.is_empty() && edge.detail.is_empty() {
             continue;
@@ -1107,15 +1156,19 @@ mod tests {
             }
             let m = build(&state, now, POLL, "Inspector");
             assert_eq!(m.nodes.len(), servers + peers);
-            let rects = layout(&m);
-            assert_eq!(rects, layout(&m), "the same model, the same places");
-            for (i, a) in rects.iter().enumerate() {
-                assert!(a.min.x >= 0.0 && a.min.y >= 0.0, "{servers}+{peers}: {a:?}");
-                for b in &rects[i + 1..] {
-                    assert!(
-                        !a.intersects(*b),
-                        "{servers} servers and {peers} peers: {a:?} covers {b:?}"
-                    );
+            // Canvases from twice as tall as wide to four times as wide as tall.
+            for aspect in [0.5, 0.8, 1.0, 1.6, 2.5, 4.0] {
+                let rects = layout(&m, aspect);
+                assert_eq!(rects, layout(&m, aspect), "the same model, the same places");
+                for (i, a) in rects.iter().enumerate() {
+                    assert!(a.min.x >= 0.0 && a.min.y >= 0.0, "{servers}+{peers}: {a:?}");
+                    for b in &rects[i + 1..] {
+                        assert!(
+                            !a.intersects(*b),
+                            "{servers} servers and {peers} peers, aspect {aspect}: {a:?} \
+                             covers {b:?}"
+                        );
+                    }
                 }
             }
         }

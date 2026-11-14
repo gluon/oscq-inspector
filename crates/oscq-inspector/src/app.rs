@@ -1639,8 +1639,6 @@ impl InspectorApp {
         }
         let interval = self.config.peers_poll();
         let model = map::build(&self.state, Instant::now(), interval, APP_NAME);
-        let rects = map::layout(&model);
-        let bounds = map::bounds(&rects);
         ui.horizontal_wrapped(|ui| {
             ui.set_min_height(ROW_H);
             // PRD 7.6: the polling is said, and never presented as live.
@@ -1658,7 +1656,10 @@ impl InspectorApp {
         });
         // Until the user moves the view, it follows the map as nodes come and go.
         let outer = ui.available_size_before_wrap();
-        let zoom = egui::Rangef::new(0.2, 1.0);
+        let rects = map::layout(&model, outer.x / outer.y);
+        let bounds = map::bounds(&rects);
+        // Fit shows the whole map, however small it must be drawn for that.
+        let zoom = egui::Rangef::new(fit_scale(bounds, outer).min(0.2), 1.0);
         let fitted = fit_scene(bounds, outer, zoom);
         if !self.view.map_moved && self.view.map_fitted != Some(bounds) {
             self.view.map_fitted = Some(bounds);
@@ -1708,10 +1709,17 @@ impl eframe::App for InspectorApp {
     }
 }
 
+/// The scale at which all of `bounds` holds in a pane of `outer` size; not finite for a pane or
+/// a map of no size.
+fn fit_scale(bounds: egui::Rect, outer: egui::Vec2) -> f32 {
+    let scale = (outer / bounds.size()).min_elem();
+    if scale > 0.0 { scale } else { f32::NAN }
+}
+
 /// The part of the map to show so that all of `bounds` is in view, in a pane of `outer` size:
 /// the whole map, at the scale that holds it, never larger than life.
 fn fit_scene(bounds: egui::Rect, outer: egui::Vec2, zoom: egui::Rangef) -> egui::Rect {
-    let scale = (outer / bounds.size()).min_elem();
+    let scale = fit_scale(bounds, outer);
     let scale = if scale.is_finite() {
         zoom.clamp(scale)
     } else {
@@ -3520,6 +3528,8 @@ mod tests {
         commands: flume::Receiver<Command>,
         events: flume::Sender<Event>,
         _rt: tokio::runtime::Runtime,
+        /// The window's size for `frame` and `frame_at`: 1100 by 700, the default window.
+        size: egui::Vec2,
     }
 
     fn harness() -> Harness {
@@ -3551,12 +3561,13 @@ mod tests {
             commands: cmd_rx,
             events: ev_tx,
             _rt: rt,
+            size: egui::vec2(1100.0, 700.0),
         }
     }
 
     impl Harness {
         fn frame(&mut self, events: Vec<egui::Event>) -> egui::FullOutput {
-            self.frame_sized(egui::vec2(1100.0, 700.0), events)
+            self.frame_sized(self.size, events)
         }
 
         /// One frame in a window of `size`.
@@ -3578,10 +3589,7 @@ mod tests {
             let input = egui::RawInput {
                 events,
                 time: Some(time),
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1100.0, 700.0),
-                )),
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.size)),
                 ..egui::RawInput::default()
             };
             let app = &mut self.app;
@@ -4524,6 +4532,7 @@ mod tests {
             commands: flume::unbounded().1,
             events: flume::unbounded().0,
             _rt: rt,
+            size: egui::vec2(1100.0, 700.0),
         };
         wait_for(&mut h, "connected and live", |a| {
             a.state.selected_entry().is_some_and(|e| {
@@ -4582,6 +4591,7 @@ mod tests {
             commands: flume::unbounded().1,
             events: flume::unbounded().0,
             _rt: rt,
+            size: egui::vec2(1100.0, 700.0),
         };
         wait_for(&mut h, "the launch attempt to fail", |a| {
             a.state
@@ -5597,6 +5607,7 @@ mod tests {
             commands: flume::unbounded().1,
             events: flume::unbounded().0,
             _rt: rt,
+            size: egui::vec2(1100.0, 700.0),
         };
         wait_for(&mut h, "connected", |a| {
             a.state
@@ -5683,6 +5694,7 @@ mod tests {
             commands: flume::unbounded().1,
             events: flume::unbounded().0,
             _rt: rt,
+            size: egui::vec2(1100.0, 700.0),
         }
     }
 
@@ -6165,6 +6177,7 @@ mod tests {
     #[test]
     fn a_server_that_declares_nothing_has_no_edge_and_no_badge() {
         let mut h = harness();
+        h.size = MAP_WINDOW;
         let declares = peer_server(&mut h, "Declares", "10.0.0.1", 5000, true, ONE_METHOD);
         let silent = peer_server(&mut h, "Silent", "10.0.0.2", 5000, false, ONE_METHOD);
         for id in [declares, silent] {
@@ -6347,6 +6360,177 @@ mod tests {
         );
     }
 
+    /// A window in which the maps of the tests below are drawn large enough to be read: a map
+    /// draws no text under the readable size (PRD 9.10, `map::READABLE`).
+    const MAP_WINDOW: egui::Vec2 = egui::vec2(2400.0, 1500.0);
+
+    /// Eight servers that publish their peers, three named peers each, read: the map of the
+    /// map budgets.
+    fn eight_servers_and_24_peers(h: &mut Harness) {
+        let ids: Vec<ServerId> = (0..8)
+            .map(|i| {
+                peer_server(
+                    h,
+                    &format!("map {i}"),
+                    &format!("10.0.0.{}", i + 1),
+                    5000,
+                    true,
+                    ONE_METHOD,
+                )
+            })
+            .collect();
+        for (i, id) in ids.iter().enumerate() {
+            let clients: Vec<serde_json::Value> = (0..3)
+                .map(|c| {
+                    serde_json::json!({
+                        "IP": format!("10.1.{i}.{}", c + 1), "PORT": 40000 + c,
+                        "NAME": format!("peer {i}.{c}"), "PACKETS": 10 * c
+                    })
+                })
+                .collect();
+            h.events
+                .send(peers_read(
+                    *id,
+                    Duration::ZERO,
+                    serde_json::json!({ "CLIENTS": clients }),
+                    None,
+                ))
+                .unwrap();
+        }
+    }
+
+    /// What a frame drew of the map: its canvas, the clip of the map's layer; the nodes, the
+    /// rectangles filled with the ground of a node; and each text with its size on screen,
+    /// the size it was laid out at times the scale the nodes are drawn at.
+    fn drawn_map(
+        h: &Harness,
+        out: &egui::FullOutput,
+    ) -> (egui::Rect, Vec<egui::Rect>, Vec<(String, f32)>) {
+        let ground = h.ctx.global_style().visuals.extreme_bg_color;
+        let pane = egui::PanelState::load(&h.ctx, egui::Id::new("work"))
+            .unwrap()
+            .outer_rect;
+        let mut canvas = None;
+        let mut nodes = Vec::new();
+        let mut texts = Vec::new();
+        fn walk(
+            shape: &egui::Shape,
+            clip: egui::Rect,
+            ground: Color32,
+            nodes: &mut Vec<(egui::Rect, egui::Rect)>,
+            texts: &mut Vec<(egui::Rect, String, f32)>,
+        ) {
+            match shape {
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, clip, ground, nodes, texts)),
+                egui::Shape::Rect(r) if r.fill == ground => nodes.push((r.rect, clip)),
+                egui::Shape::Text(t) => {
+                    let size = t
+                        .galley
+                        .job
+                        .sections
+                        .first()
+                        .map_or(0.0, |s| s.format.font_id.size);
+                    texts.push((clip, t.galley.text().to_owned(), size));
+                }
+                _ => {}
+            }
+        }
+        let mut all_nodes = Vec::new();
+        let mut all_texts = Vec::new();
+        for c in &out.shapes {
+            walk(
+                &c.shape,
+                c.clip_rect,
+                ground,
+                &mut all_nodes,
+                &mut all_texts,
+            );
+        }
+        // The map's layer is clipped to its canvas, left of the right pane: the node grounds
+        // drawn there, of the width of a node at one scale.
+        for (r, clip) in all_nodes {
+            if clip.max.x <= pane.min.x + 1.0 && clip.min.y > ROW_H {
+                canvas = Some(clip);
+                nodes.push(r);
+            }
+        }
+        let canvas = canvas.expect("nodes drawn on the map");
+        let scale = nodes[0].width() / map::NODE_W;
+        for (clip, text, size) in all_texts {
+            if clip == canvas {
+                texts.push((text, size * scale));
+            }
+        }
+        (canvas, nodes, texts)
+    }
+
+    /// PRD 9.10, read with eight servers and 24 peers: after Fit, the map takes the canvas, its
+    /// box at least 60 percent of each side of it, the whole map in view; and no text is drawn
+    /// under the readable size, the nodes staying.
+    #[test]
+    fn after_fit_eight_servers_and_24_peers_take_the_canvas_and_no_label_is_unreadable() {
+        for size in [
+            egui::vec2(1100.0, 700.0),
+            egui::vec2(1600.0, 1000.0),
+            egui::vec2(800.0, 900.0),
+        ] {
+            let mut h = harness();
+            eight_servers_and_24_peers(&mut h);
+            h.app.view.tab = Tab::Map;
+            h.frame_sized(size, Vec::new());
+            h.app.view.map_moved = false;
+            h.app.view.map_fitted = None;
+            h.frame_sized(size, Vec::new());
+            let out = h.frame_sized(size, Vec::new());
+            let (canvas, nodes, texts) = drawn_map(&h, &out);
+            assert_eq!(nodes.len(), 8 + 24, "{size:?}: every node drawn");
+            let bbox = nodes.iter().fold(egui::Rect::NOTHING, |a, r| a.union(*r));
+            let cover = bbox.size() / canvas.size();
+            println!(
+                "MAP {size:?}: canvas {:?}, box {:?}, cover {:.2} x {:.2}, scale {:.3}, texts {}",
+                canvas.size(),
+                bbox.size(),
+                cover.x,
+                cover.y,
+                nodes[0].width() / map::NODE_W,
+                texts.len()
+            );
+            assert!(
+                canvas.expand(1.0).contains_rect(bbox),
+                "{size:?}: the whole map in view"
+            );
+            assert!(
+                cover.x >= 0.6 && cover.y >= 0.6,
+                "{size:?}: the box covers {:.2} x {:.2} of the canvas",
+                cover.x,
+                cover.y
+            );
+            for (text, on_screen) in &texts {
+                assert!(
+                    *on_screen >= map::READABLE - 0.01,
+                    "{size:?}: {text:?} drawn at {on_screen:.1} points"
+                );
+            }
+        }
+        // A map small enough to be drawn at full size has its texts, all readable.
+        let mut h = harness();
+        let id = peer_server(&mut h, "Alone", "10.0.0.1", 5000, true, ONE_METHOD);
+        h.events
+            .send(peers_read(id, Duration::ZERO, max_listening_to_a(), None))
+            .unwrap();
+        h.app.view.tab = Tab::Map;
+        let size = egui::vec2(1600.0, 1000.0);
+        h.frame_sized(size, Vec::new());
+        let out = h.frame_sized(size, Vec::new());
+        let (_, nodes, texts) = drawn_map(&h, &out);
+        assert_eq!(nodes[0].width(), map::NODE_W, "full size");
+        let drawn: Vec<&str> = texts.iter().map(|(t, _)| t.as_str()).collect();
+        for expected in ["Alone", "Max", "connected", "4 packets"] {
+            assert!(drawn.contains(&expected), "{expected:?} drawn: {drawn:?}");
+        }
+        assert!(texts.iter().all(|(_, s)| *s >= map::READABLE));
+    }
+
     /// M7: a server connected to itself. A client under the server's own name is drawn as a
     /// loop on that one node, not dropped.
     #[test]
@@ -6401,6 +6585,7 @@ mod tests {
     #[test]
     fn a_name_two_servers_share_draws_an_ambiguous_edge_that_says_so() {
         let mut h = harness();
+        h.size = MAP_WINDOW;
         let hub = peer_server(&mut h, "Hub", "10.0.0.1", 5000, true, ONE_METHOD);
         peer_server(&mut h, "Twin", "10.0.0.2", 5000, true, ONE_METHOD);
         peer_server(&mut h, "Twin", "10.0.0.3", 5000, true, ONE_METHOD);
@@ -6655,6 +6840,7 @@ mod tests {
     #[test]
     fn the_map_names_this_application_udp_sources_and_failures() {
         let mut h = harness();
+        h.size = MAP_WINDOW;
         let ok = peer_server(&mut h, "Answers", "10.0.0.1", 5000, true, ONE_METHOD);
         let fails = peer_server(&mut h, "Fails", "10.0.0.2", 5000, true, ONE_METHOD);
         h.events
@@ -7042,6 +7228,7 @@ mod tests {
             commands: flume::unbounded().1,
             events: flume::unbounded().0,
             _rt: rt,
+            size: egui::vec2(1100.0, 700.0),
         }
     }
 
@@ -7335,6 +7522,7 @@ mod tests {
             last_selected: Some(key(&answers)),
             ..Config::default()
         });
+        h.size = MAP_WINDOW;
         // As a launch of the real binary tests does.
         h.app.startup(&h.ctx.clone(), "map,connect-all");
         assert_eq!(h.app.view.tab, Tab::Map);

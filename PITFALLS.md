@@ -126,6 +126,9 @@ Case: `real_binary_map_visible_repaints_once_per_poll_interval`, gaps 1.988, 1.9
 The test filter is a substring too. A real binary test named `budget_cold_start...` was picked up by the in process `budget_` filter and failed in CI for want of a display. Real binary tests are named `real_binary_...`.
 Case: CI run 38208380933, 2026-10-12.
 
+A test that reads a text of the map reads it whatever size it was drawn at. Four tests read node titles and edge labels the default window drew under 9 points, and passed: the text was in the shapes, nobody could read it on the screen. A text has a size on screen, the size it was laid out at times the scale of its layer; read that too.
+Case: four map tests failed once the map stopped drawing text under 9 points, 2026-11-14.
+
 A test that names a tree row by the leftmost text at its height takes a container's expander, `-` or `+`, for its name.
 Case: `drawn_badges` reported the badge of `/foo` on a row named `-`, 2026-11-13.
 

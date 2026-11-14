@@ -18,6 +18,7 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 
 ### Changed
 
+- **A readable map**: **Fit** fills the map's area, the map taking the shape of the area, and shows the whole map however many servers; a text too small to read is not drawn, the node stays and says what it holds on hover.
 - **Name**: the application is OSCQuery Inspector. Its crate, its binary, its downloads and its `.desktop` file are `oscq-inspector`; on macOS the bundle is **OSCQuery Inspector.app**. The macOS bundle identifier and the settings folder keep the former name, so that an installed copy stays the same application to its system and finds its settings again.
 
 ## [0.2.3] - 2026-10-14
