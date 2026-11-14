@@ -135,6 +135,9 @@ Case: CI run 38208380933, 2026-10-12.
 A test that reads a text of the map reads it whatever size it was drawn at. Four tests read node titles and edge labels the default window drew under 9 points, and passed: the text was in the shapes, nobody could read it on the screen. A text has a size on screen, the size it was laid out at times the scale of its layer; read that too.
 Case: four map tests failed once the map stopped drawing text under 9 points, 2026-11-14.
 
+A test that every drawn text is readable passes when nothing is drawn. The rule "no text under 9 points" and its test held for the map of eight servers and 24 peers while it drew no text at all, and so did the maps of two and three servers in the default window. A rule of what may not be drawn needs beside it what must be: here, every server's name.
+Case: `after_fit_eight_servers_and_24_peers_take_the_canvas_and_no_label_is_unreadable` green with "texts 0" in its own output, on `main` at `5161db3`; the human saw only boxes, 2026-11-14.
+
 A test that names a tree row by the leftmost text at its height takes a container's expander, `-` or `+`, for its name.
 Case: `drawn_badges` reported the badge of `/foo` on a row named `-`, 2026-11-13.
 
