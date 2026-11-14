@@ -1279,8 +1279,8 @@ pub fn draw(
         .all(|(n, name)| matches!(n.kind, NodeKind::Server(_)) || name.is_some());
     let labels_shown = lines && (!compact || (titles && every_name));
     let painter = ui.painter().clone();
-    // The labels, drawn last: where, what, and the edge they belong to.
-    let mut labels: Vec<(Pos2, usize)> = Vec::new();
+    // The labels, drawn last: the places each may take, best first, and the edge it belongs to.
+    let mut labels: Vec<(Vec<Pos2>, usize)> = Vec::new();
     let mut between: BTreeMap<(usize, usize), usize> = BTreeMap::new();
     for (i, edge) in model.edges.iter().enumerate() {
         let (Some(from), Some(to)) = (rects.get(edge.from), rects.get(edge.to)) else {
@@ -1294,7 +1294,14 @@ pub fn draw(
         if edge.from == edge.to {
             let (centre, radius) = loop_circle(*to, nth);
             painter.add(Shape::circle_stroke(centre, radius, stroke));
-            labels.push((centre - Vec2::new(0.0, radius + 2.0 * GRID), i));
+            labels.push((
+                vec![
+                    centre - Vec2::new(0.0, radius + 2.0 * GRID),
+                    centre + Vec2::new(radius + 8.0 * GRID, 0.0),
+                    centre - Vec2::new(radius + 8.0 * GRID, 0.0),
+                ],
+                i,
+            ));
             continue;
         }
         let aside = if compact {
@@ -1315,7 +1322,24 @@ pub fn draw(
             painter.line_segment([b, b + back], stroke);
         }
         let left = Vec2::new(dir.y, -dir.x);
-        labels.push((a + (b - a) * 0.5 + left * 2.5 * GRID, i));
+        // Along the edge, its middle first, then nearer either end, beside the line on one side,
+        // then on the other: the first place that covers nothing is taken.
+        // Every twentieth of the edge, from its middle outwards: 0.5, 0.45, 0.55, ... 0.95.
+        let along: Vec<f32> = std::iter::once(0.5)
+            .chain((1..10).flat_map(|k| {
+                let d = k as f32 * 0.05;
+                [0.5 - d, 0.5 + d]
+            }))
+            .collect();
+        let places: Vec<Pos2> = [1.0f32, -1.0]
+            .iter()
+            .flat_map(|side| {
+                along
+                    .iter()
+                    .map(move |t| a + (b - a) * *t + left * 2.5 * GRID * *side)
+            })
+            .collect();
+        labels.push((places, i));
     }
     let hover = |ui: &mut egui::Ui, node: &Node| {
         ui.label(egui::RichText::new(&node.title).strong());
@@ -1428,17 +1452,14 @@ pub fn draw(
                 .on_hover_ui(|ui| hover(ui, node)),
         );
     }
-    // In compact, a label covers nothing drawn: not a chip, a dot, a name or another label.
-    let mut taken: Vec<Rect> = if compact {
-        rects
-            .iter()
-            .chain(places.names.iter().flatten())
-            .copied()
-            .collect()
-    } else {
-        Vec::new()
-    };
-    for (pos, i) in labels.into_iter().filter(|_| labels_shown) {
+    // A label covers nothing drawn: not a node, a name or another label. It takes the first of
+    // its places that covers nothing, or is not drawn (decision of 2026-11-14).
+    let mut taken: Vec<Rect> = rects
+        .iter()
+        .chain(places.names.iter().flatten())
+        .copied()
+        .collect();
+    for (spots, i) in labels.into_iter().filter(|_| labels_shown) {
         let edge = &model.edges[i];
         if edge.label.is_empty() && edge.detail.is_empty() {
             continue;
@@ -1458,15 +1479,19 @@ pub fn draw(
             edge_lit(i),
         );
         let galley = painter.layout_no_wrap(text.to_owned(), small.clone(), colour);
-        let rect = Align2::CENTER_CENTER
-            .anchor_size(pos, galley.size())
-            .expand2(Vec2::new(GRID, 0.5 * GRID));
-        if compact {
-            if taken.iter().any(|t| t.intersects(rect)) {
-                continue;
-            }
-            taken.push(rect);
-        }
+        let at = |pos: &Pos2| {
+            Align2::CENTER_CENTER
+                .anchor_size(*pos, galley.size())
+                .expand2(Vec2::new(GRID, 0.5 * GRID))
+        };
+        let Some(rect) = spots
+            .iter()
+            .map(at)
+            .find(|r| !taken.iter().any(|t| t.intersects(*r)))
+        else {
+            continue;
+        };
+        taken.push(rect);
         painter.rect_filled(rect, GRID, visuals.panel_fill);
         painter.galley(rect.min + Vec2::new(GRID, 0.5 * GRID), galley, colour);
         ui.interact(rect, ui.id().with(("map edge", i)), Sense::hover())

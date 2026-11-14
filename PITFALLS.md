@@ -141,6 +141,9 @@ Case: `after_fit_eight_servers_and_24_peers_take_the_canvas_and_no_label_is_unre
 A test of a computation that has a fallback passes on the fallback. `the_places_are_computed_and_no_node_covers_another` would stay green with a placement by forces that always left nodes overlapping, since the ellipses of M7 take over then and never overlap. Count which one ran before reading the green: a trace on each branch, the six formats run, the trace removed.
 Case: the placement by forces, 2026-11-14: counted, 0 fallbacks over the six formats and the compact cases, `docs/decisions.md`.
 
+A rule checked in one mode of a drawing holds only there. Labels were kept off nodes in the compact map, written when the full map's ellipses left the middle of every edge empty; the placement by forces puts a node anywhere, and a label was drawn over its title. When what makes a rule unnecessary changes, check the rule everywhere.
+Case: a "no packet" label over Spatialisation and over this application's node, the human's capture at 1600 by 1000, 2026-11-14; reproduced by `an_edge_label_never_covers_a_node`.
+
 A test that names a tree row by the leftmost text at its height takes a container's expander, `-` or `+`, for its name.
 Case: `drawn_badges` reported the badge of `/foo` on a row named `-`, 2026-11-13.
 

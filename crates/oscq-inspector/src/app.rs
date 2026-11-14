@@ -6872,6 +6872,45 @@ mod tests {
         );
     }
 
+    /// An edge's label never covers a node: placed elsewhere along its edge, or not drawn. Met on
+    /// a capture of 2026-11-14 at 1600 by 1000, a "no packet" label drawn over the titles of two
+    /// nodes. Here Capteurs is set by hand on the middle of the edge from Spatialisation to
+    /// Lumieres, where that edge's label would go: no label covers the box of a node, in full
+    /// and in compact, and the labels still find a place.
+    #[test]
+    fn an_edge_label_never_covers_a_node() {
+        for size in [egui::vec2(1600.0, 1000.0), egui::vec2(1100.0, 700.0)] {
+            let mut config = Config::default();
+            config.set_map_position("server 127.0.0.1:5801", egui::vec2(0.2, 0.5));
+            config.set_map_position("server 127.0.0.1:5802", egui::vec2(0.8, 0.5));
+            config.set_map_position("server 127.0.0.1:5804", egui::vec2(0.5, 0.5));
+            let mut h = harness_with(config);
+            h.size = size;
+            five_servers_and_a_udp_source(&mut h);
+            let (_, nodes, texts) = fitted_map(&mut h, size);
+            let labels: Vec<&MapText> = texts
+                .iter()
+                .filter(|t| t.shown.ends_with("packets") || t.shown == "no packet")
+                .collect();
+            for label in &labels {
+                for node in &nodes {
+                    assert!(
+                        !label.rect.intersects(*node),
+                        "{size:?}: {:?} at {:?} covers the node at {node:?}",
+                        label.shown,
+                        label.rect
+                    );
+                }
+            }
+            if size.x > 1500.0 {
+                assert!(
+                    labels.iter().any(|t| t.shown == "3 packets"),
+                    "the covered label placed elsewhere on its edge: {texts:?}"
+                );
+            }
+        }
+    }
+
     /// Where on screen the map draws `text`, once.
     fn map_place(h: &Harness, out: &egui::FullOutput, text: &str) -> egui::Rect {
         let (_, _, texts) = drawn_map(h, out);
