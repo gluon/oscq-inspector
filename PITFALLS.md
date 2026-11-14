@@ -138,6 +138,21 @@ Case: four map tests failed once the map stopped drawing text under 9 points, 20
 A test that every drawn text is readable passes when nothing is drawn. The rule "no text under 9 points" and its test held for the map of eight servers and 24 peers while it drew no text at all, and so did the maps of two and three servers in the default window. A rule of what may not be drawn needs beside it what must be: here, every server's name.
 Case: `after_fit_eight_servers_and_24_peers_take_the_canvas_and_no_label_is_unreadable` green with "texts 0" in its own output, on `main` at `5161db3`; the human saw only boxes, 2026-11-14.
 
+A test of a computation that has a fallback passes on the fallback. `the_places_are_computed_and_no_node_covers_another` would stay green with a placement by forces that always left nodes overlapping, since the ellipses of M7 take over then and never overlap. Count which one ran before reading the green: a trace on each branch, the six formats run, the trace removed.
+Case: the placement by forces, 2026-11-14: counted, 0 fallbacks over the six formats and the compact cases, `docs/decisions.md`.
+
+A rule checked in one mode of a drawing holds only there. Labels were kept off nodes in the compact map, written when the full map's ellipses left the middle of every edge empty; the placement by forces puts a node anywhere, and a label was drawn over its title. When what makes a rule unnecessary changes, check the rule everywhere.
+Case: a "no packet" label over Spatialisation and over this application's node, the human's capture at 1600 by 1000, 2026-11-14; reproduced by `an_edge_label_never_covers_a_node`.
+
+A criterion on the box that holds a drawing says nothing of its shape. The map of a centre and three neighbours drawn on one line, two nodes alone in the bottom corners, covered the canvas: the alone did. Measure the shape itself: the gaps around a node, the spread on the short axis.
+Case: the map after Release, 1600 by 1000, 2026-11-14; locked by `a_centre_and_its_neighbours_spread_around_it_not_on_a_line`.
+
+A threshold set where a measure of the defect lands is no threshold. A largest gap of 180 degrees allowed was proposed, and the placement with its defect measured 180.0 exactly. Measure the defect and the fix, and set the bound between them, nearer the fix.
+Case: the same test, 2026-11-14, `docs/decisions.md`.
+
+A thing drawn twice on screen may be one thing and its hover. egui shows a tooltip under a pointer at rest, and a pointer is at rest on what it has just dragged. A map node whose hover repeated its box looked drawn twice, and only after a drag; counting nodes, or drawing with the pointer elsewhere, never shows it. Reproduce with the pointer where the hand leaves it, a pixel moved, time passing.
+Case: Plancher drawn twice with positions set by hand, the human's screen, 2026-11-14; the hypothesis of a key mismatch did not reproduce, the hover did, `a_server_moved_by_hand_is_drawn_once`.
+
 A test that names a tree row by the leftmost text at its height takes a container's expander, `-` or `+`, for its name.
 Case: `drawn_badges` reported the badge of `/foo` on a row named `-`, 2026-11-13.
 

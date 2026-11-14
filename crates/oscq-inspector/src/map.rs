@@ -52,6 +52,9 @@ pub enum Tone {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Node {
     pub kind: NodeKind,
+    /// Who the node is, the same from one reading to the next: what a position set by hand is
+    /// kept under. See [`Node::kept`].
+    pub key: String,
     pub title: String,
     /// What is known of it, one statement a line, and nothing more.
     pub lines: Vec<(String, Tone)>,
@@ -237,9 +240,32 @@ fn server_node(e: &ServerEntry, now: Instant, interval: Duration) -> Node {
     }
     Node {
         kind: NodeKind::Server(e.server.id),
-        title: e.server.name.clone(),
+        key: format!("server {}", e.key()),
+        // What the server declares wins (CLAUDE.md law 2): its `HOST_INFO` name, however it came
+        // into the list; the name it was found or entered under failing that. Its address is the
+        // first line, and on hover.
+        title: e
+            .host_info
+            .as_ref()
+            .and_then(|h| h.name.clone())
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| e.server.name.clone()),
         lines,
         detail,
+    }
+}
+
+impl Node {
+    /// Whether a position set by hand for this node is kept across launches: its identity
+    /// outlives the connection. A server by its address, this application, a client by the
+    /// name it gave and its address. An unnamed client and a UDP source are known by a port
+    /// the system chose for one connection: their positions last the session.
+    pub fn kept(&self) -> bool {
+        match self.kind {
+            NodeKind::Server(_) | NodeKind::ThisApp => true,
+            NodeKind::Client => self.key.starts_with("client "),
+            NodeKind::Sender => false,
+        }
     }
 }
 
@@ -424,12 +450,14 @@ pub fn build(state: &AppState, now: Instant, interval: Duration, app_name: &str)
             }
             Origin::This => Node {
                 kind: NodeKind::ThisApp,
+                key: "this application".to_owned(),
                 title: app_name.to_owned(),
                 lines: vec![("this application".to_owned(), Tone::Plain)],
                 detail: Vec::new(),
             },
             Origin::Named { name, ip } => Node {
                 kind: NodeKind::Client,
+                key: format!("client {name}@{ip}"),
                 title: name.clone(),
                 lines: std::iter::once((ip.clone(), Tone::Plain))
                     .chain(tone(notes))
@@ -438,6 +466,7 @@ pub fn build(state: &AppState, now: Instant, interval: Duration, app_name: &str)
             },
             Origin::Unnamed { ip, port } => Node {
                 kind: NodeKind::Client,
+                key: format!("unnamed {}", ip_port(ip, *port)),
                 title: "unnamed client".to_owned(),
                 lines: std::iter::once((ip_port(ip, *port), Tone::Plain))
                     .chain(tone(notes))
@@ -446,6 +475,7 @@ pub fn build(state: &AppState, now: Instant, interval: Duration, app_name: &str)
             },
             Origin::Sender { ip, port } => Node {
                 kind: NodeKind::Sender,
+                key: format!("udp {}", ip_port(ip, *port)),
                 title: "UDP source".to_owned(),
                 lines: vec![(ip_port(ip, *port), Tone::Plain)],
                 detail: Vec::new(),
@@ -498,7 +528,7 @@ fn node_size(node: &Node) -> Vec2 {
 /// The rings are ellipses shaped to `aspect`, the width over the height of the canvas, so that
 /// the map fits it on both sides and not on one alone; each as small as the nodes allow, so that
 /// it is drawn as large as the canvas allows. The same model and aspect give the same places.
-pub fn layout(model: &Model, aspect: f32) -> Vec<Rect> {
+fn ring_layout(model: &Model, aspect: f32) -> Vec<Rect> {
     let servers: Vec<usize> = (0..model.nodes.len())
         .filter(|i| matches!(model.nodes[*i].kind, NodeKind::Server(_)))
         .collect();
@@ -622,6 +652,8 @@ pub const NAMES_READABLE: f32 = READABLE / style::BODY;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Places {
     pub detail: Detail,
+    /// The frame the nodes were spread over: what a position set by hand is a fraction of.
+    pub frame: Vec2,
     /// Each node's rectangle: its box, its chip, or its dot.
     pub rects: Vec<Rect>,
     /// Compact only: where each peer's name is drawn beside its dot. `None` for a server, whose
@@ -650,20 +682,383 @@ pub fn fit_scale(bounds: Rect, canvas: Vec2) -> f32 {
     if scale > 0.0 { scale } else { f32::NAN }
 }
 
-/// The places of the map in a canvas of `canvas` size: every node in full when the map holds
-/// in it with its lines readable, else compact. `name_w` is the width of a name drawn at 13
-/// points. The same model, canvas and widths give the same places.
-pub fn places(model: &Model, canvas: Vec2, name_w: &dyn Fn(&str) -> f32) -> Places {
+/// A position set by hand, as a fraction of the frame it was set in: the same place in the
+/// map whatever the size of the canvas and whichever the level of detail.
+pub type Pinned<'a> = &'a dyn Fn(&str) -> Option<Vec2>;
+
+/// What the force directed placement computed for one map in one canvas: the centres of the
+/// nodes and the frame they were spread over, in full and in compact. Computed when the map
+/// opens and when its structure changes, never on a frame of its own (decision of 2026-11-14).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Arrangement {
+    pub full: (Vec2, Vec<Vec2>),
+    pub compact: (Vec2, Vec<Vec2>),
+}
+
+/// Room around a node in the placement: what keeps two nodes visibly apart.
+const SPACING: f32 = 4.0 * GRID;
+/// How much of the frame the nodes' footprints take at least: a force directed placement
+/// needs room around each node to show who is connected to whom.
+const DENSITY: f32 = 2.5;
+
+/// The least frame for nodes of `footprints` at `aspect`.
+fn least_frame(footprints: &[Vec2], aspect: f32) -> Vec2 {
+    let aspect = if aspect.is_finite() && aspect > 0.0 {
+        aspect
+    } else {
+        1.0
+    };
+    let area: f32 = footprints.iter().map(|f| f.x * f.y).sum::<f32>() * DENSITY;
+    let largest = footprints.iter().fold(Vec2::ZERO, |a, f| a.max(*f));
+    let w = (area * aspect).sqrt();
+    Vec2::new(w, area / w.max(1.0)).max(largest)
+}
+
+/// The frame for nodes of `footprints` in a canvas of `canvas` size: the least frame, or the
+/// canvas less its margin when the canvas is larger, so that a small map spreads over it.
+fn frame_for(footprints: &[Vec2], canvas: Vec2) -> Vec2 {
+    least_frame(footprints, canvas.x / canvas.y).max(canvas - Vec2::splat(2.0 * MARGIN))
+}
+
+/// Where the placement starts, inside the frame: each connected part of the map laid out from
+/// its node of most edges, its neighbours around it at even angles, theirs further out within
+/// the share of the circle their parent took; the largest part in the middle of the frame, the
+/// others on a ring around it. A start on one line, or with a node's neighbours all on one
+/// side of it, is a shape the forces do not always undo.
+fn start_in(model: &Model, frame: Vec2) -> Vec<Vec2> {
+    let n = model.nodes.len();
+    let short = frame.min_elem().max(1.0);
+    let stretch = frame / short;
+    let centre = frame / 2.0;
+    let mut adjacent: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for e in &model.edges {
+        if e.from != e.to && e.from < n && e.to < n {
+            if !adjacent[e.from].contains(&e.to) {
+                adjacent[e.from].push(e.to);
+            }
+            if !adjacent[e.to].contains(&e.from) {
+                adjacent[e.to].push(e.from);
+            }
+        }
+    }
+    // The connected parts, each from its node of most edges, the lowest index on a tie.
+    let mut part = vec![usize::MAX; n];
+    let mut parts: Vec<Vec<usize>> = Vec::new();
+    let mut by_degree: Vec<usize> = (0..n).collect();
+    by_degree.sort_by(|a, b| adjacent[*b].len().cmp(&adjacent[*a].len()).then(a.cmp(b)));
+    for &root in &by_degree {
+        if part[root] != usize::MAX {
+            continue;
+        }
+        let id = parts.len();
+        let mut members = vec![root];
+        part[root] = id;
+        let mut k = 0;
+        while k < members.len() {
+            let mut next: Vec<usize> = adjacent[members[k]]
+                .iter()
+                .copied()
+                .filter(|m| part[*m] == usize::MAX)
+                .collect();
+            next.sort_by(|a, b| adjacent[*b].len().cmp(&adjacent[*a].len()).then(a.cmp(b)));
+            for m in next {
+                part[m] = id;
+                members.push(m);
+            }
+            k += 1;
+        }
+        parts.push(members);
+    }
+    // The largest first, then by their first node.
+    parts.sort_by(|a, b| b.len().cmp(&a.len()).then(a[0].cmp(&b[0])));
+    let mut start = vec![centre; n];
+    let others = parts.len().saturating_sub(1);
+    for (p, members) in parts.iter().enumerate() {
+        let (at, step) = if p == 0 {
+            (Vec2::ZERO, 0.22 * short)
+        } else {
+            let angle = std::f32::consts::FRAC_PI_2
+                + (p - 1) as f32 * std::f32::consts::TAU / others as f32;
+            (
+                Vec2::new(angle.cos(), angle.sin()) * 0.42 * short,
+                0.1 * short,
+            )
+        };
+        // Each node's place: its parent's angle share split among its children.
+        let mut sector: std::collections::HashMap<usize, (f32, f32, f32)> =
+            std::collections::HashMap::new();
+        sector.insert(members[0], (0.0, std::f32::consts::TAU, 0.0));
+        start[members[0]] = centre + at * stretch;
+        for &m in members {
+            let Some(&(a0, a1, depth)) = sector.get(&m) else {
+                continue;
+            };
+            let children: Vec<usize> = members
+                .iter()
+                .copied()
+                .filter(|c| !sector.contains_key(c) && adjacent[m].contains(c))
+                .collect();
+            let share = (a1 - a0) / children.len().max(1) as f32;
+            for (k, c) in children.iter().enumerate() {
+                let (b0, b1) = (a0 + k as f32 * share, a0 + (k + 1) as f32 * share);
+                let angle = (b0 + b1) / 2.0 - std::f32::consts::FRAC_PI_2;
+                let radius = (depth + 1.0) * step;
+                start[*c] = centre + (at + Vec2::new(angle.cos(), angle.sin()) * radius) * stretch;
+                sector.insert(*c, (b0, b1, depth + 1.0));
+            }
+        }
+    }
+    start
+}
+
+/// The pairs of nodes the edges of `model` join, for the placement.
+fn joined(model: &Model) -> Vec<(usize, usize)> {
+    model.edges.iter().map(|e| (e.from, e.to)).collect()
+}
+
+/// The centres of the nodes of `footprints` in `frame`, those set by hand held there.
+fn spread(model: &Model, footprints: &[Vec2], frame: Vec2, pinned: Pinned<'_>) -> Vec<Vec2> {
+    let held: Vec<Option<Vec2>> = model
+        .nodes
+        .iter()
+        .map(|n| pinned(&n.key).map(|f| f * frame))
+        .collect();
+    crate::force::place(&crate::force::Input {
+        sizes: footprints,
+        edges: &joined(model),
+        start: &start_in(model, frame),
+        pinned: &held,
+        frame,
+    })
+}
+
+fn footprints_full(model: &Model) -> Vec<Vec2> {
+    model
+        .nodes
+        .iter()
+        .map(|n| node_size(n) + Vec2::splat(SPACING))
+        .collect()
+}
+
+/// In compact, a peer's footprint is its dot; its name, beside it, counts in the frame's area
+/// but not in the placement, which would otherwise hold it apart from everything.
+fn footprints_compact(model: &Model, widths: &[f32]) -> (Vec<Vec2>, Vec<Vec2>) {
+    let mut placed = Vec::new();
+    let mut area = Vec::new();
+    for (n, w) in model.nodes.iter().zip(widths) {
+        if matches!(n.kind, NodeKind::Server(_)) {
+            let f = Vec2::new(chip_w(*w), CHIP_H) + Vec2::splat(SPACING);
+            placed.push(f);
+            area.push(f);
+        } else {
+            placed.push(
+                Vec2::new(DOT + 2.0 * (w.min(NODE_W) + GRID), TITLE_H) + Vec2::splat(SPACING),
+            );
+            area.push(Vec2::new(DOT + w.min(NODE_W) + GRID, TITLE_H) + Vec2::splat(SPACING));
+        }
+    }
+    (placed, area)
+}
+
+/// The placement of `model` in a canvas of `canvas` size, in full and in compact. The costly
+/// part: the caller keeps it while the structure of the map and the canvas stay the same.
+pub fn arrange(
+    model: &Model,
+    canvas: Vec2,
+    name_w: &dyn Fn(&str) -> f32,
+    pinned: Pinned<'_>,
+) -> Arrangement {
+    let full = footprints_full(model);
+    let full_frame = frame_for(&full, canvas);
+    let widths: Vec<f32> = model.nodes.iter().map(|n| name_w(&n.title)).collect();
+    let (dots, area) = footprints_compact(model, &widths);
+    let compact_frame = frame_for(&area, canvas);
     let aspect = canvas.x / canvas.y;
+    let mut full_centres = spread(model, &full, full_frame, pinned);
+    let mut compact_centres = spread(model, &dots, compact_frame, pinned);
+    // With no position set by hand, a placement that left two nodes overlapping gives way to the
+    // ellipses of M7, which never do. Positions set by hand are the user's, overlapping or not.
+    let held = model.nodes.iter().any(|n| pinned(&n.key).is_some());
+    if !held && crate::force::any_overlap(&full_centres, &full) {
+        full_centres = ring_layout(model, aspect)
+            .iter()
+            .map(|r| r.center().to_vec2())
+            .collect();
+    }
+    if !held && crate::force::any_overlap(&compact_centres, &dots) {
+        compact_centres = ring_compact(model, aspect, name_w)
+            .rects
+            .iter()
+            .map(|r| r.center().to_vec2())
+            .collect();
+    }
+    Arrangement {
+        full: (full_frame, full_centres),
+        compact: (compact_frame, compact_centres),
+    }
+}
+
+/// The places of the map from its arrangement: every node in full when the map holds in the
+/// canvas with its lines readable, else compact. A position set by hand since the arrangement
+/// was computed is applied here, on the node alone: nothing else moves for it.
+pub fn places(
+    model: &Model,
+    arrangement: &Arrangement,
+    canvas: Vec2,
+    name_w: &dyn Fn(&str) -> f32,
+    pinned: Pinned<'_>,
+) -> Places {
+    let centre = |frame: Vec2, computed: &[Vec2], i: usize| -> Pos2 {
+        let n = &model.nodes[i];
+        pinned(&n.key)
+            .map(|f| f * frame)
+            .or_else(|| computed.get(i).copied())
+            .unwrap_or(frame / 2.0)
+            .to_pos2()
+    };
+    let (frame, computed) = &arrangement.full;
     let full = Places {
         detail: Detail::Full,
-        rects: layout(model, aspect),
+        frame: *frame,
+        rects: (0..model.nodes.len())
+            .map(|i| {
+                Rect::from_center_size(centre(*frame, computed, i), node_size(&model.nodes[i]))
+            })
+            .collect(),
         names: vec![None; model.nodes.len()],
     };
     if fit_scale(full.bounds(), canvas) >= LINES_READABLE {
-        full
-    } else {
-        layout_compact(model, aspect, name_w)
+        return full;
+    }
+    let (frame, computed) = &arrangement.compact;
+    let widths: Vec<f32> = model.nodes.iter().map(|n| name_w(&n.title)).collect();
+    let rects: Vec<Rect> = (0..model.nodes.len())
+        .map(|i| {
+            let size = if matches!(model.nodes[i].kind, NodeKind::Server(_)) {
+                Vec2::new(chip_w(widths[i]), CHIP_H)
+            } else {
+                Vec2::splat(DOT)
+            };
+            Rect::from_center_size(centre(*frame, computed, i), size)
+        })
+        .collect();
+    let names = names_beside(model, &rects, &widths);
+    Places {
+        detail: Detail::Compact,
+        frame: *frame,
+        rects,
+        names,
+    }
+}
+
+/// The names of the peers beside their dots, each on the side away from the nodes it is joined
+/// to, or from the middle of the map when it is joined to none, in the order of the nodes; a
+/// name that would cover a chip, a dot or a name already placed is left out.
+fn names_beside(model: &Model, rects: &[Rect], widths: &[f32]) -> Vec<Option<Rect>> {
+    let n = rects.len();
+    let middle = rects
+        .iter()
+        .fold(Rect::NOTHING, |a, r| a.union(*r))
+        .center();
+    let mut names: Vec<Option<Rect>> = vec![None; n];
+    let mut taken: Vec<Rect> = rects.iter().map(|r| r.expand(GRID)).collect();
+    for i in 0..n {
+        if matches!(model.nodes[i].kind, NodeKind::Server(_)) {
+            continue;
+        }
+        let neighbours: Vec<Pos2> = model
+            .edges
+            .iter()
+            .filter_map(|e| match (e.from == i, e.to == i) {
+                (true, false) => Some(rects[e.to].center()),
+                (false, true) => Some(rects[e.from].center()),
+                _ => None,
+            })
+            .collect();
+        let from = if neighbours.is_empty() {
+            middle
+        } else {
+            let sum = neighbours.iter().fold(Vec2::ZERO, |a, p| a + p.to_vec2());
+            (sum / neighbours.len() as f32).to_pos2()
+        };
+        let size = Vec2::new(widths[i].min(NODE_W), TITLE_H);
+        // The side away from its neighbours first, then the three others, the first free.
+        let dot = rects[i];
+        let away = name_beside(dot, from, size);
+        let sides = [
+            away,
+            Align2::LEFT_CENTER.anchor_size(dot.right_center() + Vec2::new(GRID, 0.0), size),
+            Align2::RIGHT_CENTER.anchor_size(dot.left_center() - Vec2::new(GRID, 0.0), size),
+            Align2::CENTER_TOP.anchor_size(dot.center_bottom() + Vec2::new(0.0, GRID), size),
+            Align2::CENTER_BOTTOM.anchor_size(dot.center_top() - Vec2::new(0.0, GRID), size),
+        ];
+        let free = sides.into_iter().find(|at| {
+            !taken
+                .iter()
+                .enumerate()
+                .any(|(k, t)| k != i && t.intersects(*at))
+        });
+        if let Some(at) = free {
+            names[i] = Some(at);
+            taken.push(at.expand(GRID));
+        }
+    }
+    names
+}
+
+#[cfg(test)]
+/// The places of the nodes in full, computed, never set by hand: the force directed placement
+/// in the least frame for `aspect`, then brought to the origin. Should the placement leave two
+/// nodes overlapping, the ellipses of M7 are used, which never do. The same model and aspect
+/// give the same places.
+pub fn layout(model: &Model, aspect: f32) -> Vec<Rect> {
+    let footprints = footprints_full(model);
+    let frame = least_frame(&footprints, aspect);
+    let centres = spread(model, &footprints, frame, &|_| None);
+    if crate::force::any_overlap(&centres, &footprints) {
+        return ring_layout(model, aspect);
+    }
+    let rects: Vec<Rect> = centres
+        .iter()
+        .zip(&model.nodes)
+        .map(|(c, n)| Rect::from_center_size(c.to_pos2(), node_size(n)))
+        .collect();
+    let shift = to_origin(rects.iter().copied());
+    rects.into_iter().map(|r| placed(r, shift)).collect()
+}
+
+#[cfg(test)]
+/// The compact places, computed: the force directed placement of chips and dots in the least
+/// frame for `aspect`, the names beside, brought to the origin. The ellipses of M7 should the
+/// placement leave two nodes overlapping.
+pub fn layout_compact(model: &Model, aspect: f32, name_w: &dyn Fn(&str) -> f32) -> Places {
+    let widths: Vec<f32> = model.nodes.iter().map(|n| name_w(&n.title)).collect();
+    let (dots, area) = footprints_compact(model, &widths);
+    let frame = least_frame(&area, aspect);
+    let centres = spread(model, &dots, frame, &|_| None);
+    if crate::force::any_overlap(&centres, &dots) {
+        return ring_compact(model, aspect, name_w);
+    }
+    let rects: Vec<Rect> = (0..model.nodes.len())
+        .map(|i| {
+            let size = if matches!(model.nodes[i].kind, NodeKind::Server(_)) {
+                Vec2::new(chip_w(widths[i]), CHIP_H)
+            } else {
+                Vec2::splat(DOT)
+            };
+            Rect::from_center_size(centres[i].to_pos2(), size)
+        })
+        .collect();
+    let names = names_beside(model, &rects, &widths);
+    let shift = to_origin(rects.iter().chain(names.iter().flatten()).copied());
+    Places {
+        detail: Detail::Compact,
+        frame,
+        rects: rects.into_iter().map(|r| placed(r, shift)).collect(),
+        names: names
+            .into_iter()
+            .map(|r| r.map(|r| placed(r, shift)))
+            .collect(),
     }
 }
 
@@ -713,7 +1108,7 @@ fn name_beside(dot: Rect, centre: Pos2, size: Vec2) -> Rect {
 /// is placed beside its dot, in the order of the nodes, and left out when it would cover a
 /// chip, a dot or a name already placed: when room is short a client's name goes, a server's
 /// never.
-pub fn layout_compact(model: &Model, aspect: f32, name_w: &dyn Fn(&str) -> f32) -> Places {
+fn ring_compact(model: &Model, aspect: f32, name_w: &dyn Fn(&str) -> f32) -> Places {
     let tau = std::f32::consts::TAU;
     let is_server = |i: usize| matches!(model.nodes[i].kind, NodeKind::Server(_));
     let n = model.nodes.len();
@@ -780,6 +1175,7 @@ pub fn layout_compact(model: &Model, aspect: f32, name_w: &dyn Fn(&str) -> f32) 
     let shift = to_origin(rects.iter().chain(names.iter().flatten()).copied());
     Places {
         detail: Detail::Compact,
+        frame: Vec2::ZERO,
         rects: rects.into_iter().map(|r| placed(r, shift)).collect(),
         names: names
             .into_iter()
@@ -864,8 +1260,7 @@ fn edge_stroke(edge: &Edge) -> Stroke {
 
 /// The line of an edge: whole for a client, long dashes for an ambiguous one, short dashes for
 /// a UDP source. A stale edge keeps its line and loses its colour.
-fn edge_line(edge: &Edge, a: Pos2, b: Pos2) -> Vec<Shape> {
-    let stroke = edge_stroke(edge);
+fn edge_line(edge: &Edge, stroke: Stroke, a: Pos2, b: Pos2) -> Vec<Shape> {
     match (edge.how, edge.kind) {
         (How::Ambiguous, _) => Shape::dashed_line(&[a, b], stroke, 8.0, 5.0),
         (_, EdgeKind::Sender) => Shape::dashed_line(&[a, b], stroke, 2.0, 4.0),
@@ -895,7 +1290,56 @@ fn single_line(
 /// compact follows an order: a server's name always, a client's name when it has its room, an
 /// edge's label only when every client's name is drawn and the label covers nothing. What a
 /// node or a label leaves out or cuts short is whole on hover.
-pub fn draw(ui: &mut egui::Ui, model: &Model, places: &Places, selected: Option<ServerId>) {
+/// How much of its colour a node or an edge keeps when another is lit.
+pub const DIMMED: f32 = 0.3;
+
+/// What the pointer did to the map's nodes on this frame, by node index.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Gesture {
+    pub clicked: Option<usize>,
+    pub double_clicked: Option<usize>,
+    /// The node dragged, and by how much, in the map's coordinates.
+    pub dragged: Option<(usize, Vec2)>,
+    /// The node whose drag ended.
+    pub released: Option<usize>,
+}
+
+/// The nodes and the edges lit by the node `focus`, by key: it, the edges that touch it, and
+/// the nodes at their other ends. `None` when nothing is lit, or when that node is not drawn.
+pub fn lit(model: &Model, focus: Option<&str>) -> Option<(Vec<bool>, Vec<bool>)> {
+    let f = model
+        .nodes
+        .iter()
+        .position(|n| Some(n.key.as_str()) == focus)?;
+    let mut nodes = vec![false; model.nodes.len()];
+    nodes[f] = true;
+    let edges: Vec<bool> = model
+        .edges
+        .iter()
+        .map(|e| {
+            let touches = e.from == f || e.to == f;
+            if touches {
+                nodes[e.from] = true;
+                nodes[e.to] = true;
+            }
+            touches
+        })
+        .collect();
+    Some((nodes, edges))
+}
+
+pub fn draw(
+    ui: &mut egui::Ui,
+    model: &Model,
+    places: &Places,
+    selected: Option<ServerId>,
+    focus: Option<&str>,
+) -> Gesture {
+    let mut gesture = Gesture::default();
+    let lit = lit(model, focus);
+    let node_lit = |i: usize| lit.as_ref().is_none_or(|(n, _)| n[i]);
+    let edge_lit = |i: usize| lit.as_ref().is_none_or(|(_, e)| e[i]);
+    let tint = |c: Color32, on: bool| if on { c } else { c.gamma_multiply(DIMMED) };
     let rects = &places.rects;
     let compact = places.detail == Detail::Compact;
     let visuals = ui.visuals().clone();
@@ -915,8 +1359,8 @@ pub fn draw(ui: &mut egui::Ui, model: &Model, places: &Places, selected: Option<
         .all(|(n, name)| matches!(n.kind, NodeKind::Server(_)) || name.is_some());
     let labels_shown = lines && (!compact || (titles && every_name));
     let painter = ui.painter().clone();
-    // The labels, drawn last: where, what, and the edge they belong to.
-    let mut labels: Vec<(Pos2, usize)> = Vec::new();
+    // The labels, drawn last: the places each may take, best first, and the edge it belongs to.
+    let mut labels: Vec<(Vec<Pos2>, usize)> = Vec::new();
     let mut between: BTreeMap<(usize, usize), usize> = BTreeMap::new();
     for (i, edge) in model.edges.iter().enumerate() {
         let (Some(from), Some(to)) = (rects.get(edge.from), rects.get(edge.to)) else {
@@ -925,11 +1369,19 @@ pub fn draw(ui: &mut egui::Ui, model: &Model, places: &Places, selected: Option<
         let k = between.entry((edge.from, edge.to)).or_default();
         let nth = *k;
         *k += 1;
-        let stroke = edge_stroke(edge);
+        let mut stroke = edge_stroke(edge);
+        stroke.color = tint(stroke.color, edge_lit(i));
         if edge.from == edge.to {
             let (centre, radius) = loop_circle(*to, nth);
             painter.add(Shape::circle_stroke(centre, radius, stroke));
-            labels.push((centre - Vec2::new(0.0, radius + 2.0 * GRID), i));
+            labels.push((
+                vec![
+                    centre - Vec2::new(0.0, radius + 2.0 * GRID),
+                    centre + Vec2::new(radius + 8.0 * GRID, 0.0),
+                    centre - Vec2::new(radius + 8.0 * GRID, 0.0),
+                ],
+                i,
+            ));
             continue;
         }
         let aside = if compact {
@@ -940,7 +1392,7 @@ pub fn draw(ui: &mut egui::Ui, model: &Model, places: &Places, selected: Option<
         let Some((a, b)) = segment(*from, *to, aside) else {
             continue;
         };
-        painter.extend(edge_line(edge, a, b));
+        painter.extend(edge_line(edge, stroke, a, b));
         // The head, at the server: the edge goes from the peer to the server it is connected to.
         let dir = (b - a).normalized();
         for turn in [0.45f32, -0.45] {
@@ -950,16 +1402,53 @@ pub fn draw(ui: &mut egui::Ui, model: &Model, places: &Places, selected: Option<
             painter.line_segment([b, b + back], stroke);
         }
         let left = Vec2::new(dir.y, -dir.x);
-        labels.push((a + (b - a) * 0.5 + left * 2.5 * GRID, i));
+        // Along the edge, its middle first, then nearer either end, beside the line on one side,
+        // then on the other: the first place that covers nothing is taken.
+        // Every twentieth of the edge, from its middle outwards: 0.5, 0.45, 0.55, ... 0.95.
+        let along: Vec<f32> = std::iter::once(0.5)
+            .chain((1..10).flat_map(|k| {
+                let d = k as f32 * 0.05;
+                [0.5 - d, 0.5 + d]
+            }))
+            .collect();
+        let places: Vec<Pos2> = [1.0f32, -1.0]
+            .iter()
+            .flat_map(|side| {
+                along
+                    .iter()
+                    .map(move |t| a + (b - a) * *t + left * 2.5 * GRID * *side)
+            })
+            .collect();
+        labels.push((places, i));
     }
-    let hover = |ui: &mut egui::Ui, node: &Node| {
-        ui.label(egui::RichText::new(&node.title).strong());
-        for (text, _) in &node.lines {
-            ui.label(text);
-        }
-        for text in &node.detail {
-            ui.label(text);
-        }
+    // What a node's hover gives: what its box does not show whole, the title, each line, cut
+    // short or not drawn, and its detail; nothing it already shows. A hover repeating the box
+    // drew a second box, alike, under the pointer resting on the node (2026-11-14).
+    let hover =
+        |node: &Node, title_whole: bool, lines_whole: &[bool]| -> Option<Vec<(String, bool)>> {
+            let mut said: Vec<(String, bool)> = Vec::new();
+            if !title_whole {
+                said.push((node.title.clone(), true));
+            }
+            for (k, (text, _)) in node.lines.iter().enumerate() {
+                if !lines_whole.get(k).copied().unwrap_or(false) {
+                    said.push((text.clone(), false));
+                }
+            }
+            said.extend(node.detail.iter().map(|d| (d.clone(), false)));
+            (!said.is_empty()).then_some(said)
+        };
+    let show = |response: egui::Response, said: Option<Vec<(String, bool)>>| match said {
+        Some(said) => response.on_hover_ui(|ui| {
+            for (text, strong) in &said {
+                if *strong {
+                    ui.label(egui::RichText::new(text).strong());
+                } else {
+                    ui.label(text);
+                }
+            }
+        }),
+        None => response,
     };
     for (i, (node, rect)) in model.nodes.iter().zip(rects).enumerate() {
         let warns = node.lines.iter().any(|(_, t)| *t == Tone::Warn);
@@ -978,6 +1467,27 @@ pub fn draw(ui: &mut egui::Ui, model: &Model, places: &Places, selected: Option<
             }
             _ => {}
         }
+        let on = node_lit(i);
+        edge.color = tint(edge.color, on);
+        let strong = tint(visuals.strong_text_color(), on);
+        let text = tint(visuals.text_color(), on);
+        let weak = tint(visuals.weak_text_color(), on);
+        let warn = tint(visuals.warn_fg_color, on);
+        let sense = Sense::click_and_drag();
+        let mut react = |response: egui::Response| {
+            if response.double_clicked() {
+                gesture.double_clicked = Some(i);
+            } else if response.clicked() {
+                gesture.clicked = Some(i);
+            }
+            if response.dragged() && response.drag_delta() != Vec2::ZERO {
+                gesture.dragged = Some((i, response.drag_delta()));
+            }
+            if response.drag_stopped() {
+                gesture.released = Some(i);
+            }
+        };
+        let mut title_whole = false;
         if compact {
             let mut zone = *rect;
             if matches!(node.kind, NodeKind::Server(_)) {
@@ -987,65 +1497,56 @@ pub fn draw(ui: &mut egui::Ui, model: &Model, places: &Places, selected: Option<
                     ui,
                     &node.title,
                     body.clone(),
-                    visuals.strong_text_color(),
+                    strong,
                     rect.width() - 2.0 * PAD,
                 );
-                painter.galley(
-                    rect.center() - title.size() / 2.0,
-                    title,
-                    visuals.strong_text_color(),
-                );
+                title_whole = !title.elided;
+                painter.galley(rect.center() - title.size() / 2.0, title, strong);
             } else {
-                let colour = match node.kind {
-                    NodeKind::ThisApp => visuals.selection.bg_fill,
-                    NodeKind::Sender => EDGE_SENDER,
-                    _ => visuals.strong_text_color(),
-                };
+                let colour = tint(
+                    match node.kind {
+                        NodeKind::ThisApp => visuals.selection.bg_fill,
+                        NodeKind::Sender => EDGE_SENDER,
+                        _ => visuals.strong_text_color(),
+                    },
+                    on,
+                );
                 painter.circle_filled(rect.center(), DOT / 2.0 - 1.0, colour);
                 if let (true, Some(at)) = (titles, places.names[i]) {
-                    let name = single_line(
-                        ui,
-                        &node.title,
-                        body.clone(),
-                        visuals.text_color(),
-                        at.width(),
-                    );
-                    painter.galley(at.min, name, visuals.text_color());
+                    let name = single_line(ui, &node.title, body.clone(), text, at.width());
+                    title_whole = !name.elided;
+                    painter.galley(at.min, name, text);
                     zone = zone.union(at);
                 }
             }
-            ui.interact(
-                zone.expand(GRID),
-                ui.id().with(("map node", i)),
-                Sense::hover(),
-            )
-            .on_hover_ui(|ui| hover(ui, node));
+            // In compact, a node shows its name alone: its lines are in its hover.
+            react(show(
+                ui.interact(zone.expand(GRID), ui.id().with(("map node", i)), sense),
+                hover(node, title_whole, &[]),
+            ));
             continue;
         }
         painter.rect(*rect, 1.5 * GRID, fill, edge, egui::StrokeKind::Inside);
         let width = rect.width() - 2.0 * PAD;
         let mut at = rect.min + Vec2::splat(PAD);
         if titles {
-            let title = single_line(
-                ui,
-                &node.title,
-                body.clone(),
-                visuals.strong_text_color(),
-                width,
-            );
+            let title = single_line(ui, &node.title, body.clone(), strong, width);
+            title_whole = !title.elided;
             painter.galley(
                 at + Vec2::new(0.0, (TITLE_H - title.size().y) / 2.0),
                 title,
-                visuals.strong_text_color(),
+                strong,
             );
         }
         at.y += TITLE_H;
-        for (text, tone) in node.lines.iter().filter(|_| lines) {
+        let mut lines_whole = vec![false; node.lines.len()];
+        for (k, (text, tone)) in node.lines.iter().enumerate().filter(|_| lines) {
             let colour = match tone {
-                Tone::Plain => visuals.weak_text_color(),
-                Tone::Warn => visuals.warn_fg_color,
+                Tone::Plain => weak,
+                Tone::Warn => warn,
             };
             let line = single_line(ui, text, small.clone(), colour, width);
+            lines_whole[k] = !line.elided;
             painter.galley(
                 at + Vec2::new(0.0, (LINE_H - line.size().y) / 2.0),
                 line,
@@ -1053,20 +1554,19 @@ pub fn draw(ui: &mut egui::Ui, model: &Model, places: &Places, selected: Option<
             );
             at.y += LINE_H;
         }
-        ui.interact(*rect, ui.id().with(("map node", i)), Sense::hover())
-            .on_hover_ui(|ui| hover(ui, node));
+        react(show(
+            ui.interact(*rect, ui.id().with(("map node", i)), sense),
+            hover(node, title_whole, &lines_whole),
+        ));
     }
-    // In compact, a label covers nothing drawn: not a chip, a dot, a name or another label.
-    let mut taken: Vec<Rect> = if compact {
-        rects
-            .iter()
-            .chain(places.names.iter().flatten())
-            .copied()
-            .collect()
-    } else {
-        Vec::new()
-    };
-    for (pos, i) in labels.into_iter().filter(|_| labels_shown) {
+    // A label covers nothing drawn: not a node, a name or another label. It takes the first of
+    // its places that covers nothing, or is not drawn (decision of 2026-11-14).
+    let mut taken: Vec<Rect> = rects
+        .iter()
+        .chain(places.names.iter().flatten())
+        .copied()
+        .collect();
+    for (spots, i) in labels.into_iter().filter(|_| labels_shown) {
         let edge = &model.edges[i];
         if edge.label.is_empty() && edge.detail.is_empty() {
             continue;
@@ -1077,21 +1577,28 @@ pub fn draw(ui: &mut egui::Ui, model: &Model, places: &Places, selected: Option<
         } else {
             edge.label.as_str()
         };
-        let colour = if edge.stale {
-            visuals.weak_text_color()
-        } else {
-            visuals.text_color()
-        };
+        let colour = tint(
+            if edge.stale {
+                visuals.weak_text_color()
+            } else {
+                visuals.text_color()
+            },
+            edge_lit(i),
+        );
         let galley = painter.layout_no_wrap(text.to_owned(), small.clone(), colour);
-        let rect = Align2::CENTER_CENTER
-            .anchor_size(pos, galley.size())
-            .expand2(Vec2::new(GRID, 0.5 * GRID));
-        if compact {
-            if taken.iter().any(|t| t.intersects(rect)) {
-                continue;
-            }
-            taken.push(rect);
-        }
+        let at = |pos: &Pos2| {
+            Align2::CENTER_CENTER
+                .anchor_size(*pos, galley.size())
+                .expand2(Vec2::new(GRID, 0.5 * GRID))
+        };
+        let Some(rect) = spots
+            .iter()
+            .map(at)
+            .find(|r| !taken.iter().any(|t| t.intersects(*r)))
+        else {
+            continue;
+        };
+        taken.push(rect);
         painter.rect_filled(rect, GRID, visuals.panel_fill);
         painter.galley(rect.min + Vec2::new(GRID, 0.5 * GRID), galley, colour);
         ui.interact(rect, ui.id().with(("map edge", i)), Sense::hover())
@@ -1107,6 +1614,7 @@ pub fn draw(ui: &mut egui::Ui, model: &Model, places: &Places, selected: Option<
                 }
             });
     }
+    gesture
 }
 
 #[cfg(test)]
@@ -1403,7 +1911,8 @@ mod tests {
     /// on another, whatever the number of nodes the budget names.
     /// The compact places: the same model, aspect and widths give the same places; no chip, dot
     /// or placed name covers another; a name left out is a client's, a server having none to
-    /// lose; and with names too long for their room, some are left out rather than drawn over.
+    /// lose; and clients set by hand on one spot lose their names rather than draw over each
+    /// other.
     #[test]
     fn compact_places_cover_nothing_and_leave_out_only_clients_names() {
         let now = Instant::now();
@@ -1449,12 +1958,20 @@ mod tests {
                         assert_eq!(*name, None, "a server's name is in its chip");
                     }
                 }
-                let placed = p.names.iter().flatten().count();
-                if width > 20.0 && servers == 8 {
-                    assert!(
-                        placed < peers,
-                        "aspect {aspect}: names too long, some left out"
-                    );
+                if servers == 8 {
+                    // Every client set by hand on one spot: their names can only cover each
+                    // other, and all but one are left out; the servers lose nothing.
+                    let canvas = Vec2::new(1000.0, 1000.0 / aspect);
+                    let pin = |key: &str| key.starts_with("client ").then_some(Vec2::splat(0.5));
+                    let arranged = arrange(&m, canvas, &name_w, &pin);
+                    let crowded = places(&m, &arranged, canvas, &name_w, &pin);
+                    if crowded.detail == Detail::Compact {
+                        let placed = crowded.names.iter().flatten().count();
+                        assert!(
+                            placed <= 1,
+                            "aspect {aspect}: at most one name on the spot, {placed}"
+                        );
+                    }
                 }
             }
         }
