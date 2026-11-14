@@ -1,0 +1,46 @@
+name: Accept artifact
+
+# Runs ci/accept-artifact.sh on macOS against the Release, or the draft, of a tag: the checks of
+# docs/acceptance.md section 0 that need no person. By hand, with any tag; on a push that changes
+# the script or this workflow, against the tag of the workspace version.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag whose Release or draft to check, v followed by the version"
+        required: true
+  push:
+    branches: ["**"]
+    paths:
+      - "ci/accept-artifact.sh"
+      - ".github/workflows/accept-artifact.yml"
+
+# A draft Release is listed only to a token that may write to the repository. Nothing in this
+# workflow writes: it downloads the draft's files and checks them.
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    name: Accept the macOS artifact
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The tag, whose license texts the bundle's are compared with.
+          fetch-depth: 0
+
+      - name: The tag
+        id: tag
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then t="$INPUT_TAG"; else t="v$(./ci/release-version.sh)"; fi
+          echo "tag=$t" >> "$GITHUB_OUTPUT"
+
+      - name: Accept the files of the tag's Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./ci/accept-artifact.sh "${{ steps.tag.outputs.tag }}"
