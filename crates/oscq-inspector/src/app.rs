@@ -6307,6 +6307,46 @@ mod tests {
         centre_place(&h, &out, "listeners: not shown at this width");
     }
 
+    /// PRD 9.10 as amended on 2026-11-14: the badge counts the peers other than this
+    /// application. Its own connection, found by the address of its own socket, listens to
+    /// every method on screen and badges none. A client that gave the same name from another
+    /// socket is another peer, and counts. Behind an address translation this application is
+    /// not found, and its connection counts as any peer's.
+    #[test]
+    fn the_badge_counts_the_peers_other_than_this_application() {
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{
+            "mine":{"FULL_PATH":"/mine","TYPE":"f","ACCESS":3,"VALUE":[0.5]},
+            "both":{"FULL_PATH":"/both","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
+        let mut h = harness();
+        let id = peer_server(&mut h, "S", "10.0.0.1", 5000, true, doc);
+        let reply = serde_json::json!({"CLIENTS": [
+            {"IP": "10.0.0.50", "PORT": 40009, "NAME": APP_NAME, "LISTEN": ["/mine", "/both"]},
+            {"IP": "10.0.0.51", "PORT": 40010, "NAME": APP_NAME, "LISTEN": ["/both"]}
+        ]});
+        let badges = |h: &mut Harness, this_client| {
+            h.events
+                .send(peers_read(id, Duration::ZERO, reply.clone(), this_client))
+                .unwrap();
+            h.frame(Vec::new());
+            let out = h.frame(Vec::new());
+            centre_place(h, &out, "mine");
+            drawn_badges(h, &out)
+        };
+        assert_eq!(
+            badges(&mut h, Some(0)),
+            [("both".to_owned(), "1".to_owned())],
+            "its own listens left out, the namesake counted"
+        );
+        assert_eq!(
+            badges(&mut h, None),
+            [
+                ("both".to_owned(), "2".to_owned()),
+                ("mine".to_owned(), "1".to_owned())
+            ],
+            "not found behind a translation: counted as a peer"
+        );
+    }
+
     /// M7: a server connected to itself. A client under the server's own name is drawn as a
     /// loop on that one node, not dropped.
     #[test]
