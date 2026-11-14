@@ -82,13 +82,25 @@ pub fn place(input: &Input<'_>) -> Vec<Vec2> {
         p.clamp(half, frame - half)
     };
     let centre = frame / 2.0;
+    // A free node joined to nothing takes no part in the simulation: pushed by every other
+    // node, it would end in a corner and push the others into the opposite one. It is placed
+    // after, in the free room nearest the middle.
+    let mut joined = vec![false; n];
+    for &(a, b) in input.edges {
+        if a != b && a < n && b < n {
+            joined[a] = true;
+            joined[b] = true;
+        }
+    }
+    let alone: Vec<bool> = (0..n).map(|i| free(i) && !joined[i]).collect();
+    let in_play = |i: usize| !alone[i];
     let start_temperature = frame.max_elem() / 10.0;
     let mut disp = vec![Vec2::ZERO; n];
     for step in 0..ITERATIONS {
         let temperature = start_temperature * (1.0 - step as f32 / ITERATIONS as f32);
         disp.iter_mut().for_each(|d| *d = Vec2::ZERO);
-        for i in 0..n {
-            for j in (i + 1)..n {
+        for i in (0..n).filter(|i| in_play(*i)) {
+            for j in ((i + 1)..n).filter(|j| in_play(*j)) {
                 let delta = pos[i] - pos[j];
                 let d = delta.length().max(0.01);
                 let dir = if delta.length() > 0.0 {
@@ -116,7 +128,7 @@ pub fn place(input: &Input<'_>) -> Vec<Vec2> {
             disp[a] -= dir * f;
             disp[b] += dir * f;
         }
-        for i in (0..n).filter(|i| free(*i)) {
+        for i in (0..n).filter(|i| free(*i) && in_play(*i)) {
             // A light pull to the centre, so that a node joined to nothing stays near.
             disp[i] += (centre - pos[i]) * 0.05;
             let len = disp[i].length();
@@ -125,6 +137,48 @@ pub fn place(input: &Input<'_>) -> Vec<Vec2> {
             }
             pos[i] = inside(i, pos[i]);
         }
+    }
+    // The nodes joined to nothing, in their order, each at the point of a grid over the frame
+    // nearest its middle that keeps three quarters of an ideal distance from every node placed,
+    // and covers none; the point farthest from them all should none keep that distance.
+    let step = (k / 4.0).max(8.0);
+    let (cols, rows) = (
+        (frame.x / step).floor() as usize + 1,
+        (frame.y / step).floor() as usize + 1,
+    );
+    let mut grid: Vec<Vec2> = (0..rows)
+        .flat_map(|r| (0..cols).map(move |c| Vec2::new(c as f32 * step, r as f32 * step)))
+        .collect();
+    grid.sort_by(|a, b| {
+        (*a - centre)
+            .length()
+            .total_cmp(&(*b - centre).length())
+            .then(a.y.total_cmp(&b.y))
+            .then(a.x.total_cmp(&b.x))
+    });
+    let mut placed: Vec<usize> = (0..n).filter(|i| !alone[*i]).collect();
+    for i in (0..n).filter(|i| alone[*i]) {
+        let fits = |c: Vec2| {
+            let c = inside(i, c);
+            placed.iter().all(|&j| {
+                (c - pos[j]).length() >= 0.75 * k
+                    && overlap(c, input.sizes[i], pos[j], input.sizes[j]).is_none()
+            })
+        };
+        let at = grid.iter().copied().find(|c| fits(*c)).unwrap_or_else(|| {
+            let room = |c: &Vec2| {
+                placed
+                    .iter()
+                    .map(|&j| (inside(i, *c) - pos[j]).length())
+                    .fold(f32::MAX, f32::min)
+            };
+            grid.iter()
+                .copied()
+                .max_by(|a, b| room(a).total_cmp(&room(b)))
+                .unwrap_or(centre)
+        });
+        pos[i] = inside(i, at);
+        placed.push(i);
     }
     // What the simulation left overlapping is pushed apart, the least way, free nodes only.
     for _ in 0..SEPARATION_PASSES {

@@ -144,6 +144,12 @@ Case: the placement by forces, 2026-11-14: counted, 0 fallbacks over the six for
 A rule checked in one mode of a drawing holds only there. Labels were kept off nodes in the compact map, written when the full map's ellipses left the middle of every edge empty; the placement by forces puts a node anywhere, and a label was drawn over its title. When what makes a rule unnecessary changes, check the rule everywhere.
 Case: a "no packet" label over Spatialisation and over this application's node, the human's capture at 1600 by 1000, 2026-11-14; reproduced by `an_edge_label_never_covers_a_node`.
 
+A criterion on the box that holds a drawing says nothing of its shape. The map of a centre and three neighbours drawn on one line, two nodes alone in the bottom corners, covered the canvas: the alone did. Measure the shape itself: the gaps around a node, the spread on the short axis.
+Case: the map after Release, 1600 by 1000, 2026-11-14; locked by `a_centre_and_its_neighbours_spread_around_it_not_on_a_line`.
+
+A threshold set where a measure of the defect lands is no threshold. A largest gap of 180 degrees allowed was proposed, and the placement with its defect measured 180.0 exactly. Measure the defect and the fix, and set the bound between them, nearer the fix.
+Case: the same test, 2026-11-14, `docs/decisions.md`.
+
 A test that names a tree row by the leftmost text at its height takes a container's expander, `-` or `+`, for its name.
 Case: `drawn_badges` reported the badge of `/foo` on a row named `-`, 2026-11-13.
 

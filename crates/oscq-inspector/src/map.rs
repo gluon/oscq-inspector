@@ -720,15 +720,95 @@ fn frame_for(footprints: &[Vec2], canvas: Vec2) -> Vec2 {
     least_frame(footprints, canvas.x / canvas.y).max(canvas - Vec2::splat(2.0 * MARGIN))
 }
 
-/// Where the placement starts: the servers on an inner ellipse, the others on an outer one,
-/// inside the frame.
+/// Where the placement starts, inside the frame: each connected part of the map laid out from
+/// its node of most edges, its neighbours around it at even angles, theirs further out within
+/// the share of the circle their parent took; the largest part in the middle of the frame, the
+/// others on a ring around it. A start on one line, or with a node's neighbours all on one
+/// side of it, is a shape the forces do not always undo.
 fn start_in(model: &Model, frame: Vec2) -> Vec<Vec2> {
+    let n = model.nodes.len();
     let short = frame.min_elem().max(1.0);
     let stretch = frame / short;
-    ring_centres(model, 0.2 * short, 0.4 * short, stretch)
-        .into_iter()
-        .map(|c| c + frame / 2.0)
-        .collect()
+    let centre = frame / 2.0;
+    let mut adjacent: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for e in &model.edges {
+        if e.from != e.to && e.from < n && e.to < n {
+            if !adjacent[e.from].contains(&e.to) {
+                adjacent[e.from].push(e.to);
+            }
+            if !adjacent[e.to].contains(&e.from) {
+                adjacent[e.to].push(e.from);
+            }
+        }
+    }
+    // The connected parts, each from its node of most edges, the lowest index on a tie.
+    let mut part = vec![usize::MAX; n];
+    let mut parts: Vec<Vec<usize>> = Vec::new();
+    let mut by_degree: Vec<usize> = (0..n).collect();
+    by_degree.sort_by(|a, b| adjacent[*b].len().cmp(&adjacent[*a].len()).then(a.cmp(b)));
+    for &root in &by_degree {
+        if part[root] != usize::MAX {
+            continue;
+        }
+        let id = parts.len();
+        let mut members = vec![root];
+        part[root] = id;
+        let mut k = 0;
+        while k < members.len() {
+            let mut next: Vec<usize> = adjacent[members[k]]
+                .iter()
+                .copied()
+                .filter(|m| part[*m] == usize::MAX)
+                .collect();
+            next.sort_by(|a, b| adjacent[*b].len().cmp(&adjacent[*a].len()).then(a.cmp(b)));
+            for m in next {
+                part[m] = id;
+                members.push(m);
+            }
+            k += 1;
+        }
+        parts.push(members);
+    }
+    // The largest first, then by their first node.
+    parts.sort_by(|a, b| b.len().cmp(&a.len()).then(a[0].cmp(&b[0])));
+    let mut start = vec![centre; n];
+    let others = parts.len().saturating_sub(1);
+    for (p, members) in parts.iter().enumerate() {
+        let (at, step) = if p == 0 {
+            (Vec2::ZERO, 0.22 * short)
+        } else {
+            let angle = std::f32::consts::FRAC_PI_2
+                + (p - 1) as f32 * std::f32::consts::TAU / others as f32;
+            (
+                Vec2::new(angle.cos(), angle.sin()) * 0.42 * short,
+                0.1 * short,
+            )
+        };
+        // Each node's place: its parent's angle share split among its children.
+        let mut sector: std::collections::HashMap<usize, (f32, f32, f32)> =
+            std::collections::HashMap::new();
+        sector.insert(members[0], (0.0, std::f32::consts::TAU, 0.0));
+        start[members[0]] = centre + at * stretch;
+        for &m in members {
+            let Some(&(a0, a1, depth)) = sector.get(&m) else {
+                continue;
+            };
+            let children: Vec<usize> = members
+                .iter()
+                .copied()
+                .filter(|c| !sector.contains_key(c) && adjacent[m].contains(c))
+                .collect();
+            let share = (a1 - a0) / children.len().max(1) as f32;
+            for (k, c) in children.iter().enumerate() {
+                let (b0, b1) = (a0 + k as f32 * share, a0 + (k + 1) as f32 * share);
+                let angle = (b0 + b1) / 2.0 - std::f32::consts::FRAC_PI_2;
+                let radius = (depth + 1.0) * step;
+                start[*c] = centre + (at + Vec2::new(angle.cos(), angle.sin()) * radius) * stretch;
+                sector.insert(*c, (b0, b1, depth + 1.0));
+            }
+        }
+    }
+    start
 }
 
 /// The pairs of nodes the edges of `model` join, for the placement.

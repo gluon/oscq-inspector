@@ -6911,6 +6911,133 @@ mod tests {
         }
     }
 
+    /// The setup seen after Release on 2026-11-14: this application connected to three servers,
+    /// and two servers joined to nothing. No position set by hand.
+    const HUB: [&str; 3] = ["Lumieres", "Spatialisation", "Plancher"];
+    const ALONE: [&str; 2] = ["Capteurs", "Projection"];
+
+    fn a_hub_and_two_alone(h: &mut Harness) {
+        for (k, name) in HUB.iter().chain(ALONE.iter()).enumerate() {
+            let id = declared_server(
+                h,
+                5801 + k as u16,
+                Some(name),
+                serde_json::json!({"CLIENTS": []}),
+            );
+            if k < HUB.len() {
+                let reply = serde_json::json!({"CLIENTS": [
+                    {"IP": "127.0.0.1", "PORT": 50001 + k, "NAME": APP_NAME}
+                ]});
+                h.events
+                    .send(peers_read(id, Duration::ZERO, reply, Some(0)))
+                    .unwrap();
+            }
+        }
+        h.frame(Vec::new());
+    }
+
+    /// The centre of the node whose title is `title`, on screen: the box or chip it is drawn in,
+    /// or, for a peer's dot, the title itself.
+    fn node_centre(nodes: &[egui::Rect], texts: &[MapText], title: &str) -> egui::Pos2 {
+        let t = texts
+            .iter()
+            .find(|t| t.shown == title)
+            .unwrap_or_else(|| panic!("{title} drawn"));
+        nodes
+            .iter()
+            .find(|r| r.contains_rect(t.rect))
+            .map_or(t.rect.center(), |r| r.center())
+    }
+
+    /// The largest angle, in degrees, between two consecutive neighbours seen from `centre`.
+    fn largest_gap(centre: egui::Pos2, neighbours: &[egui::Pos2]) -> f32 {
+        let mut angles: Vec<f32> = neighbours
+            .iter()
+            .map(|p| (p.y - centre.y).atan2(p.x - centre.x).to_degrees())
+            .collect();
+        angles.sort_by(f32::total_cmp);
+        let n = angles.len();
+        (0..n)
+            .map(|i| {
+                let next = if i + 1 < n {
+                    angles[i + 1]
+                } else {
+                    angles[0] + 360.0
+                };
+                next - angles[i]
+            })
+            .fold(0.0, f32::max)
+    }
+
+    /// The spread of `points` on their short principal axis over their spread on the long one:
+    /// the square root of the ratio of the two eigenvalues of their covariance. 1 for points
+    /// spread alike every way, 0 for points on a line.
+    fn axis_ratio(points: &[egui::Pos2]) -> f32 {
+        let n = points.len() as f32;
+        let mean = points.iter().fold(egui::Vec2::ZERO, |a, p| a + p.to_vec2()) / n;
+        let (mut xx, mut yy, mut xy) = (0.0f32, 0.0f32, 0.0f32);
+        for p in points {
+            let d = p.to_vec2() - mean;
+            xx += d.x * d.x;
+            yy += d.y * d.y;
+            xy += d.x * d.y;
+        }
+        let (xx, yy, xy) = (xx / n, yy / n, xy / n);
+        let mid = (xx + yy) / 2.0;
+        let root = (((xx - yy) / 2.0).powi(2) + xy * xy).sqrt();
+        let (big, small) = (mid + root, (mid - root).max(0.0));
+        if big <= 0.0 {
+            0.0
+        } else {
+            (small / big).sqrt()
+        }
+    }
+
+    /// The largest gap between two consecutive neighbours of a node of `k` neighbours, three or
+    /// more, at most `360 / k + 30` degrees (decision of 2026-11-14).
+    fn gap_bound(k: usize) -> f32 {
+        360.0 / k as f32 + 30.0
+    }
+
+    /// The spread of the largest connected part on its short axis over its long one, at least.
+    const AXIS_RATIO_MIN: f32 = 0.6;
+
+    /// The setup seen after Release on 2026-11-14, a centre of three neighbours and two nodes
+    /// joined to nothing, in 1600 by 1000 and 1100 by 700. Around the centre, its neighbours
+    /// spread all around it: the largest gap between two of them, seen from it, within
+    /// `gap_bound(3)`, 150 degrees; the connected part not flattened on one axis: its spread on
+    /// its short axis at least `AXIS_RATIO_MIN` of its spread on its long one. The setup drew
+    /// them on one line, the two alone in the bottom corners, the middle empty: a gap of 188
+    /// and a ratio of 0.04 there.
+    #[test]
+    fn a_centre_and_its_neighbours_spread_around_it_not_on_a_line() {
+        for size in [egui::vec2(1600.0, 1000.0), egui::vec2(1100.0, 700.0)] {
+            let mut h = harness();
+            h.size = size;
+            a_hub_and_two_alone(&mut h);
+            let (_, nodes, texts) = fitted_map(&mut h, size);
+            let hub = node_centre(&nodes, &texts, APP_NAME);
+            let around: Vec<egui::Pos2> =
+                HUB.iter().map(|n| node_centre(&nodes, &texts, n)).collect();
+            let gap = largest_gap(hub, &around);
+            assert!(
+                gap <= gap_bound(HUB.len()),
+                "{size:?}: the largest gap around the centre is {gap:.1} degrees, at most {}",
+                gap_bound(HUB.len())
+            );
+            let mut part = around.clone();
+            part.push(hub);
+            let ratio = axis_ratio(&part);
+            assert!(
+                ratio >= AXIS_RATIO_MIN,
+                "{size:?}: short axis over long axis {ratio:.3}, at least {AXIS_RATIO_MIN}"
+            );
+            for alone in ALONE {
+                node_centre(&nodes, &texts, alone);
+            }
+        }
+    }
+
     /// Where on screen the map draws `text`, once.
     fn map_place(h: &Harness, out: &egui::FullOutput, text: &str) -> egui::Rect {
         let (_, _, texts) = drawn_map(h, out);
