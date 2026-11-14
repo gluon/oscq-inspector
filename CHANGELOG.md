@@ -11,6 +11,10 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 - **`PEERS` and `CLIENT_NAME`**: the application names itself to the servers that declare the extension, on every connection, and reads their peers. Nothing of it is sent to a server that does not declare it.
 - **`peers_poll_ms`** in the settings file, the interval of the map's readings, 2000 by default.
 
+### Fixed
+
+- **Failures in the log**: every failure the window shows is also written to the log, whole, naming its server, and a plain launch without `RUST_LOG` now logs at `warn`; before, it logged errors only, and a failed reading of a server's peers was logged nowhere.
+
 ### Changed
 
 - **Name**: the application is OSCQuery Inspector. Its crate, its binary, its downloads and its `.desktop` file are `oscq-inspector`; on macOS the bundle is **OSCQuery Inspector.app**. The macOS bundle identifier and the settings folder keep the former name, so that an installed copy stays the same application to its system and finds its settings again.

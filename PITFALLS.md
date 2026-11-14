@@ -93,6 +93,16 @@ Case: the reconnection to Max 9 failing under a loaded tree, 2026-10-12.
 Commands that go out on a reload are not churn until the rows on screen are shown to be the same. A test document that replaces a subtree with part of it changes the rows, and the `IGNORE` then `LISTEN` it shows is the listen discipline doing its job. Count the rows before and after each event.
 Case: 14 `IGNORE` and 14 `LISTEN` in `a_sent_value_stays_shown_on_a_write_only_node`, taken for churn, were `/test` going from 15 rows to 1 and back, 2026-10-12.
 
+## Logging
+
+`tracing_subscriber::EnvFilter::from_default_env()` falls back to `error` when `RUST_LOG` is not set, not to `info` nor to `warn`: tracing-subscriber 0.3.23, `filter/env/mod.rs`, `from_default_env` calls `with_default_directive(LevelFilter::ERROR.into())`. Every failure the application logs at `warn` was dropped on a plain launch. Build the filter with an explicit default directive.
+
+A failure shown in the window is not therefore in the log. The map showed a failed `?PEERS`, cut to the width of its node, and nothing anywhere logged it: not a level problem, no line was ever written. Log every failure where it is produced, whole, naming its server.
+Case: the map showed `peers not read: invalid PEERS reply: L...` against a real server, and `grep -i peers` on the log at `RUST_LOG=info` found nothing, the human's Mac, 2026-11-13.
+
+A test that captures the log with a dispatcher set on its own threads (`tracing::dispatcher::set_default`) passes alone and finds the log empty beside other tests: a callsite whose interest is first computed on a thread with no dispatcher can cache "never" for every thread. A log belongs to a process. Read it in a process of its own: the test starts its own binary on one ignored test, with the environment it wants, and reads its output.
+Case: `a_failed_peers_reading_is_logged_whole_without_rust_log`, green with `cargo test NAME`, an empty log under `cargo test`, 2026-11-14.
+
 ## Linux runtime
 
 winit loads `libxkbcommon-x11.so.0` at run time on X11. A machine without `libxkbcommon-x11-0` panics at window creation; the build does not need it. A software Vulkan driver (Mesa lavapipe) is enough to run the window under Xvfb.

@@ -31,9 +31,7 @@ fn main() -> anyhow::Result<()> {
     let launched = std::time::Instant::now();
     // Before any thread exists, or the system will not tell the local time offset.
     app::capture_local_offset();
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    init_logging();
 
     // Read once at startup, before the UI loop exists; every later write goes through the runtime.
     let dir = config::app_dir();
@@ -44,6 +42,9 @@ fn main() -> anyhow::Result<()> {
             Some("no config directory: settings will not be saved".to_owned()),
         ),
     };
+    if let Some(w) = &warning {
+        tracing::warn!(target: "oscq_inspector::failure", "{w}");
+    }
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -84,6 +85,24 @@ fn main() -> anyhow::Result<()> {
         }),
     )
     .map_err(|e| anyhow!("window: {e}"))
+}
+
+/// The log of the process, on standard output: what `main` starts with, and what the test of
+/// the log starts its own process with.
+fn init_logging() {
+    tracing_subscriber::fmt()
+        .with_env_filter(log_filter(std::env::var("RUST_LOG").ok().as_deref()))
+        .init();
+}
+
+/// The log filter: `RUST_LOG` when it is set, else `warn`. `EnvFilter::from_default_env` falls
+/// back to `error` (tracing-subscriber 0.3.23, `filter/env/mod.rs`, `from_default_env`), which
+/// drops every failure the application logs: they are logged at `warn`. A directive `RUST_LOG`
+/// does not parse is left out, as `from_default_env` does.
+fn log_filter(rust_log: Option<&str>) -> tracing_subscriber::EnvFilter {
+    tracing_subscriber::EnvFilter::builder()
+        .with_default_directive(tracing_subscriber::filter::LevelFilter::WARN.into())
+        .parse_lossy(rust_log.unwrap_or(""))
 }
 
 /// The icon of the window, of the taskbar, and of the Dock while running: given, or eframe shows

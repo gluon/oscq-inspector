@@ -256,7 +256,15 @@ impl InspectorApp {
                     }
                 });
             }
-            Err(e) => startup_error = Some(format!("mDNS discovery unavailable: {e}")),
+            Err(e) => {
+                let reason = format!("mDNS discovery unavailable: {e}");
+                // On the runtime: the UI thread does no I/O, logging included.
+                let logged = reason.clone();
+                runtime.spawn(async move {
+                    tracing::warn!(target: "oscq_inspector::failure", "{logged}");
+                });
+                startup_error = Some(reason);
+            }
         }
         let backend = Backend {
             commands,
@@ -939,7 +947,9 @@ impl InspectorApp {
         self.backend.io.spawn_blocking(move || {
             let path = config::config_path(&dir);
             if let Err(e) = config::write_atomic(&path, &bytes) {
-                let _ = tx.send(format!("config not saved to {}: {e}", path.display()));
+                let reason = format!("config not saved to {}: {e}", path.display());
+                tracing::warn!(target: "oscq_inspector::failure", "{reason}");
+                let _ = tx.send(reason);
                 ctx.request_repaint();
             }
         });
@@ -947,9 +957,12 @@ impl InspectorApp {
 
     fn write_export(&self, ctx: &egui::Context, stem: &str, ext: &str, contents: String) {
         let Some(dir) = self.config_dir.clone() else {
-            let _ = self
-                .io_tx
-                .send("no config directory to export to".to_owned());
+            let reason = "no config directory to export to";
+            // On the runtime: the UI thread does no I/O, logging included.
+            self.backend.io.spawn(async move {
+                tracing::warn!(target: "oscq_inspector::failure", "{reason}");
+            });
+            let _ = self.io_tx.send(reason.to_owned());
             return;
         };
         let secs = SystemTime::now()
@@ -962,7 +975,11 @@ impl InspectorApp {
         self.backend.io.spawn_blocking(move || {
             let msg = match config::write_atomic(&path, contents.as_bytes()) {
                 Ok(()) => format!("saved {}", path.display()),
-                Err(e) => format!("not saved to {}: {e}", path.display()),
+                Err(e) => {
+                    let reason = format!("not saved to {}: {e}", path.display());
+                    tracing::warn!(target: "oscq_inspector::failure", "{reason}");
+                    reason
+                }
             };
             let _ = tx.send(msg);
             ctx.request_repaint();
@@ -6643,6 +6660,197 @@ mod tests {
             commands: flume::unbounded().1,
             events: flume::unbounded().0,
             _rt: rt,
+        }
+    }
+
+    // ------------------------------------------------------------ failures in the log
+
+    /// Set in the environment of the process the test of the log starts.
+    const LOG_CHILD: &str = "OSCQ_INSPECTOR_LOG_CHILD";
+    /// Between the fields of a line the child reports.
+    const SEP: char = '\u{1f}';
+
+    /// The `?PEERS` replies whose failure the log must hold whole, by name.
+    fn peers_failure_cases() -> Vec<(&'static str, crate::synthetic::Reply)> {
+        use crate::synthetic::Reply;
+        let json = |v: serde_json::Value| Reply::json(v.to_string());
+        let listen: Vec<String> = (0..=oscq_core::peers::MAX_LISTEN)
+            .map(|i| format!("/p{i}"))
+            .collect();
+        vec![(
+            "LISTEN over its bound",
+            json(serde_json::json!({"CLIENTS": [
+                {"IP": "10.0.0.9", "PORT": 40001, "NAME": "Max", "LISTEN": listen}
+            ]})),
+        )]
+    }
+
+    /// One server that declares `PEERS` and answers `/?PEERS` with `reply`, read twice through
+    /// the real service with the map shown: the reason the window holds, the server's address
+    /// as the log names it, and how many times `?PEERS` was asked.
+    fn read_failing_peers(reply: crate::synthetic::Reply) -> (String, String, usize) {
+        use crate::synthetic::{Reply, SyntheticServer, borrowed, host_info_json, large_routes};
+        let srv = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut routes = large_routes(20, 9);
+        routes.push((
+            "/?HOST_INFO".to_owned(),
+            Reply::json(host_info_json("declares", 9, true)),
+        ));
+        routes.push(("/?PEERS".to_owned(), reply));
+        let server = srv
+            .block_on(SyntheticServer::start_ws("127.0.0.1:0", borrowed(&routes)))
+            .unwrap();
+        let key = format!("127.0.0.1:{}", server.addr.port());
+        let mut h = named_service_harness(Config {
+            manual_entries: vec![key.clone()],
+            last_selected: Some(key.clone()),
+            ..Config::default()
+        });
+        h.app.startup(&h.ctx.clone(), "map,connect-all");
+        wait_for(&mut h, "the peers refused", |a| {
+            a.state
+                .selected_entry()
+                .is_some_and(|e| e.peers.failure.is_some() && !e.peers.asked)
+        });
+        // Read again, refused again the same way.
+        let asked = || {
+            server
+                .ws
+                .requests()
+                .iter()
+                .filter(|r| *r == "/?PEERS")
+                .count()
+        };
+        let id = h.app.state.selected.unwrap();
+        h.app
+            .act(&h.ctx.clone(), Action::ReadPeers(PeersScope::All));
+        wait_for(&mut h, "a second reading, answered", |a| {
+            asked() >= 2 && a.state.entry(id).is_some_and(|e| !e.peers.asked)
+        });
+        let reason = h
+            .app
+            .state
+            .entry(id)
+            .and_then(|e| e.peers.failure.clone())
+            .unwrap();
+        (reason, format!("http://{key}/"), asked())
+    }
+
+    /// The process the test of the log starts: logging as the application does, it reads each
+    /// case and reports what the window holds. Does nothing in any other process.
+    #[test]
+    #[ignore = "run by a_failed_peers_reading_is_logged_whole_without_rust_log, in its own process"]
+    fn child_logs_failed_peers() {
+        if std::env::var_os(LOG_CHILD).is_none() {
+            return;
+        }
+        crate::init_logging();
+        for (case, reply) in peers_failure_cases() {
+            let (reason, server, asked) = read_failing_peers(reply);
+            // On a line of its own: the test harness writes the test's name before it.
+            println!("\nCASE{SEP}{case}{SEP}{server}{SEP}{asked}{SEP}{reason}");
+        }
+    }
+
+    /// Text without its ANSI colour sequences.
+    fn without_ansi(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut chars = text.chars();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' {
+                for c in chars.by_ref() {
+                    if c.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    /// Each case of [`peers_failure_cases`] read in a process of its own, started as the
+    /// application is with no `RUST_LOG` in its environment: (case, server, times asked, reason
+    /// held by the window, the lines of the log that name the server and give the reason whole).
+    fn logged_peers_failures() -> Vec<(String, String, usize, String, usize)> {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "app::tests::child_logs_failed_peers",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(LOG_CHILD, "1")
+            .env_remove("RUST_LOG")
+            .output()
+            .unwrap();
+        let text = without_ansi(&format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ));
+        assert!(out.status.success(), "the child failed: {text}");
+        let cases: Vec<(String, String, usize, String, usize)> = text
+            .lines()
+            .filter_map(|l| l.split_once(&format!("CASE{SEP}")).map(|(_, r)| r))
+            .map(|l| {
+                let f: Vec<&str> = l.splitn(4, SEP).collect();
+                let (server, reason) = (f[1], f[3]);
+                let lines = text
+                    .lines()
+                    .filter(|l| {
+                        l.contains(" WARN ")
+                            && l.contains(&format!("server={server}"))
+                            && l.contains(&format!("peers not read: {reason}"))
+                    })
+                    .count();
+                (
+                    f[0].to_owned(),
+                    server.to_owned(),
+                    f[2].parse().unwrap(),
+                    reason.to_owned(),
+                    lines,
+                )
+            })
+            .collect();
+        assert_eq!(
+            cases.len(),
+            peers_failure_cases().len(),
+            "every case reported: {text}"
+        );
+        cases
+    }
+
+    /// Without `RUST_LOG`, a server whose `?PEERS` fails produces a log line naming the server
+    /// and giving the reason whole, the reason the window holds and cuts to fit. Met on
+    /// 2026-11-13: the map showed `peers not read: invalid PEERS reply: L...` and the log, at
+    /// `RUST_LOG=info`, had nothing. Read twice and refused the same way, it is logged once.
+    /// In a process of its own: a log is a process's, and a test beside others shares it.
+    #[test]
+    fn a_failed_peers_reading_is_logged_whole_without_rust_log() {
+        for (case, server, asked, reason, lines) in logged_peers_failures() {
+            assert!(asked >= 2, "{case}: asked twice, {asked}");
+            assert_eq!(
+                lines, 1,
+                "{case}: one line naming {server}, {reason:?} whole"
+            );
+            if case == "LISTEN over its bound" {
+                assert_eq!(
+                    reason,
+                    format!(
+                        "invalid PEERS reply from {server}?PEERS: LISTEN holds {} entries, more \
+                         than the {} this client reads",
+                        oscq_core::peers::MAX_LISTEN + 1,
+                        oscq_core::peers::MAX_LISTEN
+                    )
+                );
+            }
         }
     }
 
