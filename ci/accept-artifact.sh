@@ -140,10 +140,19 @@ bundle() {
     home="$work/home"
     mkdir -p "$home"
     log="$work/start.log"
+    # There before the start, so that a failure can always show it.
+    : >"$log"
     HOME="$home" NO_COLOR=1 RUST_LOG=oscq_inspector::startup=info "$exe" >"$log" 2>&1 &
     pid=$!
     if [ -n "${ACCEPT_ARTIFACT_AFTER_START:-}" ]; then
-        echo "  after the start: $ACCEPT_ARTIFACT_AFTER_START $pid"
+        # Once the process is the application, not the shell that starts it.
+        for _ in $(seq 1 50); do
+            case "$(ps -o comm= -p "$pid" 2>/dev/null)" in
+                *"$exe_name") break ;;
+            esac
+            sleep 0.1
+        done
+        echo "  after the start, as $(ps -o comm= -p "$pid" 2>/dev/null): $ACCEPT_ARTIFACT_AFTER_START $pid"
         $ACCEPT_ARTIFACT_AFTER_START "$pid"
     fi
     started=""
@@ -152,10 +161,10 @@ bundle() {
             started=yes
             break
         fi
-        kill -0 "$pid" 2>/dev/null || { cat "$log"; fail "it exited before its first frame"; }
+        kill -0 "$pid" 2>/dev/null || { cat "$log" || true; fail "it exited before its first frame"; }
         sleep 0.1
     done
-    [ -n "$started" ] || { cat "$log"; fail "no first frame within 30 s"; }
+    [ -n "$started" ] || { cat "$log" || true; fail "no first frame within 30 s"; }
     echo "  $(grep "first frame" "$log" | tail -1)"
     if [ -n "${ACCEPT_ARTIFACT_BEFORE_QUIT:-}" ]; then
         echo "  before the quit event: $ACCEPT_ARTIFACT_BEFORE_QUIT $pid"
@@ -170,19 +179,19 @@ bundle() {
         -e "tell application id \"$bundle_id\" to quit" \
         -e "end ignoring" \
         -e "end if" >/dev/null 2>"$work/osascript.log" ||
-        { cat "$work/osascript.log"; fail "the quit event could not be sent"; }
+        { cat "$work/osascript.log" || true; fail "the quit event could not be sent"; }
     for _ in $(seq 1 150); do
         kill -0 "$pid" 2>/dev/null || break
         sleep 0.1
     done
     if kill -0 "$pid" 2>/dev/null; then
-        cat "$log"
+        cat "$log" || true
         fail "still running 15 s after the quit event"
     fi
     status=0
     wait "$pid" || status=$?
     pid=""
-    [ "$status" -eq 0 ] || { cat "$log"; fail "it quit with status $status, not 0"; }
+    [ "$status" -eq 0 ] || { cat "$log" || true; fail "it quit with status $status, not 0"; }
     ok "first frame, then quit on the quit event, status 0"
 }
 
