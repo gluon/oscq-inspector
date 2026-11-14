@@ -55,7 +55,7 @@ jobs:
         run: |
           if ./ci/accept-artifact.sh v0.2.3 > refused.log 2>&1; then
             cat refused.log
-            echo "FAIL: the files of v0.2.3 passed as those of v0.2.3 named oscq-inspector"
+            echo "FAIL: the files of v0.2.3, named void-oscq, passed the checks"
             exit 1
           fi
           cat refused.log

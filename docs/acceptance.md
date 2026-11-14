@@ -8,31 +8,21 @@ Record for the release: the tag, the CI run, the macOS version, the date, and th
 
 ## 0. The artifact
 
-1. In GitHub, **Releases**, open the draft of the tag, created by the workflow **Release** once its run passed; a draft is visible to the repository's writers only. Download `oscq-inspector-VERSION-macos-universal.zip`.
-   Expected: one file per system, `oscq-inspector-VERSION-macos-universal.zip`, `oscq-inspector-VERSION-windows-x86_64.zip`, `oscq-inspector-VERSION-linux-x86_64.tar.gz`, each named with the tag's version; as notes, the version's section of CHANGELOG.md.
-2. Unzip the download. Move **OSCQuery Inspector.app** to Applications.
-   Expected: an application named OSCQuery Inspector, with its own icon in the Finder: a dark blue rounded square holding a white tree, a root and two leaves, one leaf amber. Not the generic application icon.
-3. Double click it, and follow the README's macOS first launch procedure: **Privacy & Security**, **Open Anyway**.
-   Expected: macOS reports an app it cannot verify, never an app that is damaged; after **Open Anyway** the window opens.
-4. Quit and open it again by a double click.
-   Expected: it opens with no warning.
-5. Click **About**, at the bottom of the server pane.
-   Expected: OSCQuery Inspector, version equal to the tag without the `v`, "Julien Bayle, Structure Void", "License GPL-3.0-or-later", and a link to github.com/gluon/void-oscq that opens the repository. A plain box, like no system window.
-   Then choose **About OSCQuery Inspector** in the application menu, at the left of the menu bar.
-   Expected: the same box, not the system's panel with a folder icon.
-   In the Finder, **Show Package Contents** on the app, `Contents/Resources/licenses`: `LICENSE`, `LICENSE-EXCEPTION` and the four font licenses in `fonts`.
-6. While it runs, look at the Dock.
-   Expected: the same icon as in the Finder, not the generic one and not another application's.
-7. Quit it. In the Finder, select **OSCQuery Inspector.app**, **File**, **Get Info**.
-   Expected: Version equal to the tag, without the `v`.
-8. In Terminal, read what the bundle and Spotlight hold:
-   ```
-   defaults read "/Applications/OSCQuery Inspector.app/Contents/Info" CFBundleShortVersionString
-   mdls -name kMDItemVersion "/Applications/OSCQuery Inspector.app"
-   ```
-   Expected: both give the tag's version. If the first does and the second gives `(null)`, the bundle carries the version and the Finder's Version column waits for Spotlight to index the app.
+First, with no one at the machine: `./ci/accept-artifact.sh vVERSION`, run on macOS by the workflow **Accept artifact**, from a checkout that holds the tag. It downloads the files of the tag's Release or draft and stops at the first check that fails. What it checks, each check printing what it proves: the three files, `oscq-inspector-VERSION-macos-universal.zip`, `oscq-inspector-VERSION-windows-x86_64.zip` and `oscq-inspector-VERSION-linux-x86_64.tar.gz`, and no other; the notes, the version's section of CHANGELOG.md at the tag; the macOS zip giving **OSCQuery Inspector.app**, both its version keys, `CFBundleShortVersionString` and `CFBundleVersion`, equal to the tag's version, which is what the Finder's Get Info shows; a universal binary, `arm64` and `x86_64`; `Contents/Resources/licenses` holding `LICENSE`, `LICENSE-EXCEPTION` and the four font licenses, identical to the tag's; the application starting to its first frame and quitting with status 0 on the quit event, the one the application menu and the Dock send. Do not go on unless it ends with `ok`.
 
-Proves: the tagged CI run gives a macOS app that opens on this Mac, unsigned, through the documented procedure, with its icon and its version. Cannot prove: the first launch on other macOS versions, or on Intel if this Mac is Apple Silicon; the Windows and Linux artifacts, which need their own systems (section 4).
+What no script here can judge is left to a person, on the Mac that gives the verdict.
+
+1. In GitHub, **Releases**, open the draft of the tag; a draft is visible to the repository's writers only. Download `oscq-inspector-VERSION-macos-universal.zip` with the browser, unzip it, move **OSCQuery Inspector.app** to Applications. Double click it, and follow the README's macOS first launch procedure: **Privacy & Security**, **Open Anyway**. Quit, and open it again by a double click.
+   Expected: macOS reports an app it cannot verify, never an app that is damaged; after **Open Anyway** the window opens; the second time it opens with no warning.
+   Why by hand: Gatekeeper judges a file by the quarantine its browser download leaves on it, and answers with dialogs that wait for a person. The script downloads with `gh`, which leaves no quarantine, and the CI machine's security settings are not those of a Mac downloading from a browser.
+2. Look at the app in the Finder, and at the Dock while it runs.
+   Expected: in both, its own icon: a dark blue rounded square holding a white tree, a root and two leaves, one leaf amber. Not the generic application icon, not another application's.
+   Why by hand: whether the icon drawn is the right one is a judgment of a picture, made where the Finder and the Dock draw it; no command reads back what they show, and their icon caches can show an icon the bundle no longer holds.
+3. Choose **About OSCQuery Inspector** in the application menu, at the left of the menu bar.
+   Expected: the application's own box, not the system's panel with a folder icon: OSCQuery Inspector, the version equal to the tag without the `v`, "Julien Bayle, Structure Void", "License GPL-3.0-or-later", and a link to github.com/gluon/void-oscq that opens the repository. A plain box, like no system window.
+   Why by hand: the menu belongs to macOS's menu bar, which a script reaches only through accessibility permissions the CI machine does not grant, and that the menu item opens this box and not the system's panel is seen, not read from the bundle. The box's content is locked in CI by `the_about_box_draws_its_six_pieces_of_information`, on the code; this check is on the downloaded app.
+
+Proves: the tagged CI run gives a macOS app that opens on this Mac, unsigned, through the documented procedure, with its icon and its own About box; with the script, its files, version, architectures, licenses and a clean start and quit. Cannot prove: the first launch on other macOS versions, or on Intel if this Mac is Apple Silicon; the Windows and Linux artifacts, which need their own systems (section 4).
 
 ## 1. Vidvox OSCQuery Helper, on the local network
 
