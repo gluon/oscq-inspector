@@ -65,8 +65,19 @@ jobs:
           key: release
 
       # PRD 10 budgets that need no window; the real binary test needs a display and is run by hand.
+      # On macOS the slider to UDP budget is measured, not gated: docs/decisions.md, 2026-11-14.
       - name: Budgets in process, release build
-        run: cargo test --release --locked --workspace -- --ignored budget_ --nocapture --test-threads=1
+        shell: bash
+        run: |
+          skip=""
+          if [ "$RUNNER_OS" = "macOS" ]; then skip="--skip budget_slider_to_udp_packet"; fi
+          cargo test --release --locked --workspace -- --ignored budget_ --nocapture --test-threads=1 $skip
+
+      # The number is printed and kept in the log; the verdict is the human's Mac (CLAUDE.md law 11).
+      - name: Slider to UDP packet, macOS, measurement only
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        run: cargo test --release --locked -p oscq-inspector -- --ignored --exact app::tests::budgets::budget_slider_to_udp_packet --nocapture
 
       - name: Release binary size
         shell: bash
