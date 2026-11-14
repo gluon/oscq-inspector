@@ -241,15 +241,8 @@ fn server_node(e: &ServerEntry, now: Instant, interval: Duration) -> Node {
     Node {
         kind: NodeKind::Server(e.server.id),
         key: format!("server {}", e.key()),
-        // What the server declares wins (CLAUDE.md law 2): its `HOST_INFO` name, however it came
-        // into the list; the name it was found or entered under failing that. Its address is the
-        // first line, and on hover.
-        title: e
-            .host_info
-            .as_ref()
-            .and_then(|h| h.name.clone())
-            .filter(|n| !n.trim().is_empty())
-            .unwrap_or_else(|| e.server.name.clone()),
+        // What the server declares wins (CLAUDE.md law 2), its address the first line.
+        title: e.declared_name().to_owned(),
         lines,
         detail,
     }
