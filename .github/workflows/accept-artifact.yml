@@ -24,6 +24,11 @@ jobs:
   macos:
     name: Accept the macOS artifact
     runs-on: macos-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # The copy each refusal maltreats, and its bundle.
+      COPY: maltreated
+      APP: maltreated/OSCQuery Inspector.app
     steps:
       - uses: actions/checkout@v5
         with:
@@ -41,23 +46,109 @@ jobs:
 
       - name: Accept the files of the tag's Release
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: ./ci/accept-artifact.sh "${{ steps.tag.outputs.tag }}"
 
-      # A check that has never failed proves nothing (CLAUDE.md law 12): against the files of
-      # another version, the published v0.2.3 named void-oscq-..., the script must stop, and at the
-      # check of the three files.
-      - name: The script refuses the files of another version
+      # A check that has never failed proves nothing (CLAUDE.md law 12). Each step below gives the
+      # script what one of its checks must refuse, and requires it to stop at that check and at no
+      # other: ci/expect-refusal.sh fails unless the one FAIL line holds the expected text. The
+      # bundle ones work on a copy of the tag's macOS bundle, maltreated once.
+      - name: The bundle to maltreat
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          if ./ci/accept-artifact.sh v0.2.3 > refused.log 2>&1; then
-            cat refused.log
-            echo "FAIL: the files of v0.2.3, named void-oscq, passed the checks"
-            exit 1
-          fi
-          cat refused.log
-          grep -q "FAIL: the release holds" refused.log
-          echo "ok: refused at the check of the three files"
+          gh release download "${{ steps.tag.outputs.tag }}" --repo "$GITHUB_REPOSITORY" --pattern "*-macos-universal.zip" --dir zip
+          ditto -x -k zip/*.zip bundle
+          ls bundle
+
+      - name: Refused, a tag this checkout does not hold
+        shell: bash
+        run: ./ci/expect-refusal.sh "is not in this checkout" ./ci/accept-artifact.sh v9.9.9
+
+      - name: Refused, the files of another version, v0.2.3 named void-oscq
+        shell: bash
+        run: ./ci/expect-refusal.sh "the release holds" ./ci/accept-artifact.sh v0.2.3
+
+      - name: Refused, a directory with no bundle
+        shell: bash
+        run: |
+          mkdir -p empty
+          ./ci/expect-refusal.sh "no OSCQuery Inspector.app in" ./ci/accept-artifact.sh --dir empty "${{ steps.tag.outputs.tag }}"
+
+      - name: Refused, a bundle with no Info.plist
+        shell: bash
+        run: |
+          rm -rf "$COPY" && ditto bundle "$COPY"
+          rm "$APP/Contents/Info.plist"
+          ./ci/expect-refusal.sh "no Contents/Info.plist in the bundle" ./ci/accept-artifact.sh --dir "$COPY" "${{ steps.tag.outputs.tag }}"
+
+      - name: Refused, CFBundleShortVersionString of another version
+        shell: bash
+        run: |
+          rm -rf "$COPY" && ditto bundle "$COPY"
+          plutil -replace CFBundleShortVersionString -string 9.9.9 "$APP/Contents/Info.plist"
+          ./ci/expect-refusal.sh 'CFBundleShortVersionString is "9.9.9", not' ./ci/accept-artifact.sh --dir "$COPY" "${{ steps.tag.outputs.tag }}"
+
+      - name: Refused, CFBundleVersion of another version
+        shell: bash
+        run: |
+          rm -rf "$COPY" && ditto bundle "$COPY"
+          plutil -replace CFBundleVersion -string 9.9.9 "$APP/Contents/Info.plist"
+          ./ci/expect-refusal.sh 'CFBundleVersion is "9.9.9", not' ./ci/accept-artifact.sh --dir "$COPY" "${{ steps.tag.outputs.tag }}"
+
+      - name: Refused, no executable
+        shell: bash
+        run: |
+          rm -rf "$COPY" && ditto bundle "$COPY"
+          rm "$APP/Contents/MacOS/oscq-inspector"
+          ./ci/expect-refusal.sh "is missing or not executable" ./ci/accept-artifact.sh --dir "$COPY" "${{ steps.tag.outputs.tag }}"
+
+      - name: Refused, a binary of one architecture
+        shell: bash
+        run: |
+          rm -rf "$COPY" && ditto bundle "$COPY"
+          lipo "$APP/Contents/MacOS/oscq-inspector" -thin arm64 -output thin
+          mv thin "$APP/Contents/MacOS/oscq-inspector"
+          lipo -archs "$APP/Contents/MacOS/oscq-inspector"
+          ./ci/expect-refusal.sh "the binary holds arm64, not arm64 and x86_64" ./ci/accept-artifact.sh --dir "$COPY" "${{ steps.tag.outputs.tag }}"
+
+      - name: Refused, a font license missing
+        shell: bash
+        run: |
+          rm -rf "$COPY" && ditto bundle "$COPY"
+          rm "$APP/Contents/Resources/licenses/fonts/OFL.txt"
+          ./ci/expect-refusal.sh "licenses/fonts/OFL.txt is missing" ./ci/accept-artifact.sh --dir "$COPY" "${{ steps.tag.outputs.tag }}"
+
+      - name: Refused, a license that differs from the tag's
+        shell: bash
+        run: |
+          rm -rf "$COPY" && ditto bundle "$COPY"
+          echo "altered" >> "$APP/Contents/Resources/licenses/LICENSE"
+          ./ci/expect-refusal.sh "licenses/LICENSE differs from LICENSE at" ./ci/accept-artifact.sh --dir "$COPY" "${{ steps.tag.outputs.tag }}"
+
+      - name: Refused, a fifth font license
+        shell: bash
+        run: |
+          rm -rf "$COPY" && ditto bundle "$COPY"
+          cp "$APP/Contents/Resources/licenses/fonts/OFL.txt" "$APP/Contents/Resources/licenses/fonts/extra.txt"
+          ./ci/expect-refusal.sh "5 font licenses in the bundle, not four" ./ci/accept-artifact.sh --dir "$COPY" "${{ steps.tag.outputs.tag }}"
+
+      # The real application, stopped before the quit event: it cannot handle the event, as an
+      # application that hangs.
+      - name: Refused, an application that does not quit
+        shell: bash
+        run: |
+          rm -rf "$COPY" && ditto bundle "$COPY"
+          ACCEPT_ARTIFACT_BEFORE_QUIT="kill -STOP" ./ci/expect-refusal.sh "still running 15 s after the quit event" ./ci/accept-artifact.sh --dir "$COPY" "${{ steps.tag.outputs.tag }}"
+          if pgrep -f "$COPY/OSCQuery Inspector.app/Contents/MacOS/oscq-inspector"; then echo "FAIL: left running"; exit 1; fi
+
+      # The real application, killed before the quit event: it ends without its own shutdown.
+      - name: Refused, an application that ends with a status other than 0
+        shell: bash
+        run: |
+          rm -rf "$COPY" && ditto bundle "$COPY"
+          ACCEPT_ARTIFACT_BEFORE_QUIT="kill -KILL" ./ci/expect-refusal.sh "it quit with status 137, not 0" ./ci/accept-artifact.sh --dir "$COPY" "${{ steps.tag.outputs.tag }}"
+
+      # The one bundle the refusals were made from passes, in the directory mode they used.
+      - name: Accepted, the unmaltreated bundle in directory mode
+        shell: bash
+        run: ./ci/accept-artifact.sh --dir bundle "${{ steps.tag.outputs.tag }}"
+
