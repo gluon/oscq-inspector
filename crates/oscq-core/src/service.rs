@@ -270,10 +270,24 @@ struct Shared {
     notify: Notify,
     /// The name sent with `CLIENT_NAME` to the servers that declare it; `None` sends none.
     client_name: Option<Arc<str>>,
+    /// What the log knows of each server: its address, and the last `?PEERS` failure logged.
+    /// A lock of its own, taken only to log, never while another is held.
+    log: Arc<Mutex<HashMap<ServerId, LogEntry>>>,
+}
+
+/// A server as the log names it.
+#[derive(Default)]
+struct LogEntry {
+    /// The HTTP address it was connected at.
+    server: String,
+    /// The reason of the last failed `?PEERS` logged, until a reading succeeds: a poll that
+    /// fails the same way every two seconds is logged once, not every two seconds.
+    peers_failure: Option<String>,
 }
 
 impl Shared {
     fn emit(&self, event: Event) {
+        self.log(&event);
         if self.events.send(event).is_ok() {
             (self.notify)();
         }
@@ -282,7 +296,90 @@ impl Shared {
     /// Queues an event without waking the UI: it is read on the UI's next frame, whatever asks
     /// for that frame.
     fn emit_quiet(&self, event: Event) {
+        self.log(&event);
         let _ = self.events.send(event);
+    }
+
+    /// Every failure an event carries goes to the log, whole, at `warn`, naming its server: what
+    /// the window shows of it, cut to fit, is in the log as it was given. Logged here, on the
+    /// network side, because the UI thread does no I/O (CLAUDE.md law 6).
+    fn log(&self, event: &Event) {
+        let (id, what, reason) = match event {
+            Event::Error { server_id, error } => {
+                let what = match &error.path {
+                    Some(p) => format!("{:?} {p}", error.operation),
+                    None => format!("{:?}", error.operation),
+                };
+                (*server_id, what, error.message.as_str())
+            }
+            Event::HostInfoUnavailable { server_id, reason } => (
+                Some(*server_id),
+                "HOST_INFO not read".to_owned(),
+                reason.as_str(),
+            ),
+            Event::TransportState {
+                server_id,
+                state: TransportState::Failed(reason),
+            } => (
+                Some(*server_id),
+                "connection failed".to_owned(),
+                reason.as_str(),
+            ),
+            Event::TransportState {
+                server_id,
+                state: TransportState::WebSocketLost { retry_in, reason },
+            } => (
+                Some(*server_id),
+                format!("WebSocket lost, retried in {} ms", retry_in.as_millis()),
+                reason.as_str(),
+            ),
+            Event::Peers {
+                server_id,
+                result: Err(reason),
+                ..
+            } => (
+                Some(*server_id),
+                "peers not read".to_owned(),
+                reason.as_str(),
+            ),
+            Event::Peers {
+                server_id,
+                result: Ok(_),
+                ..
+            } => {
+                if let Ok(mut log) = self.log.lock()
+                    && let Some(e) = log.get_mut(server_id)
+                {
+                    e.peers_failure = None;
+                }
+                return;
+            }
+            _ => return,
+        };
+        let peers = matches!(event, Event::Peers { .. });
+        let server = match self.log.lock() {
+            Ok(mut log) => {
+                let entry = id.map(|id| log.entry(id).or_default());
+                if let Some(e) = entry {
+                    if peers && e.peers_failure.as_deref() == Some(reason) {
+                        return;
+                    }
+                    if peers {
+                        e.peers_failure = Some(reason.to_owned());
+                    }
+                    e.server.clone()
+                } else {
+                    String::new()
+                }
+            }
+            Err(_) => String::new(),
+        };
+        let server = if server.is_empty() {
+            id.map_or_else(|| "no server".to_owned(), |id| format!("{id:?}"))
+        } else {
+            server
+        };
+        tracing::warn!(target: "oscq_core::failure", %server, "{what}: {reason}");
     }
 
     /// The name to send on a new socket of a connection: this client's, when it has one and
@@ -443,6 +540,7 @@ fn start(
         events,
         notify,
         client_name,
+        log: Arc::new(Mutex::new(HashMap::new())),
     };
     runtime.spawn(run(rx, shared));
     tx
@@ -458,6 +556,15 @@ async fn run(rx: flume::Receiver<Command>, shared: Shared) {
                 http_base,
             } => {
                 generation += 1;
+                if let Ok(mut log) = shared.log.lock() {
+                    log.insert(
+                        server_id,
+                        LogEntry {
+                            server: http_base.to_string(),
+                            peers_failure: None,
+                        },
+                    );
+                }
                 let client = match OscQueryClient::new(http_base) {
                     Ok(c) => c,
                     Err(e) => {

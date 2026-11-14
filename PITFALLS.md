@@ -81,6 +81,9 @@ Case: the "Writable only" control, under Xvfb, 2026-10-13.
 
 ## Status display
 
+An `egui::Label` with `truncate()` shows its whole text in a tooltip of its own when it is cut, `show_tooltip_when_elided` being true by default. A cut label given `on_hover_text` as well shows two tooltips, one over the other. Turn one off.
+Case: the status bar's message, the reason of a failed `?PEERS` drawn twice on hover, found by `the_whole_reason_of_a_failed_peers_reading_reaches_the_status_line`, 2026-11-14. The other zones of the status bar cut their labels and add a hover of their own; not checked.
+
 An error kept until another error replaces it outlives what it described. The status bar showed a failed connection under the tree the next connection had loaded. Clear an error when the operation it comes from succeeds, and drop the errors of an attempt that a newer one replaced.
 Case: "could not connect to http://localhost:30339/" next to 35 nodes and an open WebSocket, Max 9 on the human's Mac, 2026-10-12.
 
@@ -92,6 +95,16 @@ Case: the reconnection to Max 9 failing under a loaded tree, 2026-10-12.
 
 Commands that go out on a reload are not churn until the rows on screen are shown to be the same. A test document that replaces a subtree with part of it changes the rows, and the `IGNORE` then `LISTEN` it shows is the listen discipline doing its job. Count the rows before and after each event.
 Case: 14 `IGNORE` and 14 `LISTEN` in `a_sent_value_stays_shown_on_a_write_only_node`, taken for churn, were `/test` going from 15 rows to 1 and back, 2026-10-12.
+
+## Logging
+
+`tracing_subscriber::EnvFilter::from_default_env()` falls back to `error` when `RUST_LOG` is not set, not to `info` nor to `warn`: tracing-subscriber 0.3.23, `filter/env/mod.rs`, `from_default_env` calls `with_default_directive(LevelFilter::ERROR.into())`. Every failure the application logs at `warn` was dropped on a plain launch. Build the filter with an explicit default directive.
+
+A failure shown in the window is not therefore in the log. The map showed a failed `?PEERS`, cut to the width of its node, and nothing anywhere logged it: not a level problem, no line was ever written. Log every failure where it is produced, whole, naming its server.
+Case: the map showed `peers not read: invalid PEERS reply: L...` against a real server, and `grep -i peers` on the log at `RUST_LOG=info` found nothing, the human's Mac, 2026-11-13.
+
+A test that captures the log with a dispatcher set on its own threads (`tracing::dispatcher::set_default`) passes alone and finds the log empty beside other tests: a callsite whose interest is first computed on a thread with no dispatcher can cache "never" for every thread. A log belongs to a process. Read it in a process of its own: the test starts its own binary on one ignored test, with the environment it wants, and reads its output.
+Case: `a_failed_peers_reading_is_logged_whole_without_rust_log`, green with `cargo test NAME`, an empty log under `cargo test`, 2026-11-14.
 
 ## Linux runtime
 
@@ -113,6 +126,9 @@ Case: `real_binary_map_visible_repaints_once_per_poll_interval`, gaps 1.988, 1.9
 The test filter is a substring too. A real binary test named `budget_cold_start...` was picked up by the in process `budget_` filter and failed in CI for want of a display. Real binary tests are named `real_binary_...`.
 Case: CI run 38208380933, 2026-10-12.
 
+A test that reads a text of the map reads it whatever size it was drawn at. Four tests read node titles and edge labels the default window drew under 9 points, and passed: the text was in the shapes, nobody could read it on the screen. A text has a size on screen, the size it was laid out at times the scale of its layer; read that too.
+Case: four map tests failed once the map stopped drawing text under 9 points, 2026-11-14.
+
 A test that names a tree row by the leftmost text at its height takes a container's expander, `-` or `+`, for its name.
 Case: `drawn_badges` reported the badge of `/foo` on a row named `-`, 2026-11-13.
 
@@ -131,6 +147,9 @@ Case: killing the synthetic server by name ended the session's shell, 2026-10-12
 Case: `ws::tests::hostile_nesting_is_refused_without_recursion`, run on a 256 KiB stack.
 
 ## OSCQuery servers
+
+Not reproduced. Against a real server among the eight of the human's setup, which one was not recorded, the map showed `peers not read: invalid PEERS reply: L...`, cut to the width of its node, and the log at `RUST_LOG=info` held nothing, since no line was written (fixed, see Logging). What is proved, and only that: the map drops the address of the request, so what followed `invalid PEERS reply: ` was the text of the refusal, and of every refusal the parser can build exactly one starts with `L`: one client's `LISTEN` holding more than 8192 addresses (`the_prefix_seen_on_2026_11_13_names_one_variant`). Suspected, not reproduced: that server listed a client listening to more than 8192 addresses, or listed one address several times, the bound being checked on the list as received, before the window removes repeats (`Peers::parse`, then `AppState::apply` on `Event::Peers`). What would settle it: the line the log now writes for that server, `peers not read: ...` with its `server=`, or the reply of `/?PEERS` saved when it happens. Every refusal a conforming server can cause, `CLIENTS`, `SENDERS` or `LISTEN` over their bounds, a `NAME` or a listened address over its length, the reply over its size, is now drawn whole on hover of the status bar and logged whole (`every_refusal_a_conforming_server_can_cause_is_shown_and_logged_whole`).
+Case: the human's Mac, eight servers and their peers on the map, 2026-11-13; reported 2026-11-14.
 
 The `PEERS` extension lists this application among each server's clients, under the name it sent. Another client may send the same name. Telling it from this application by name drew two clients as one; by the local address of its own socket, address and port both, it is found for certain, and only it.
 Case: `this_application_is_one_node_told_from_a_namesake`, 2026-11-13.

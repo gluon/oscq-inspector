@@ -256,7 +256,15 @@ impl InspectorApp {
                     }
                 });
             }
-            Err(e) => startup_error = Some(format!("mDNS discovery unavailable: {e}")),
+            Err(e) => {
+                let reason = format!("mDNS discovery unavailable: {e}");
+                // On the runtime: the UI thread does no I/O, logging included.
+                let logged = reason.clone();
+                runtime.spawn(async move {
+                    tracing::warn!(target: "oscq_inspector::failure", "{logged}");
+                });
+                startup_error = Some(reason);
+            }
         }
         let backend = Backend {
             commands,
@@ -939,7 +947,9 @@ impl InspectorApp {
         self.backend.io.spawn_blocking(move || {
             let path = config::config_path(&dir);
             if let Err(e) = config::write_atomic(&path, &bytes) {
-                let _ = tx.send(format!("config not saved to {}: {e}", path.display()));
+                let reason = format!("config not saved to {}: {e}", path.display());
+                tracing::warn!(target: "oscq_inspector::failure", "{reason}");
+                let _ = tx.send(reason);
                 ctx.request_repaint();
             }
         });
@@ -947,9 +957,12 @@ impl InspectorApp {
 
     fn write_export(&self, ctx: &egui::Context, stem: &str, ext: &str, contents: String) {
         let Some(dir) = self.config_dir.clone() else {
-            let _ = self
-                .io_tx
-                .send("no config directory to export to".to_owned());
+            let reason = "no config directory to export to";
+            // On the runtime: the UI thread does no I/O, logging included.
+            self.backend.io.spawn(async move {
+                tracing::warn!(target: "oscq_inspector::failure", "{reason}");
+            });
+            let _ = self.io_tx.send(reason.to_owned());
             return;
         };
         let secs = SystemTime::now()
@@ -962,7 +975,11 @@ impl InspectorApp {
         self.backend.io.spawn_blocking(move || {
             let msg = match config::write_atomic(&path, contents.as_bytes()) {
                 Ok(()) => format!("saved {}", path.display()),
-                Err(e) => format!("not saved to {}: {e}", path.display()),
+                Err(e) => {
+                    let reason = format!("not saved to {}: {e}", path.display());
+                    tracing::warn!(target: "oscq_inspector::failure", "{reason}");
+                    reason
+                }
             };
             let _ = tx.send(msg);
             ctx.request_repaint();
@@ -1338,12 +1355,22 @@ impl InspectorApp {
                 }
                 return;
             };
-            // The message: the last error, or why nothing can be sent, or a note.
+            // The message: the last error, or a failed reading of peers, or why nothing can be
+            // sent, or a note. What it cuts short is whole on hover.
+            let peers = peers_failures(&self.state, self.view.tab == Tab::Map);
             let message = error_text(e)
                 .map(|t| (t, ui.visuals().error_fg_color))
                 .or_else(|| match &e.conn {
                     ConnState::Failed(r) => Some((r.clone(), ui.visuals().error_fg_color)),
                     _ => None,
+                })
+                .or_else(|| {
+                    let first = peers.first()?;
+                    let text = match peers.len() {
+                        1 => first.clone(),
+                        n => format!("{first} (and {} more)", n - 1),
+                    };
+                    Some((text, ui.visuals().error_fg_color))
                 })
                 .or_else(|| {
                     e.send_blocked()
@@ -1444,8 +1471,22 @@ impl InspectorApp {
                 }
             });
             if let Some((text, colour)) = message {
-                ui.add(egui::Label::new(RichText::new(&text).color(colour)).truncate())
-                    .on_hover_text(text);
+                // The whole is given on hover below: egui's own tooltip of a cut label would
+                // show it a second time.
+                let label = ui.add(
+                    egui::Label::new(RichText::new(&text).color(colour))
+                        .truncate()
+                        .show_tooltip_when_elided(false),
+                );
+                if peers.len() > 1 && text.starts_with(&peers[0]) {
+                    label.on_hover_ui(|ui| {
+                        for line in &peers {
+                            ui.label(line);
+                        }
+                    });
+                } else {
+                    label.on_hover_text(text);
+                }
             }
         });
     }
@@ -1598,8 +1639,6 @@ impl InspectorApp {
         }
         let interval = self.config.peers_poll();
         let model = map::build(&self.state, Instant::now(), interval, APP_NAME);
-        let rects = map::layout(&model);
-        let bounds = map::bounds(&rects);
         ui.horizontal_wrapped(|ui| {
             ui.set_min_height(ROW_H);
             // PRD 7.6: the polling is said, and never presented as live.
@@ -1617,7 +1656,10 @@ impl InspectorApp {
         });
         // Until the user moves the view, it follows the map as nodes come and go.
         let outer = ui.available_size_before_wrap();
-        let zoom = egui::Rangef::new(0.2, 1.0);
+        let rects = map::layout(&model, outer.x / outer.y);
+        let bounds = map::bounds(&rects);
+        // Fit shows the whole map, however small it must be drawn for that.
+        let zoom = egui::Rangef::new(fit_scale(bounds, outer).min(0.2), 1.0);
         let fitted = fit_scene(bounds, outer, zoom);
         if !self.view.map_moved && self.view.map_fitted != Some(bounds) {
             self.view.map_fitted = Some(bounds);
@@ -1667,10 +1709,17 @@ impl eframe::App for InspectorApp {
     }
 }
 
+/// The scale at which all of `bounds` holds in a pane of `outer` size; not finite for a pane or
+/// a map of no size.
+fn fit_scale(bounds: egui::Rect, outer: egui::Vec2) -> f32 {
+    let scale = (outer / bounds.size()).min_elem();
+    if scale > 0.0 { scale } else { f32::NAN }
+}
+
 /// The part of the map to show so that all of `bounds` is in view, in a pane of `outer` size:
 /// the whole map, at the scale that holds it, never larger than life.
 fn fit_scene(bounds: egui::Rect, outer: egui::Vec2, zoom: egui::Rangef) -> egui::Rect {
-    let scale = (outer / bounds.size()).min_elem();
+    let scale = fit_scale(bounds, outer);
     let scale = if scale.is_finite() {
         zoom.clamp(scale)
     } else {
@@ -1792,6 +1841,36 @@ const CANNOT_SEND: &str = "cannot send";
 
 /// The error the status bar shows for a server, with the path it concerns. A failed connection
 /// is already told by the connection state, and is not said twice.
+/// The failed readings of peers, each whole, as the status line gives them (PRD 9.6): the
+/// selected server's first, then, on the map, which shows them all, every other server's, in
+/// the order of the list, each named.
+fn peers_failures(state: &AppState, all: bool) -> Vec<String> {
+    let reason = |e: &ServerEntry| match e.peers_view() {
+        PeersView::Failed(r) => Some(r.to_owned()),
+        PeersView::Read {
+            failure: Some(r), ..
+        } => Some(r.to_owned()),
+        _ => None,
+    };
+    let selected = state.selected_entry();
+    let mut out: Vec<String> = selected
+        .and_then(|e| reason(e).map(|r| format!("peers not read: {r}")))
+        .into_iter()
+        .collect();
+    if all {
+        out.extend(
+            state
+                .servers
+                .iter()
+                .filter(|e| Some(e.server.id) != selected.map(|s| s.server.id))
+                .filter_map(|e| {
+                    reason(e).map(|r| format!("peers of {} not read: {r}", e.server.name))
+                }),
+        );
+    }
+    out
+}
+
 fn error_text(e: &ServerEntry) -> Option<String> {
     let err = e.last_error.as_ref()?;
     if err.operation == oscq_core::Operation::Connect && matches!(e.conn, ConnState::Failed(_)) {
@@ -3449,6 +3528,8 @@ mod tests {
         commands: flume::Receiver<Command>,
         events: flume::Sender<Event>,
         _rt: tokio::runtime::Runtime,
+        /// The window's size for `frame` and `frame_at`: 1100 by 700, the default window.
+        size: egui::Vec2,
     }
 
     fn harness() -> Harness {
@@ -3480,12 +3561,13 @@ mod tests {
             commands: cmd_rx,
             events: ev_tx,
             _rt: rt,
+            size: egui::vec2(1100.0, 700.0),
         }
     }
 
     impl Harness {
         fn frame(&mut self, events: Vec<egui::Event>) -> egui::FullOutput {
-            self.frame_sized(egui::vec2(1100.0, 700.0), events)
+            self.frame_sized(self.size, events)
         }
 
         /// One frame in a window of `size`.
@@ -3507,10 +3589,7 @@ mod tests {
             let input = egui::RawInput {
                 events,
                 time: Some(time),
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1100.0, 700.0),
-                )),
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.size)),
                 ..egui::RawInput::default()
             };
             let app = &mut self.app;
@@ -4453,6 +4532,7 @@ mod tests {
             commands: flume::unbounded().1,
             events: flume::unbounded().0,
             _rt: rt,
+            size: egui::vec2(1100.0, 700.0),
         };
         wait_for(&mut h, "connected and live", |a| {
             a.state.selected_entry().is_some_and(|e| {
@@ -4511,6 +4591,7 @@ mod tests {
             commands: flume::unbounded().1,
             events: flume::unbounded().0,
             _rt: rt,
+            size: egui::vec2(1100.0, 700.0),
         };
         wait_for(&mut h, "the launch attempt to fail", |a| {
             a.state
@@ -5526,6 +5607,7 @@ mod tests {
             commands: flume::unbounded().1,
             events: flume::unbounded().0,
             _rt: rt,
+            size: egui::vec2(1100.0, 700.0),
         };
         wait_for(&mut h, "connected", |a| {
             a.state
@@ -5612,6 +5694,7 @@ mod tests {
             commands: flume::unbounded().1,
             events: flume::unbounded().0,
             _rt: rt,
+            size: egui::vec2(1100.0, 700.0),
         }
     }
 
@@ -6094,6 +6177,7 @@ mod tests {
     #[test]
     fn a_server_that_declares_nothing_has_no_edge_and_no_badge() {
         let mut h = harness();
+        h.size = MAP_WINDOW;
         let declares = peer_server(&mut h, "Declares", "10.0.0.1", 5000, true, ONE_METHOD);
         let silent = peer_server(&mut h, "Silent", "10.0.0.2", 5000, false, ONE_METHOD);
         for id in [declares, silent] {
@@ -6236,6 +6320,217 @@ mod tests {
         centre_place(&h, &out, "listeners: not shown at this width");
     }
 
+    /// PRD 9.10 as amended on 2026-11-14: the badge counts the peers other than this
+    /// application. Its own connection, found by the address of its own socket, listens to
+    /// every method on screen and badges none. A client that gave the same name from another
+    /// socket is another peer, and counts. Behind an address translation this application is
+    /// not found, and its connection counts as any peer's.
+    #[test]
+    fn the_badge_counts_the_peers_other_than_this_application() {
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{
+            "mine":{"FULL_PATH":"/mine","TYPE":"f","ACCESS":3,"VALUE":[0.5]},
+            "both":{"FULL_PATH":"/both","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
+        let mut h = harness();
+        let id = peer_server(&mut h, "S", "10.0.0.1", 5000, true, doc);
+        let reply = serde_json::json!({"CLIENTS": [
+            {"IP": "10.0.0.50", "PORT": 40009, "NAME": APP_NAME, "LISTEN": ["/mine", "/both"]},
+            {"IP": "10.0.0.51", "PORT": 40010, "NAME": APP_NAME, "LISTEN": ["/both"]}
+        ]});
+        let badges = |h: &mut Harness, this_client| {
+            h.events
+                .send(peers_read(id, Duration::ZERO, reply.clone(), this_client))
+                .unwrap();
+            h.frame(Vec::new());
+            let out = h.frame(Vec::new());
+            centre_place(h, &out, "mine");
+            drawn_badges(h, &out)
+        };
+        assert_eq!(
+            badges(&mut h, Some(0)),
+            [("both".to_owned(), "1".to_owned())],
+            "its own listens left out, the namesake counted"
+        );
+        assert_eq!(
+            badges(&mut h, None),
+            [
+                ("both".to_owned(), "2".to_owned()),
+                ("mine".to_owned(), "1".to_owned())
+            ],
+            "not found behind a translation: counted as a peer"
+        );
+    }
+
+    /// A window in which the maps of the tests below are drawn large enough to be read: a map
+    /// draws no text under the readable size (PRD 9.10, `map::READABLE`).
+    const MAP_WINDOW: egui::Vec2 = egui::vec2(2400.0, 1500.0);
+
+    /// Eight servers that publish their peers, three named peers each, read: the map of the
+    /// map budgets.
+    fn eight_servers_and_24_peers(h: &mut Harness) {
+        let ids: Vec<ServerId> = (0..8)
+            .map(|i| {
+                peer_server(
+                    h,
+                    &format!("map {i}"),
+                    &format!("10.0.0.{}", i + 1),
+                    5000,
+                    true,
+                    ONE_METHOD,
+                )
+            })
+            .collect();
+        for (i, id) in ids.iter().enumerate() {
+            let clients: Vec<serde_json::Value> = (0..3)
+                .map(|c| {
+                    serde_json::json!({
+                        "IP": format!("10.1.{i}.{}", c + 1), "PORT": 40000 + c,
+                        "NAME": format!("peer {i}.{c}"), "PACKETS": 10 * c
+                    })
+                })
+                .collect();
+            h.events
+                .send(peers_read(
+                    *id,
+                    Duration::ZERO,
+                    serde_json::json!({ "CLIENTS": clients }),
+                    None,
+                ))
+                .unwrap();
+        }
+    }
+
+    /// What a frame drew of the map: its canvas, the clip of the map's layer; the nodes, the
+    /// rectangles filled with the ground of a node; and each text with its size on screen,
+    /// the size it was laid out at times the scale the nodes are drawn at.
+    fn drawn_map(
+        h: &Harness,
+        out: &egui::FullOutput,
+    ) -> (egui::Rect, Vec<egui::Rect>, Vec<(String, f32)>) {
+        let ground = h.ctx.global_style().visuals.extreme_bg_color;
+        let pane = egui::PanelState::load(&h.ctx, egui::Id::new("work"))
+            .unwrap()
+            .outer_rect;
+        let mut canvas = None;
+        let mut nodes = Vec::new();
+        let mut texts = Vec::new();
+        fn walk(
+            shape: &egui::Shape,
+            clip: egui::Rect,
+            ground: Color32,
+            nodes: &mut Vec<(egui::Rect, egui::Rect)>,
+            texts: &mut Vec<(egui::Rect, String, f32)>,
+        ) {
+            match shape {
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, clip, ground, nodes, texts)),
+                egui::Shape::Rect(r) if r.fill == ground => nodes.push((r.rect, clip)),
+                egui::Shape::Text(t) => {
+                    let size = t
+                        .galley
+                        .job
+                        .sections
+                        .first()
+                        .map_or(0.0, |s| s.format.font_id.size);
+                    texts.push((clip, t.galley.text().to_owned(), size));
+                }
+                _ => {}
+            }
+        }
+        let mut all_nodes = Vec::new();
+        let mut all_texts = Vec::new();
+        for c in &out.shapes {
+            walk(
+                &c.shape,
+                c.clip_rect,
+                ground,
+                &mut all_nodes,
+                &mut all_texts,
+            );
+        }
+        // The map's layer is clipped to its canvas, left of the right pane: the node grounds
+        // drawn there, of the width of a node at one scale.
+        for (r, clip) in all_nodes {
+            if clip.max.x <= pane.min.x + 1.0 && clip.min.y > ROW_H {
+                canvas = Some(clip);
+                nodes.push(r);
+            }
+        }
+        let canvas = canvas.expect("nodes drawn on the map");
+        let scale = nodes[0].width() / map::NODE_W;
+        for (clip, text, size) in all_texts {
+            if clip == canvas {
+                texts.push((text, size * scale));
+            }
+        }
+        (canvas, nodes, texts)
+    }
+
+    /// PRD 9.10, read with eight servers and 24 peers: after Fit, the map takes the canvas, its
+    /// box at least 60 percent of each side of it, the whole map in view; and no text is drawn
+    /// under the readable size, the nodes staying.
+    #[test]
+    fn after_fit_eight_servers_and_24_peers_take_the_canvas_and_no_label_is_unreadable() {
+        for size in [
+            egui::vec2(1100.0, 700.0),
+            egui::vec2(1600.0, 1000.0),
+            egui::vec2(800.0, 900.0),
+        ] {
+            let mut h = harness();
+            eight_servers_and_24_peers(&mut h);
+            h.app.view.tab = Tab::Map;
+            h.frame_sized(size, Vec::new());
+            h.app.view.map_moved = false;
+            h.app.view.map_fitted = None;
+            h.frame_sized(size, Vec::new());
+            let out = h.frame_sized(size, Vec::new());
+            let (canvas, nodes, texts) = drawn_map(&h, &out);
+            assert_eq!(nodes.len(), 8 + 24, "{size:?}: every node drawn");
+            let bbox = nodes.iter().fold(egui::Rect::NOTHING, |a, r| a.union(*r));
+            let cover = bbox.size() / canvas.size();
+            println!(
+                "MAP {size:?}: canvas {:?}, box {:?}, cover {:.2} x {:.2}, scale {:.3}, texts {}",
+                canvas.size(),
+                bbox.size(),
+                cover.x,
+                cover.y,
+                nodes[0].width() / map::NODE_W,
+                texts.len()
+            );
+            assert!(
+                canvas.expand(1.0).contains_rect(bbox),
+                "{size:?}: the whole map in view"
+            );
+            assert!(
+                cover.x >= 0.6 && cover.y >= 0.6,
+                "{size:?}: the box covers {:.2} x {:.2} of the canvas",
+                cover.x,
+                cover.y
+            );
+            for (text, on_screen) in &texts {
+                assert!(
+                    *on_screen >= map::READABLE - 0.01,
+                    "{size:?}: {text:?} drawn at {on_screen:.1} points"
+                );
+            }
+        }
+        // A map small enough to be drawn at full size has its texts, all readable.
+        let mut h = harness();
+        let id = peer_server(&mut h, "Alone", "10.0.0.1", 5000, true, ONE_METHOD);
+        h.events
+            .send(peers_read(id, Duration::ZERO, max_listening_to_a(), None))
+            .unwrap();
+        h.app.view.tab = Tab::Map;
+        let size = egui::vec2(1600.0, 1000.0);
+        h.frame_sized(size, Vec::new());
+        let out = h.frame_sized(size, Vec::new());
+        let (_, nodes, texts) = drawn_map(&h, &out);
+        assert_eq!(nodes[0].width(), map::NODE_W, "full size");
+        let drawn: Vec<&str> = texts.iter().map(|(t, _)| t.as_str()).collect();
+        for expected in ["Alone", "Max", "connected", "4 packets"] {
+            assert!(drawn.contains(&expected), "{expected:?} drawn: {drawn:?}");
+        }
+        assert!(texts.iter().all(|(_, s)| *s >= map::READABLE));
+    }
+
     /// M7: a server connected to itself. A client under the server's own name is drawn as a
     /// loop on that one node, not dropped.
     #[test]
@@ -6290,6 +6585,7 @@ mod tests {
     #[test]
     fn a_name_two_servers_share_draws_an_ambiguous_edge_that_says_so() {
         let mut h = harness();
+        h.size = MAP_WINDOW;
         let hub = peer_server(&mut h, "Hub", "10.0.0.1", 5000, true, ONE_METHOD);
         peer_server(&mut h, "Twin", "10.0.0.2", 5000, true, ONE_METHOD);
         peer_server(&mut h, "Twin", "10.0.0.3", 5000, true, ONE_METHOD);
@@ -6544,6 +6840,7 @@ mod tests {
     #[test]
     fn the_map_names_this_application_udp_sources_and_failures() {
         let mut h = harness();
+        h.size = MAP_WINDOW;
         let ok = peer_server(&mut h, "Answers", "10.0.0.1", 5000, true, ONE_METHOD);
         let fails = peer_server(&mut h, "Fails", "10.0.0.2", 5000, true, ONE_METHOD);
         h.events
@@ -6617,6 +6914,294 @@ mod tests {
     }
 
     /// The window on the real network service, which names itself as the application does.
+    /// Every refusal a conforming server can cause, through the real service: its reason is
+    /// the one the client gives, whole; the status bar's hover draws it whole, once; the log
+    /// holds it whole, once, though it was refused twice. The defect of 2026-11-13 is not
+    /// reproduced by this: see PITFALLS.md.
+    #[test]
+    fn every_refusal_a_conforming_server_can_cause_is_shown_and_logged_whole() {
+        use oscq_core::peers::{MAX_CLIENTS, MAX_LISTEN, MAX_PEERS_BODY, MAX_SENDERS, MAX_TEXT};
+        let cases = logged_peers_failures();
+        let names: Vec<&str> = cases.iter().map(|c| c.0.as_str()).collect();
+        assert_eq!(
+            names,
+            peers_failure_cases()
+                .iter()
+                .map(|c| c.0)
+                .collect::<Vec<_>>()
+        );
+        for (case, server, asked, reason, lines, shown) in cases {
+            let invalid = |what: String| format!("invalid PEERS reply from {server}?PEERS: {what}");
+            let expected = match case.as_str() {
+                "CLIENTS over its bound" => invalid(format!(
+                    "CLIENTS holds {} entries, more than the {MAX_CLIENTS} this client reads",
+                    MAX_CLIENTS + 1
+                )),
+                "SENDERS over its bound" => invalid(format!(
+                    "SENDERS holds {} entries, more than the {MAX_SENDERS} this client reads",
+                    MAX_SENDERS + 1
+                )),
+                "LISTEN over its bound" => invalid(format!(
+                    "LISTEN holds {} entries, more than the {MAX_LISTEN} this client reads",
+                    MAX_LISTEN + 1
+                )),
+                "NAME over its length" => invalid(format!(
+                    "CLIENTS entry 0: NAME is longer than {MAX_TEXT} bytes"
+                )),
+                "a listened address over its length" => invalid(format!(
+                    "CLIENTS entry 0: LISTEN is longer than {MAX_TEXT} bytes"
+                )),
+                "the reply over its size" => {
+                    format!("response from {server}?PEERS is larger than {MAX_PEERS_BODY} bytes")
+                }
+                other => panic!("no expected reason for {other}"),
+            };
+            assert_eq!(reason, expected, "{case}: the client's reason");
+            assert!(asked >= 2, "{case}: refused twice, asked {asked}");
+            assert_eq!(shown, 1, "{case}: drawn whole on hover of the status bar");
+            assert_eq!(lines, 1, "{case}: logged whole, once");
+        }
+    }
+
+    /// Which `PeersError` a server that follows the extension can cause. The match has no
+    /// wildcard: a new variant does not compile until it is placed here, and given a case in
+    /// [`peers_failure_cases`] if a conforming server can cause it.
+    fn conforming_can_cause(e: &oscq_core::PeersError) -> bool {
+        use oscq_core::PeersError as E;
+        match e {
+            // A conforming reply is a JSON object, its depth four: not JSON, too deep, not an
+            // object, not a node are of another document.
+            E::Document(_) => false,
+            // A conforming reply holds the two lists, as lists.
+            E::NotPeers | E::NotAList(_) => false,
+            // Every entry has an IP and a PORT (PRD 7.6).
+            E::InvalidEntry { .. } => false,
+            // The extension bounds neither list nor any client's LISTEN.
+            E::TooMany { .. } => true,
+            // A name and an OSC address have no bound; an address of 1025 bytes is no address.
+            E::TooLong { field, .. } => *field != "IP",
+        }
+    }
+
+    /// One `PeersError` of each shape the parser builds, every list it names included.
+    fn every_peers_error() -> Vec<oscq_core::PeersError> {
+        use oscq_core::PeersError as E;
+        use oscq_core::document::DocumentError as D;
+        let not_json = serde_json::from_str::<serde_json::Value>("x").unwrap_err();
+        let mut all = vec![
+            E::Document(D::NotJson(not_json)),
+            E::Document(D::TooDeep),
+            E::Document(D::NotAnObject),
+            E::Document(D::NotAnAddressSpace),
+            E::NotPeers,
+        ];
+        // A `SENDERS` entry is read for its IP only of the bounded texts (`peers.rs`).
+        for (list, fields) in [
+            ("CLIENTS", &["IP", "NAME", "LISTEN"][..]),
+            ("SENDERS", &["IP"][..]),
+        ] {
+            all.push(E::NotAList(list));
+            all.push(E::InvalidEntry { list, index: 0 });
+            for field in fields {
+                all.push(E::TooLong {
+                    list,
+                    index: 0,
+                    field,
+                });
+            }
+        }
+        for list in ["CLIENTS", "SENDERS", "LISTEN"] {
+            all.push(E::TooMany {
+                list,
+                limit: 1,
+                received: 2,
+            });
+        }
+        all
+    }
+
+    /// The variants a conforming server can cause are exactly those of the cases read through
+    /// the service: CLIENTS, SENDERS and LISTEN over their bounds, a NAME and a listened
+    /// address over their length. The body over its size is a client error, not a
+    /// `PeersError`, and has its case too.
+    #[test]
+    fn a_conforming_server_can_produce_these_variants_and_no_other() {
+        let can: Vec<String> = every_peers_error()
+            .iter()
+            .filter(|e| conforming_can_cause(e))
+            .map(|e| format!("{e:?}"))
+            .collect();
+        assert_eq!(
+            can,
+            [
+                r#"TooLong { list: "CLIENTS", index: 0, field: "NAME" }"#,
+                r#"TooLong { list: "CLIENTS", index: 0, field: "LISTEN" }"#,
+                r#"TooMany { list: "CLIENTS", limit: 1, received: 2 }"#,
+                r#"TooMany { list: "SENDERS", limit: 1, received: 2 }"#,
+                r#"TooMany { list: "LISTEN", limit: 1, received: 2 }"#,
+            ]
+        );
+    }
+
+    /// 2026-11-13, the map showed `peers not read: invalid PEERS reply: L...`. The client writes
+    /// `invalid PEERS reply from <address>: <the variant>`, and the map drops the address: what
+    /// followed was a variant whose text starts with `L`. Of every variant, one does: `LISTEN`
+    /// over its bound. A deduction from the text shown, not a reproduction.
+    #[test]
+    fn the_prefix_seen_on_2026_11_13_names_one_variant() {
+        let reply = |e: &oscq_core::PeersError| {
+            crate::state::short_reason(&format!(
+                "invalid PEERS reply from http://10.0.0.2:5000/?PEERS: {e}"
+            ))
+        };
+        let starting_l: Vec<String> = every_peers_error()
+            .iter()
+            .filter(|e| reply(e).starts_with("invalid PEERS reply: L"))
+            .map(|e| format!("{e:?}"))
+            .collect();
+        assert_eq!(
+            starting_l,
+            [r#"TooMany { list: "LISTEN", limit: 1, received: 2 }"#]
+        );
+    }
+
+    /// The status bar's message as the frame shows it: its glyphs, an ellipsis included, and
+    /// where.
+    fn status_message(h: &Harness, out: &egui::FullOutput, starts: &str) -> (String, egui::Rect) {
+        let bar = egui::PanelState::load(&h.ctx, egui::Id::new("status"))
+            .unwrap()
+            .outer_rect;
+        let found: Vec<(String, egui::Rect)> = shown_texts(out)
+            .into_iter()
+            .filter(|(t, r, _)| bar.contains_rect(*r) && t.starts_with(starts))
+            .map(|(t, r, _)| (t, r))
+            .collect();
+        assert_eq!(
+            found.len(),
+            1,
+            "one status message starting {starts:?}: {found:?}"
+        );
+        found[0].clone()
+    }
+
+    /// What the frame shows outside the status bar, each text's glyphs without their spaces:
+    /// a tooltip wraps its text where it has room, and a space at a break is not drawn.
+    fn shown_outside_status(h: &Harness, out: &egui::FullOutput) -> Vec<(String, egui::Rect)> {
+        let bar = egui::PanelState::load(&h.ctx, egui::Id::new("status"))
+            .unwrap()
+            .outer_rect;
+        shown_texts(out)
+            .into_iter()
+            .filter(|(_, r, _)| !bar.contains_rect(*r))
+            .map(|(t, r, _)| (t.chars().filter(|c| !c.is_whitespace()).collect(), r))
+            .collect()
+    }
+
+    /// The pointer left still on `rect` until its tooltip is shown: the frame that shows it.
+    fn hover_still(h: &mut Harness, rect: egui::Rect) -> egui::FullOutput {
+        let p = rect.center();
+        h.frame_at(100.0, vec![egui::Event::PointerMoved(p)]);
+        h.frame_at(100.1, Vec::new());
+        h.frame_at(102.0, Vec::new());
+        h.frame_at(102.1, Vec::new())
+    }
+
+    /// PRD 9.6: a failed reading of peers is in the status line with its reason, which the map
+    /// cuts to the width of a node. The line cuts it too, and its whole is on hover, drawn in
+    /// the window. The selected server's on every tab; on the map, which shows every server,
+    /// another server's too, named.
+    #[test]
+    fn the_whole_reason_of_a_failed_peers_reading_reaches_the_status_line() {
+        let mut h = harness();
+        let other = peer_server(&mut h, "Other", "10.0.0.2", 5000, true, ONE_METHOD);
+        let selected = peer_server(&mut h, "Selected", "10.0.0.1", 5000, true, ONE_METHOD);
+        let reason = format!(
+            "invalid PEERS reply from http://10.0.0.1:5000/?PEERS: LISTEN holds {} entries, \
+             more than the {} this client reads",
+            oscq_core::peers::MAX_LISTEN + 1,
+            oscq_core::peers::MAX_LISTEN
+        );
+        let refused = |id, reason: &str| Event::Peers {
+            server_id: id,
+            at: Instant::now(),
+            result: Err(reason.to_owned()),
+        };
+        h.events.send(refused(selected, &reason)).unwrap();
+        h.app.view.tab = Tab::Map;
+        h.frame_at(99.0, Vec::new());
+        let out = h.frame_at(99.1, Vec::new());
+        let whole = format!("peers not read: {reason}");
+        let (shown, rect) = status_message(&h, &out, "peers not read: ");
+        assert!(
+            shown.ends_with('\u{2026}') && shown.len() < whole.len(),
+            "the line cuts it: {shown:?}"
+        );
+        let squeezed = |t: &str| -> String { t.chars().filter(|c| !c.is_whitespace()).collect() };
+        let out = hover_still(&mut h, rect);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1100.0, 700.0));
+        let tips: Vec<(String, egui::Rect)> = shown_outside_status(&h, &out)
+            .into_iter()
+            .filter(|(t, _)| *t == squeezed(&whole))
+            .collect();
+        assert_eq!(tips.len(), 1, "the whole reason drawn on hover, once");
+        assert!(
+            screen.contains_rect(tips[0].1),
+            "inside the window: {:?}",
+            tips[0].1
+        );
+
+        // Another server's, on the map: named, after the selected one's, both whole on hover.
+        let short = "http://10.0.0.2:5000/?PEERS answered HTTP 500";
+        h.events.send(refused(other, short)).unwrap();
+        h.frame_at(103.0, vec![egui::Event::PointerGone]);
+        let out = h.frame_at(103.1, Vec::new());
+        let (shown, rect) = status_message(&h, &out, "peers not read: ");
+        assert!(shown.ends_with('\u{2026}'), "{shown:?}");
+        let out = hover_still(&mut h, rect);
+        let drawn: Vec<String> = shown_outside_status(&h, &out)
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        for line in [whole.clone(), format!("peers of Other not read: {short}")] {
+            assert!(
+                drawn.contains(&squeezed(&line)),
+                "{line:?} on hover: {drawn:?}"
+            );
+        }
+        // Without a failure of its own, the selected server's line names the other one.
+        h.events
+            .send(peers_read(
+                selected,
+                Duration::ZERO,
+                max_listening_to_a(),
+                None,
+            ))
+            .unwrap();
+        h.frame_at(104.0, vec![egui::Event::PointerGone]);
+        let out = h.frame_at(104.1, Vec::new());
+        let (_, rect) = status_message(&h, &out, "peers of Other");
+        let out = hover_still(&mut h, rect);
+        let line = squeezed(&format!("peers of Other not read: {short}"));
+        assert_eq!(
+            shown_outside_status(&h, &out)
+                .iter()
+                .filter(|(t, _)| *t == line)
+                .count(),
+            1,
+            "whole on hover, once"
+        );
+        // On the tree, the map's other servers are not this server's business.
+        h.app.view.tab = Tab::Tree;
+        h.frame_at(105.0, vec![egui::Event::PointerGone]);
+        let out = h.frame_at(105.1, Vec::new());
+        assert!(
+            !shown_texts(&out)
+                .iter()
+                .any(|(t, _, _)| t.contains("not read")),
+            "nothing of Other on the tree"
+        );
+    }
+
     fn named_service_harness(config: Config) -> Harness {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -6643,6 +7228,252 @@ mod tests {
             commands: flume::unbounded().1,
             events: flume::unbounded().0,
             _rt: rt,
+            size: egui::vec2(1100.0, 700.0),
+        }
+    }
+
+    // ------------------------------------------------------------ failures in the log
+
+    /// Set in the environment of the process the test of the log starts.
+    const LOG_CHILD: &str = "OSCQ_INSPECTOR_LOG_CHILD";
+    /// Between the fields of a line the child reports.
+    const SEP: char = '\u{1f}';
+
+    /// Every way a server that follows the extension (PRD 7.6) can make this client refuse its
+    /// `?PEERS` reply, by name: the bounds are this client's (decision of 2026-11-13), the
+    /// extension sets none, so a conforming server can pass each. See
+    /// [`a_conforming_server_can_produce_these_variants_and_no_other`] for the variants it
+    /// cannot produce.
+    fn peers_failure_cases() -> Vec<(&'static str, crate::synthetic::Reply)> {
+        use crate::synthetic::Reply;
+        use oscq_core::peers::{MAX_CLIENTS, MAX_LISTEN, MAX_PEERS_BODY, MAX_SENDERS, MAX_TEXT};
+        let json = |v: serde_json::Value| Reply::json(v.to_string());
+        let paths = |n: usize| -> Vec<String> { (0..n).map(|i| format!("/p{i}")).collect() };
+        let entry = |i: usize| serde_json::json!({"IP": "10.0.0.9", "PORT": 1 + i % 60000});
+        let long_path = format!("/{}", "a".repeat(MAX_TEXT));
+        // Valid JSON, valid entries, more bytes than the client reads.
+        let over_body = {
+            let n = MAX_PEERS_BODY / 8 + 1;
+            json(serde_json::json!({"CLIENTS": [
+                {"IP": "10.0.0.9", "PORT": 1, "LISTEN": paths(n)}
+            ]}))
+        };
+        vec![
+            (
+                "CLIENTS over its bound",
+                json(
+                    serde_json::json!({ "CLIENTS": (0..=MAX_CLIENTS).map(entry).collect::<Vec<_>>() }),
+                ),
+            ),
+            (
+                "SENDERS over its bound",
+                json(
+                    serde_json::json!({ "SENDERS": (0..=MAX_SENDERS).map(entry).collect::<Vec<_>>() }),
+                ),
+            ),
+            (
+                "LISTEN over its bound",
+                json(serde_json::json!({"CLIENTS": [
+                    {"IP": "10.0.0.9", "PORT": 40001, "NAME": "Max", "LISTEN": paths(MAX_LISTEN + 1)}
+                ]})),
+            ),
+            (
+                "NAME over its length",
+                json(serde_json::json!({"CLIENTS": [
+                    {"IP": "10.0.0.9", "PORT": 40001, "NAME": "n".repeat(MAX_TEXT + 1)}
+                ]})),
+            ),
+            (
+                "a listened address over its length",
+                json(serde_json::json!({"CLIENTS": [
+                    {"IP": "10.0.0.9", "PORT": 40001, "LISTEN": [long_path]}
+                ]})),
+            ),
+            ("the reply over its size", over_body),
+        ]
+    }
+
+    /// One server that declares `PEERS` and answers `/?PEERS` with `reply`, read twice through
+    /// the real service with the map shown: the reason the window holds, the server's address
+    /// as the log names it, how many times `?PEERS` was asked, and how many times the reason
+    /// is drawn whole on hover of the status bar's message.
+    fn read_failing_peers(reply: crate::synthetic::Reply) -> (String, String, usize, usize) {
+        use crate::synthetic::{Reply, SyntheticServer, borrowed, host_info_json, large_routes};
+        let srv = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut routes = large_routes(20, 9);
+        routes.push((
+            "/?HOST_INFO".to_owned(),
+            Reply::json(host_info_json("declares", 9, true)),
+        ));
+        routes.push(("/?PEERS".to_owned(), reply));
+        let server = srv
+            .block_on(SyntheticServer::start_ws("127.0.0.1:0", borrowed(&routes)))
+            .unwrap();
+        let key = format!("127.0.0.1:{}", server.addr.port());
+        let mut h = named_service_harness(Config {
+            manual_entries: vec![key.clone()],
+            last_selected: Some(key.clone()),
+            ..Config::default()
+        });
+        h.app.startup(&h.ctx.clone(), "map,connect-all");
+        wait_for(&mut h, "the peers refused", |a| {
+            a.state
+                .selected_entry()
+                .is_some_and(|e| e.peers.failure.is_some() && !e.peers.asked)
+        });
+        // Read again, refused again the same way.
+        let asked = || {
+            server
+                .ws
+                .requests()
+                .iter()
+                .filter(|r| *r == "/?PEERS")
+                .count()
+        };
+        let id = h.app.state.selected.unwrap();
+        h.app
+            .act(&h.ctx.clone(), Action::ReadPeers(PeersScope::All));
+        wait_for(&mut h, "a second reading, answered", |a| {
+            asked() >= 2 && a.state.entry(id).is_some_and(|e| !e.peers.asked)
+        });
+        let reason = h
+            .app
+            .state
+            .entry(id)
+            .and_then(|e| e.peers.failure.clone())
+            .unwrap();
+        h.frame_at(99.0, Vec::new());
+        let out = h.frame_at(99.1, Vec::new());
+        let (_, rect) = status_message(&h, &out, "peers not read");
+        let out = hover_still(&mut h, rect);
+        let whole: String = format!("peers not read: {reason}")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let shown = shown_outside_status(&h, &out)
+            .iter()
+            .filter(|(t, _)| *t == whole)
+            .count();
+        (reason, format!("http://{key}/"), asked(), shown)
+    }
+
+    /// The process the test of the log starts: logging as the application does, it reads each
+    /// case and reports what the window holds. Does nothing in any other process.
+    #[test]
+    #[ignore = "run by a_failed_peers_reading_is_logged_whole_without_rust_log, in its own process"]
+    fn child_logs_failed_peers() {
+        if std::env::var_os(LOG_CHILD).is_none() {
+            return;
+        }
+        crate::init_logging();
+        for (case, reply) in peers_failure_cases() {
+            let (reason, server, asked, shown) = read_failing_peers(reply);
+            // On a line of its own: the test harness writes the test's name before it.
+            println!("\nCASE{SEP}{case}{SEP}{server}{SEP}{asked}{SEP}{shown}{SEP}{reason}");
+        }
+    }
+
+    /// Text without its ANSI colour sequences.
+    fn without_ansi(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut chars = text.chars();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' {
+                for c in chars.by_ref() {
+                    if c.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    /// Each case of [`peers_failure_cases`] read in a process of its own, started as the
+    /// application is with no `RUST_LOG` in its environment: (case, server, times asked, reason
+    /// held by the window, the lines of the log that name the server and give the reason whole,
+    /// the times the status bar's hover draws it whole).
+    fn logged_peers_failures() -> Vec<(String, String, usize, String, usize, usize)> {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "app::tests::child_logs_failed_peers",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(LOG_CHILD, "1")
+            .env_remove("RUST_LOG")
+            .output()
+            .unwrap();
+        let text = without_ansi(&format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ));
+        assert!(out.status.success(), "the child failed: {text}");
+        let cases: Vec<(String, String, usize, String, usize, usize)> = text
+            .lines()
+            .filter_map(|l| l.split_once(&format!("CASE{SEP}")).map(|(_, r)| r))
+            .map(|l| {
+                let f: Vec<&str> = l.splitn(5, SEP).collect();
+                let (server, reason) = (f[1], f[4]);
+                let lines = text
+                    .lines()
+                    .filter(|l| {
+                        l.contains(" WARN ")
+                            && l.contains(&format!("server={server}"))
+                            && l.contains(&format!("peers not read: {reason}"))
+                    })
+                    .count();
+                (
+                    f[0].to_owned(),
+                    server.to_owned(),
+                    f[2].parse().unwrap(),
+                    reason.to_owned(),
+                    lines,
+                    f[3].parse().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            cases.len(),
+            peers_failure_cases().len(),
+            "every case reported: {text}"
+        );
+        cases
+    }
+
+    /// Without `RUST_LOG`, a server whose `?PEERS` fails produces a log line naming the server
+    /// and giving the reason whole, the reason the window holds and cuts to fit. Met on
+    /// 2026-11-13: the map showed `peers not read: invalid PEERS reply: L...` and the log, at
+    /// `RUST_LOG=info`, had nothing. Read twice and refused the same way, it is logged once.
+    /// In a process of its own: a log is a process's, and a test beside others shares it.
+    #[test]
+    fn a_failed_peers_reading_is_logged_whole_without_rust_log() {
+        for (case, server, asked, reason, lines, _) in logged_peers_failures() {
+            assert!(asked >= 2, "{case}: asked twice, {asked}");
+            assert_eq!(
+                lines, 1,
+                "{case}: one line naming {server}, {reason:?} whole"
+            );
+            if case == "LISTEN over its bound" {
+                assert_eq!(
+                    reason,
+                    format!(
+                        "invalid PEERS reply from {server}?PEERS: LISTEN holds {} entries, more \
+                         than the {} this client reads",
+                        oscq_core::peers::MAX_LISTEN + 1,
+                        oscq_core::peers::MAX_LISTEN
+                    )
+                );
+            }
         }
     }
 
@@ -6691,6 +7522,7 @@ mod tests {
             last_selected: Some(key(&answers)),
             ..Config::default()
         });
+        h.size = MAP_WINDOW;
         // As a launch of the real binary tests does.
         h.app.startup(&h.ctx.clone(), "map,connect-all");
         assert_eq!(h.app.view.tab, Tab::Map);
