@@ -138,6 +138,9 @@ Case: four map tests failed once the map stopped drawing text under 9 points, 20
 A test that every drawn text is readable passes when nothing is drawn. The rule "no text under 9 points" and its test held for the map of eight servers and 24 peers while it drew no text at all, and so did the maps of two and three servers in the default window. A rule of what may not be drawn needs beside it what must be: here, every server's name.
 Case: `after_fit_eight_servers_and_24_peers_take_the_canvas_and_no_label_is_unreadable` green with "texts 0" in its own output, on `main` at `5161db3`; the human saw only boxes, 2026-11-14.
 
+A test of a computation that has a fallback passes on the fallback. `the_places_are_computed_and_no_node_covers_another` would stay green with a placement by forces that always left nodes overlapping, since the ellipses of M7 take over then and never overlap. Count which one ran before reading the green: a trace on each branch, the six formats run, the trace removed.
+Case: the placement by forces, 2026-11-14: counted, 0 fallbacks over the six formats and the compact cases, `docs/decisions.md`.
+
 A test that names a tree row by the leftmost text at its height takes a container's expander, `-` or `+`, for its name.
 Case: `drawn_badges` reported the badge of `/foo` on a row named `-`, 2026-11-13.
 

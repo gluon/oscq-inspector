@@ -10,6 +10,7 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 - **Listeners in the tree**: on a server that publishes its peers, a badge on each method other clients listen to, with their count, their names on hover; the line above the tree says when they were read, or that the server does not publish them.
 - **`PEERS` and `CLIENT_NAME`**: the application names itself to the servers that declare the extension, on every connection, and reads their peers. Nothing of it is sent to a server that does not declare it.
 - **`peers_poll_ms`** in the settings file, the interval of the map's readings, 2000 by default.
+- **A map you handle**: drag a node and it stays where you put it, across launches, until **Release**; click a node to light it with its arrows and neighbours; click a server's node to select it, double click to open its tree.
 
 ### Fixed
 
@@ -18,6 +19,7 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 
 ### Changed
 
+- **The map's places**: nodes are placed by forces, those connected together drawn together, spread over the map's area, and still once placed. A server carries the name its `HOST_INFO` declares, even when entered by hand, its address below.
 - **A readable map**: every server's name is always drawn at a readable size. When the map does not hold with every detail readable, it is drawn compact, a server as its name, a peer as a dot with its name, the rest on hover; when room is short an edge's label goes first, then a client's name, never a server's. **Fit** shows the whole map when it can be read, the rest is panned to otherwise. A text too small to read is not drawn.
 - **Name**: the application is OSCQuery Inspector. Its crate, its binary, its downloads and its `.desktop` file are `oscq-inspector`; on macOS the bundle is **OSCQuery Inspector.app**. The macOS bundle identifier and the settings folder keep the former name, so that an installed copy stays the same application to its system and finds its settings again.
 

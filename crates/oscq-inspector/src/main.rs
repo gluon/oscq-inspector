@@ -5,6 +5,7 @@
 
 mod app;
 mod config;
+mod force;
 mod icon;
 mod json_view;
 #[cfg(target_os = "macos")]

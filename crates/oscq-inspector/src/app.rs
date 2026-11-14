@@ -192,6 +192,27 @@ struct View {
     /// The extent of the map the view was last fitted to, until the user moves the view.
     map_fitted: Option<egui::Rect>,
     map_moved: bool,
+    /// The node lit on the map, by key, with its edges and its neighbours (PRD 9.10).
+    map_focus: Option<String>,
+    /// Positions set by hand on the map for the nodes whose identity lasts one connection, as
+    /// fractions of the map's frame: kept for the session, never written (`map::Node::kept`).
+    map_session: std::collections::HashMap<String, egui::Vec2>,
+    /// The placement last computed, and what it was computed for: computed again when that
+    /// changes, and on no other frame.
+    map_arranged: Option<(MapKey, map::Arrangement)>,
+    /// Bumped when the positions set by hand are let go: the placement is computed again.
+    map_generation: u64,
+}
+
+/// What the map's placement depends on: the nodes, who they are and what they are called, the
+/// edges, the canvas, and the release of the positions set by hand. A new reading that changes
+/// none of it changes no place.
+#[derive(Debug, Clone, PartialEq)]
+struct MapKey {
+    nodes: Vec<(String, String)>,
+    edges: Vec<(usize, usize)>,
+    canvas: [i32; 2],
+    generation: u64,
 }
 
 struct Owned {
@@ -711,6 +732,9 @@ impl InspectorApp {
                 self.config.manual_entries =
                     self.history.entries().map(ToString::to_string).collect();
                 self.config.osc_ports.remove(&key);
+                self.config
+                    .map_positions
+                    .retain(|p| p.node != format!("server {key}"));
                 if self.config.last_selected.as_deref() == Some(key.as_str()) {
                     self.config.last_selected = None;
                 }
@@ -1646,14 +1670,34 @@ impl InspectorApp {
             if ui
                 .button("Fit")
                 .on_hover_text(
-                    "Show the whole map. Scroll to pan, pinch or Ctrl and scroll to zoom.",
+                    "Show the whole map. Scroll to pan, pinch or Ctrl and scroll to zoom. \
+                     Drag a node to move it; click it to light it with its neighbours.",
                 )
                 .clicked()
             {
                 self.view.map_moved = false;
                 self.view.map_fitted = None;
             }
+            let held = !self.config.map_positions.is_empty() || !self.view.map_session.is_empty();
+            if ui
+                .add_enabled(held, egui::Button::new("Release"))
+                .on_hover_text("Let go of every position set by hand: the map places them again.")
+                .on_disabled_hover_text("No node has been moved by hand.")
+                .clicked()
+            {
+                self.config.map_positions.clear();
+                self.view.map_session.clear();
+                self.view.map_generation += 1;
+                self.view.map_moved = false;
+                self.view.map_fitted = None;
+                self.save_config(ui.ctx());
+            }
         });
+        if self.view.map_focus.is_some()
+            && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
+        {
+            self.view.map_focus = None;
+        }
         // Until the user moves the view, it follows the map as nodes come and go.
         let outer = ui.available_size_before_wrap();
         let painter = ui.painter().clone();
@@ -1667,7 +1711,30 @@ impl InspectorApp {
                 .size()
                 .x
         };
-        let places = map::places(&model, outer, &name_w);
+        let key = MapKey {
+            nodes: model
+                .nodes
+                .iter()
+                .map(|n| (n.key.clone(), n.title.clone()))
+                .collect(),
+            edges: model.edges.iter().map(|e| (e.from, e.to)).collect(),
+            canvas: [outer.x.round() as i32, outer.y.round() as i32],
+            generation: self.view.map_generation,
+        };
+        let (config, session) = (&self.config, &self.view.map_session);
+        let pinned = |node: &str| {
+            config
+                .map_position(node)
+                .or_else(|| session.get(node).copied())
+        };
+        if self.view.map_arranged.as_ref().map(|(k, _)| k) != Some(&key) {
+            let arranged = map::arrange(&model, outer, &name_w, &pinned);
+            self.view.map_arranged = Some((key, arranged));
+        }
+        let Some((_, arranged)) = &self.view.map_arranged else {
+            return;
+        };
+        let places = map::places(&model, arranged, outer, &name_w, &pinned);
         let bounds = places.bounds();
         // Never under the scale at which a name is readable (decision of 2026-11-14): Fit shows
         // the whole map when it holds at that scale, else as much as does, the rest panned to.
@@ -1679,16 +1746,71 @@ impl InspectorApp {
         }
         let scene = self.view.map_scene.get_or_insert(fitted);
         let selected = self.state.selected;
+        let focus = self.view.map_focus.clone();
+        let mut gesture = map::Gesture::default();
         let response = egui::Scene::new()
             .zoom_range(zoom)
             .max_inner_size(bounds.size())
             .show(ui, scene, |ui| {
                 ui.allocate_rect(bounds, egui::Sense::hover());
-                map::draw(ui, &model, &places, selected);
+                gesture = map::draw(ui, &model, &places, selected, focus.as_deref());
             })
             .response;
         if response.changed() {
             self.view.map_moved = true;
+        }
+        self.map_gesture(ui.ctx(), &model, &places, gesture, actions);
+    }
+
+    /// What a gesture on the map does. A drag sets the node's position by hand, which wins over
+    /// the placement, and moves that node alone; a position whose node outlives its connection
+    /// is written to the config when the drag ends. A click lights the node, with its edges and
+    /// its neighbours, a second click puts it out; on a server's node it also selects that
+    /// server, as the list does. A double click on a server's node opens its tree, at its root.
+    fn map_gesture(
+        &mut self,
+        ctx: &egui::Context,
+        model: &map::Model,
+        places: &map::Places,
+        gesture: map::Gesture,
+        actions: &mut Vec<Action>,
+    ) {
+        if let Some((i, delta)) = gesture.dragged
+            && let (Some(node), Some(rect)) = (model.nodes.get(i), places.rects.get(i))
+        {
+            let frame = places.frame.max(egui::Vec2::splat(1.0));
+            let at = (rect.center().to_vec2() + delta) / frame;
+            if node.kept() {
+                self.config.set_map_position(&node.key, at);
+            } else {
+                self.view.map_session.insert(node.key.clone(), at);
+            }
+            // The view stays where the hand put it, rather than follow the map's new extent.
+            self.view.map_moved = true;
+        }
+        if let Some(i) = gesture.released
+            && model.nodes.get(i).is_some_and(map::Node::kept)
+        {
+            self.save_config(ctx);
+        }
+        if let Some(i) = gesture.clicked
+            && let Some(node) = model.nodes.get(i)
+        {
+            self.view.map_focus = if self.view.map_focus.as_deref() == Some(node.key.as_str()) {
+                None
+            } else {
+                Some(node.key.clone())
+            };
+            if let map::NodeKind::Server(id) = node.kind {
+                actions.push(Action::SelectServer(id));
+            }
+        }
+        if let Some(i) = gesture.double_clicked
+            && let Some(map::NodeKind::Server(id)) = model.nodes.get(i).map(|n| n.kind)
+        {
+            actions.push(Action::SelectServer(id));
+            self.view.tab = Tab::Tree;
+            self.view.prefix.clear();
         }
     }
 
@@ -6411,6 +6533,7 @@ mod tests {
         shown: String,
         rect: egui::Rect,
         size: f32,
+        colour: Color32,
     }
 
     /// What a frame drew of the map: its canvas, the clip of the map's layer; the nodes drawn as
@@ -6469,6 +6592,7 @@ mod tests {
                 shown,
                 rect: galley.rect.translate(pos.to_vec2()),
                 size: font.size * galley.rect.height() / (logical * rows),
+                colour: galley.job.sections[0].format.color,
             });
         }
         (canvas, nodes, drawn)
@@ -6486,40 +6610,6 @@ mod tests {
         h.frame_sized(size, Vec::new());
         let out = h.frame_sized(size, Vec::new());
         drawn_map(h, &out)
-    }
-
-    /// Eight servers and 24 peers as `eight_servers_and_24_peers`, the clients under `client`.
-    fn eight_servers_and_24_named(h: &mut Harness, client: impl Fn(usize, usize) -> String) {
-        let ids: Vec<ServerId> = (0..8)
-            .map(|i| {
-                peer_server(
-                    h,
-                    &format!("map {i}"),
-                    &format!("10.0.0.{}", i + 1),
-                    5000,
-                    true,
-                    ONE_METHOD,
-                )
-            })
-            .collect();
-        for (i, id) in ids.iter().enumerate() {
-            let clients: Vec<serde_json::Value> = (0..3)
-                .map(|c| {
-                    serde_json::json!({
-                        "IP": format!("10.1.{i}.{}", c + 1), "PORT": 40000 + c,
-                        "NAME": client(i, c), "PACKETS": 10 * c
-                    })
-                })
-                .collect();
-            h.events
-                .send(peers_read(
-                    *id,
-                    Duration::ZERO,
-                    serde_json::json!({ "CLIENTS": clients }),
-                    None,
-                ))
-                .unwrap();
-        }
     }
 
     /// The edge labels of the eight servers' map, as drawn.
@@ -6577,8 +6667,8 @@ mod tests {
 
     /// When room is short, the edge labels go first, then the clients' names, never a server's.
     /// A canvas too narrow to read the edges' labels draws none, and still every server's name;
-    /// clients' names too long to sit side by side lose some of their number, the edge labels
-    /// all of theirs, the servers none of theirs.
+    /// three clients set by hand on one spot lose some of their names, the edge labels all of
+    /// theirs, the servers none of theirs.
     #[test]
     fn edge_labels_go_first_then_client_names_never_a_server_name() {
         // Too narrow: at the least zoom, 11 point labels are not readable, 13 point names are.
@@ -6600,10 +6690,16 @@ mod tests {
                 .unwrap();
             assert!(t.size >= map::READABLE - 0.01 && canvas.contains_rect(t.rect));
         }
-        // Names too long for their room, at a scale where the edges' labels would be readable:
-        // what keeps them out is a client's name left out, nothing else.
-        let mut h = harness();
-        eight_servers_and_24_named(&mut h, |i, c| format!("a client with a long name {i}.{c}"));
+        // Names with no room, at a scale where the edges' labels would be readable: three
+        // clients set by hand on one spot, where their names can only cover each other. What
+        // keeps the labels out is a client's name left out, nothing else.
+        let mut config = Config::default();
+        for c in 0..3 {
+            let node = format!("client peer 0.{c}@10.1.0.{}", c + 1);
+            config.set_map_position(&node, egui::vec2(0.5, 0.5));
+        }
+        let mut h = harness_with(config);
+        eight_servers_and_24_peers(&mut h);
         let (canvas, _, texts) = fitted_map(&mut h, egui::vec2(1600.0, 1000.0));
         let server = texts.iter().find(|t| t.shown == "map 0").unwrap();
         assert!(
@@ -6613,7 +6709,7 @@ mod tests {
         );
         let clients = texts
             .iter()
-            .filter(|t| t.shown.starts_with("a client"))
+            .filter(|t| t.shown.starts_with("peer "))
             .count();
         assert!(clients < 24, "some clients' names left out: {clients}");
         assert!(
@@ -6635,6 +6731,455 @@ mod tests {
                 t.size
             );
         }
+    }
+
+    /// A server entered by hand at `127.0.0.1:port`, listed under that address as a manual
+    /// entry is, whose `HOST_INFO` declares `name`, or nothing, connected, with `peers` read.
+    fn declared_server(
+        h: &mut Harness,
+        port: u16,
+        name: Option<&str>,
+        peers: serde_json::Value,
+    ) -> ServerId {
+        let address = format!("127.0.0.1:{port}");
+        let s = DiscoveredServer {
+            id: ServerId::next(),
+            kind: ServiceKind::OscQuery,
+            name: address.clone(),
+            host: "127.0.0.1".into(),
+            port,
+            addresses: Vec::new(),
+            origin: Origin::Manual,
+            stale: false,
+        };
+        let id = s.id;
+        h.events.send(Event::ServerFound(s)).unwrap();
+        h.frame(Vec::new());
+        h.app.act(&h.ctx.clone(), Action::SelectServer(id));
+        let host_info = match name {
+            Some(n) => format!(r#"{{"NAME":"{n}","EXTENSIONS":{{"VALUE":true,"PEERS":true}}}}"#),
+            None => r#"{"EXTENSIONS":{"VALUE":true,"PEERS":true}}"#.to_owned(),
+        };
+        let (info, _) = oscq_core::HostInfo::parse(host_info.as_bytes()).unwrap();
+        let destination = info.osc_destination("127.0.0.1", port);
+        for event in [
+            Event::HostInfo {
+                server_id: id,
+                info,
+                destination,
+            },
+            Event::TreeLoaded {
+                server_id: id,
+                raw: Arc::from(ONE_METHOD),
+                report: parse_document(ONE_METHOD.as_bytes()).unwrap(),
+            },
+            Event::TransportState {
+                server_id: id,
+                state: oscq_core::TransportState::HttpOnly,
+            },
+            peers_read(id, Duration::ZERO, peers, None),
+        ] {
+            h.events.send(event).unwrap();
+        }
+        h.frame(Vec::new());
+        id
+    }
+
+    /// The setup of the capture of 2026-11-14: four servers entered by hand at 127.0.0.1:5801
+    /// to 5804, declaring Lumieres, Spatialisation, Plancher and Capteurs, and a fifth that
+    /// declares no name; Lumieres has Spatialisation and Plancher among its clients and a UDP
+    /// source, so that the map has a cluster and nodes outside it.
+    const DECLARED: [&str; 4] = ["Lumieres", "Spatialisation", "Plancher", "Capteurs"];
+
+    fn five_servers_and_a_udp_source(h: &mut Harness) -> Vec<ServerId> {
+        let mut ids = Vec::new();
+        for (k, name) in DECLARED.iter().enumerate() {
+            let peers = if k == 0 {
+                serde_json::json!({
+                    "CLIENTS": [
+                        {"IP": "127.0.0.1", "PORT": 40001, "NAME": "Spatialisation", "PACKETS": 3},
+                        {"IP": "127.0.0.1", "PORT": 40002, "NAME": "Plancher", "PACKETS": 5}
+                    ],
+                    "SENDERS": [{"IP": "10.0.0.77", "PORT": 9000, "PACKETS": 12}]
+                })
+            } else {
+                serde_json::json!({ "CLIENTS": [] })
+            };
+            ids.push(declared_server(h, 5801 + k as u16, Some(name), peers));
+        }
+        ids.push(declared_server(
+            h,
+            5805,
+            None,
+            serde_json::json!({ "CLIENTS": [] }),
+        ));
+        ids
+    }
+
+    /// PRD 9.10 and CLAUDE.md law 2, met on a capture of 2026-11-14: a server entered by hand is
+    /// listed under its address, and its `HOST_INFO` declares a name; the map carries the name
+    /// it declares, its address on the line below. A server that declares none keeps the name it
+    /// was entered under. Five such servers and a UDP source in a window of 1600 by 1000: drawn
+    /// in full, every line readable, and the map takes the canvas, its box at least 80 percent
+    /// of each side.
+    #[test]
+    fn five_servers_and_a_udp_source_draw_in_full_with_declared_names_over_the_canvas() {
+        let mut h = harness();
+        five_servers_and_a_udp_source(&mut h);
+        let size = egui::vec2(1600.0, 1000.0);
+        h.size = size;
+        let (canvas, nodes, texts) = fitted_map(&mut h, size);
+        let shown = |text: &str| texts.iter().filter(|t| t.shown == text).count();
+        for (k, name) in DECLARED.iter().enumerate() {
+            assert_eq!(shown(name), 1, "{name} drawn: {texts:?}");
+            assert_eq!(
+                shown(&format!("127.0.0.1:{}", 5801 + k)),
+                1,
+                "and its address"
+            );
+        }
+        assert_eq!(
+            shown("127.0.0.1:5805"),
+            2,
+            "no name declared: its address, twice"
+        );
+        assert_eq!(shown("UDP source"), 1);
+        assert_eq!(shown("connected"), 5, "in full: every server's lines");
+        for t in &texts {
+            assert!(
+                t.size >= map::READABLE - 0.01,
+                "{:?} at {:.1}",
+                t.shown,
+                t.size
+            );
+        }
+        assert_eq!(
+            nodes.len(),
+            6,
+            "five servers and the UDP source, each a box"
+        );
+        let bbox = nodes.iter().fold(egui::Rect::NOTHING, |a, r| a.union(*r));
+        let cover = bbox.size() / canvas.size();
+        assert!(
+            canvas.expand(1.0).contains_rect(bbox),
+            "the whole map in view"
+        );
+        assert!(
+            cover.x >= 0.8 && cover.y >= 0.8,
+            "the box covers {:.2} x {:.2} of the canvas",
+            cover.x,
+            cover.y
+        );
+    }
+
+    /// Where on screen the map draws `text`, once.
+    fn map_place(h: &Harness, out: &egui::FullOutput, text: &str) -> egui::Rect {
+        let (_, _, texts) = drawn_map(h, out);
+        let found: Vec<egui::Rect> = texts
+            .iter()
+            .filter(|t| t.shown == text)
+            .map(|t| t.rect)
+            .collect();
+        assert_eq!(found.len(), 1, "{text:?} drawn once on the map");
+        found[0]
+    }
+
+    /// A point of the screen in the map's own coordinates, through the part of the map in view.
+    fn in_map(h: &Harness, canvas: egui::Rect, p: egui::Pos2) -> egui::Pos2 {
+        let scene = h.app.view.map_scene.unwrap();
+        let scale = (canvas.size() / scene.size()).min_elem();
+        scene.center() + (p - canvas.center()) / scale
+    }
+
+    /// A click at `p` at time `t`, in seconds: pressed, released, the pointer then gone.
+    fn click_at(h: &mut Harness, p: egui::Pos2, t: f64) -> egui::FullOutput {
+        h.frame_at(t, vec![egui::Event::PointerMoved(p)]);
+        for (dt, pressed) in [(0.01, true), (0.02, false)] {
+            h.frame_at(
+                t + dt,
+                vec![egui::Event::PointerButton {
+                    pos: p,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Modifiers::NONE,
+                }],
+            );
+        }
+        h.frame_at(t + 0.03, Vec::new())
+    }
+
+    /// PRD 9.10 as amended on 2026-11-14: a node dragged keeps the place it was put, in the
+    /// map's coordinates, and after a relaunch, from the config written and read again, it is
+    /// at the same place. Its position is kept under the server's address. Release lets go of
+    /// it, and the config keeps none.
+    #[test]
+    fn a_node_moved_by_hand_keeps_its_place_across_a_relaunch() {
+        let size = egui::vec2(1600.0, 1000.0);
+        let mut h = harness();
+        h.size = size;
+        five_servers_and_a_udp_source(&mut h);
+        let (canvas, _, _) = fitted_map(&mut h, size);
+        let out = h.frame_at(10.0, Vec::new());
+        let start = map_place(&h, &out, "Capteurs").center();
+        let before = in_map(&h, canvas, start);
+        let drag = egui::vec2(-120.0, 90.0);
+        h.frame_at(10.1, vec![egui::Event::PointerMoved(start)]);
+        h.frame_at(
+            10.2,
+            vec![egui::Event::PointerButton {
+                pos: start,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+        for (k, t) in [(1.0, 10.3), (2.0, 10.4), (3.0, 10.5)] {
+            h.frame_at(t, vec![egui::Event::PointerMoved(start + drag * k / 3.0)]);
+        }
+        h.frame_at(
+            10.6,
+            vec![egui::Event::PointerButton {
+                pos: start + drag,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+        let out = h.frame_at(10.7, vec![egui::Event::PointerGone]);
+        let moved = in_map(&h, canvas, map_place(&h, &out, "Capteurs").center());
+        let scale = (canvas.size() / h.app.view.map_scene.unwrap().size()).min_elem();
+        assert!(
+            (moved - (before + drag / scale)).length() < 1.0,
+            "where it was put: {before:?} moved by {drag:?} is {moved:?}"
+        );
+        assert_eq!(
+            h.app
+                .config
+                .map_positions
+                .iter()
+                .map(|p| p.node.as_str())
+                .collect::<Vec<_>>(),
+            ["server 127.0.0.1:5804"]
+        );
+
+        // A relaunch: the config written, read again, the same servers.
+        let dir = std::env::temp_dir().join(format!("oscq-map-{}", std::process::id()));
+        let path = config::config_path(&dir);
+        config::write_atomic(&path, &h.app.config.to_bytes()).unwrap();
+        let (read, warning) = Config::load(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(warning, None);
+        let mut h = harness_with(read);
+        h.size = size;
+        five_servers_and_a_udp_source(&mut h);
+        let (canvas, _, _) = fitted_map(&mut h, size);
+        let out = h.frame_at(10.0, Vec::new());
+        let again = in_map(&h, canvas, map_place(&h, &out, "Capteurs").center());
+        assert!(
+            (again - moved).length() < 1.0,
+            "after a relaunch, at {again:?}, where it was put, {moved:?}"
+        );
+
+        // Release, beside Fit, lets go: the placement places it again, the config keeps nothing.
+        let button = shown_texts(&out)
+            .into_iter()
+            .find(|(t, _, _)| t == "Release")
+            .map(|(_, r, _)| r)
+            .expect("Release drawn");
+        click_at(&mut h, button.center(), 11.0);
+        assert!(
+            h.app.config.map_positions.is_empty(),
+            "the config keeps none"
+        );
+        let (canvas, _, _) = fitted_map(&mut h, size);
+        let out = h.frame_at(12.0, Vec::new());
+        let released = in_map(&h, canvas, map_place(&h, &out, "Capteurs").center());
+        assert!((released - again).length() > 1.0, "placed again, not held");
+    }
+
+    /// A manual entry removed takes its position on the map with it, as it takes its OSC port.
+    #[test]
+    fn a_removed_manual_entry_takes_its_map_position_with_it() {
+        let mut config = Config::default();
+        config.set_map_position("server 127.0.0.1:5801", egui::vec2(0.2, 0.3));
+        config.set_map_position("client Max@10.0.0.9", egui::vec2(0.4, 0.5));
+        let mut h = harness_with(config);
+        let id = declared_server(
+            &mut h,
+            5801,
+            Some("Lumieres"),
+            serde_json::json!({"CLIENTS": []}),
+        );
+        h.app.act(&h.ctx.clone(), Action::RemoveManual(id));
+        let kept: Vec<&str> = h
+            .app
+            .config
+            .map_positions
+            .iter()
+            .map(|p| p.node.as_str())
+            .collect();
+        assert_eq!(kept, ["client Max@10.0.0.9"]);
+    }
+
+    /// PRD 9.10 as amended on 2026-11-14: a click lights a node, its edges and its neighbours,
+    /// the rest dimmed, at once; a second click puts it out, and so does Escape. A click on a
+    /// node that is not a known server lights it and selects nothing.
+    #[test]
+    fn a_click_lights_a_node_its_edges_and_neighbours_and_a_second_puts_it_out() {
+        let size = egui::vec2(1600.0, 1000.0);
+        let mut h = harness();
+        h.size = size;
+        five_servers_and_a_udp_source(&mut h);
+        fitted_map(&mut h, size);
+        let full = h.ctx.global_style().visuals.strong_text_color();
+        let dim = full.gamma_multiply(map::DIMMED);
+        let colours = |h: &Harness, out: &egui::FullOutput| -> Vec<(String, Color32)> {
+            let (_, _, texts) = drawn_map(h, out);
+            DECLARED
+                .iter()
+                .chain(["UDP source", "127.0.0.1:5805"].iter())
+                .map(|n| {
+                    let t = texts.iter().find(|t| t.shown == *n).unwrap();
+                    ((*n).to_owned(), t.colour)
+                })
+                .collect()
+        };
+        let edges = |out: &egui::FullOutput| -> (usize, usize) {
+            let lit = drawn_edges(out).segments.len();
+            let mut dimmed = 0;
+            fn walk(shape: &egui::Shape, dimmed: &mut usize) {
+                match shape {
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, dimmed)),
+                    egui::Shape::LineSegment { stroke, .. }
+                        if EDGE_COLOURS
+                            .iter()
+                            .any(|c| c.gamma_multiply(map::DIMMED) == stroke.color) =>
+                    {
+                        *dimmed += 1
+                    }
+                    _ => {}
+                }
+            }
+            for c in &out.shapes {
+                walk(&c.shape, &mut dimmed);
+            }
+            (lit, dimmed)
+        };
+        let out = h.frame_at(20.0, Vec::new());
+        assert!(
+            colours(&h, &out).iter().all(|(_, c)| *c == full),
+            "nothing lit"
+        );
+        let (all_edges, none) = edges(&out);
+        assert_eq!(none, 0);
+        let selected = h.app.state.selected;
+
+        // Spatialisation: lit with Lumieres, its one neighbour, and their edge.
+        let p = map_place(&h, &out, "Spatialisation").center();
+        click_at(&mut h, p, 21.0);
+        let out = h.frame_at(21.5, Vec::new());
+        let lit: Vec<String> = colours(&h, &out)
+            .into_iter()
+            .filter(|(_, c)| *c == full)
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(lit, ["Lumieres", "Spatialisation"]);
+        assert!(
+            colours(&h, &out)
+                .iter()
+                .all(|(_, c)| *c == full || *c == dim),
+            "the rest dimmed"
+        );
+        let (on, off) = edges(&out);
+        assert!(
+            on >= 3 && off > 0 && on + off == all_edges,
+            "{on} lit, {off} dimmed"
+        );
+
+        // A second click, later than a double click: out.
+        click_at(&mut h, p, 23.0);
+        let out = h.frame_at(23.5, Vec::new());
+        assert!(colours(&h, &out).iter().all(|(_, c)| *c == full), "out");
+
+        // The UDP source: lit with Lumieres; nothing selected for it; Escape puts it out.
+        let before = h.app.state.selected;
+        let udp = map_place(&h, &out, "UDP source").center();
+        click_at(&mut h, udp, 25.0);
+        let out = h.frame_at(25.5, Vec::new());
+        let lit: Vec<String> = colours(&h, &out)
+            .into_iter()
+            .filter(|(_, c)| *c == full)
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(lit, ["Lumieres", "UDP source"]);
+        assert_eq!(h.app.state.selected, before, "a UDP source selects nothing");
+        h.frame_at(
+            26.0,
+            vec![egui::Event::Key {
+                key: Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+        let out = h.frame_at(26.5, Vec::new());
+        assert!(
+            colours(&h, &out).iter().all(|(_, c)| *c == full),
+            "Escape: out"
+        );
+        let _ = selected;
+    }
+
+    /// PRD 9.10 as amended on 2026-11-14: a click on a server's node selects that server for the
+    /// whole window, as the list does: the pinned panel shows its pinned methods. A double click
+    /// does the same and opens its tree, at its root.
+    #[test]
+    fn a_click_on_a_server_node_selects_it_and_a_double_click_opens_its_tree() {
+        let size = egui::vec2(1600.0, 1000.0);
+        let mut config = Config::default();
+        config
+            .pinned_paths
+            .insert("127.0.0.1:5801".into(), vec!["/lum".into()]);
+        config
+            .pinned_paths
+            .insert("127.0.0.1:5804".into(), vec!["/cap".into()]);
+        let mut h = harness_with(config);
+        h.size = size;
+        let ids = five_servers_and_a_udp_source(&mut h);
+        h.app.act(&h.ctx.clone(), Action::SelectServer(ids[0]));
+        h.app.view.prefix = "/somewhere".into();
+        fitted_map(&mut h, size);
+        let right = |h: &Harness, out: &egui::FullOutput| -> Vec<String> {
+            let pane = egui::PanelState::load(&h.ctx, egui::Id::new("work"))
+                .unwrap()
+                .outer_rect;
+            shown_texts(out)
+                .into_iter()
+                .filter(|(_, r, _)| pane.contains_rect(*r))
+                .map(|(t, _, _)| t)
+                .collect()
+        };
+        let out = h.frame_at(30.0, Vec::new());
+        assert!(right(&h, &out).iter().any(|t| t == "/lum"));
+
+        let capteurs = map_place(&h, &out, "Capteurs").center();
+        click_at(&mut h, capteurs, 31.0);
+        let out = h.frame_at(31.5, Vec::new());
+        assert_eq!(h.app.state.selected, Some(ids[3]), "Capteurs selected");
+        assert_eq!(h.app.view.tab, Tab::Map, "a click stays on the map");
+        let pinned = right(&h, &out);
+        assert!(pinned.iter().any(|t| t == "/cap"), "{pinned:?}");
+        assert!(!pinned.iter().any(|t| t == "/lum"), "{pinned:?}");
+
+        // A double click on Lumieres: selected, and its tree at its root.
+        let lumieres = map_place(&h, &out, "Lumieres").center();
+        click_at(&mut h, lumieres, 33.0);
+        click_at(&mut h, lumieres, 33.1);
+        h.frame_at(33.6, Vec::new());
+        assert_eq!(h.app.state.selected, Some(ids[0]));
+        assert_eq!(h.app.view.tab, Tab::Tree, "the tree opened");
+        assert_eq!(h.app.view.prefix, "", "at its root");
     }
 
     /// The maps of two and three servers of the tests above do not lose what they drew before

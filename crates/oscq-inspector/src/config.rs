@@ -1,7 +1,7 @@
 //! The single config file (PRD 9.7): window geometry, manual entries, last selected server,
 //! theme preference, pinned paths, the OSC ports the user set, the preset slots, whether the tree
-//! shows writable nodes only, whether the preset section is open, and the peers poll interval.
-//! Nothing else.
+//! shows writable nodes only, whether the preset section is open, the peers poll interval, and
+//! the positions of the map's nodes set by hand. Nothing else.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -13,6 +13,8 @@ pub const PEERS_POLL_DEFAULT_MS: u64 = 2000;
 /// interval of zero would repaint the window without rest and ask every server without pause.
 pub const PEERS_POLL_MIN_MS: u64 = 250;
 pub const PEERS_POLL_MAX_MS: u64 = 60_000;
+/// Positions of the map's nodes kept at most. Past it, the position moved least recently goes.
+pub const MAP_POSITIONS_MAX: usize = 256;
 
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +24,15 @@ pub struct WindowGeometry {
     pub y: f32,
     pub width: f32,
     pub height: f32,
+}
+
+/// A position of a node of the map set by hand (PRD 9.10): the node's identity, and its centre
+/// as a fraction of the frame of the map, so that it keeps its place whatever the canvas.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MapPosition {
+    pub node: String,
+    pub x: f32,
+    pub y: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -56,6 +67,9 @@ pub struct Config {
     /// Milliseconds between two readings of `?PEERS` while the map tab is visible (PRD 9.10).
     /// Read through [`Config::peers_poll`], which keeps it within bounds.
     pub peers_poll_ms: u64,
+    /// The positions of the map's nodes set by hand, the one moved least recently first, at most
+    /// [`MAP_POSITIONS_MAX`]. Only nodes whose identity outlives a connection (`map::Node::kept`).
+    pub map_positions: Vec<MapPosition>,
 }
 
 impl Default for Config {
@@ -71,6 +85,7 @@ impl Default for Config {
             hide_read_only: false,
             presets_open: false,
             peers_poll_ms: PEERS_POLL_DEFAULT_MS,
+            map_positions: Vec::new(),
         }
     }
 }
@@ -84,12 +99,52 @@ impl Config {
         )
     }
 
+    /// The position set by hand for the map's node `node`, as a fraction of the map's frame.
+    pub fn map_position(&self, node: &str) -> Option<egui::Vec2> {
+        self.map_positions
+            .iter()
+            .find(|p| p.node == node)
+            .map(|p| egui::Vec2::new(p.x, p.y))
+    }
+
+    /// Keeps `at` as the position of `node`, the most recent; the least recent goes past
+    /// [`MAP_POSITIONS_MAX`].
+    pub fn set_map_position(&mut self, node: &str, at: egui::Vec2) {
+        self.map_positions.retain(|p| p.node != node);
+        self.map_positions.push(MapPosition {
+            node: node.to_owned(),
+            x: at.x,
+            y: at.y,
+        });
+        self.bound_map_positions();
+    }
+
+    /// No position that is not a number, none twice, at most [`MAP_POSITIONS_MAX`], the most
+    /// recent kept. A config is edited by hand.
+    fn bound_map_positions(&mut self) {
+        self.map_positions
+            .retain(|p| p.x.is_finite() && p.y.is_finite() && !p.node.is_empty());
+        let mut seen = std::collections::HashSet::new();
+        let mut kept: Vec<MapPosition> = Vec::new();
+        for p in self.map_positions.drain(..).rev() {
+            if seen.insert(p.node.clone()) {
+                kept.push(p);
+            }
+        }
+        kept.truncate(MAP_POSITIONS_MAX);
+        kept.reverse();
+        self.map_positions = kept;
+    }
+
     /// Reads the config. A missing file gives the defaults; an unreadable or invalid file gives the
     /// defaults and the reason, so the user is told rather than silently reset.
     pub fn load(path: &Path) -> (Config, Option<String>) {
         match std::fs::read(path) {
-            Ok(bytes) => match serde_json::from_slice(&bytes) {
-                Ok(c) => (c, None),
+            Ok(bytes) => match serde_json::from_slice::<Config>(&bytes) {
+                Ok(mut c) => {
+                    c.bound_map_positions();
+                    (c, None)
+                }
                 Err(e) => (
                     Config::default(),
                     Some(format!("config {} ignored: {e}", path.display())),
@@ -151,6 +206,54 @@ pub fn config_path(dir: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The map's positions set by hand are bounded: at most `MAP_POSITIONS_MAX`, the least
+    /// recently moved going first; a node moved again becomes the most recent; a config edited
+    /// by hand loses what is not a number and what is listed twice, keeping the latest.
+    #[test]
+    fn map_positions_are_bounded_least_recent_first() {
+        let mut c = Config::default();
+        for i in 0..MAP_POSITIONS_MAX + 44 {
+            c.set_map_position(
+                &format!("server 10.0.{}.{}:5000", i / 250, i % 250),
+                egui::vec2(0.1, 0.2),
+            );
+        }
+        assert_eq!(c.map_positions.len(), MAP_POSITIONS_MAX);
+        assert_eq!(
+            c.map_positions[0].node, "server 10.0.0.44:5000",
+            "the 44 oldest gone"
+        );
+        c.set_map_position("server 10.0.0.44:5000", egui::vec2(0.9, 0.9));
+        assert_eq!(c.map_positions.len(), MAP_POSITIONS_MAX);
+        let last = c.map_positions.last().unwrap();
+        assert_eq!((last.node.as_str(), last.x), ("server 10.0.0.44:5000", 0.9));
+        assert_eq!(
+            c.map_position("server 10.0.0.44:5000"),
+            Some(egui::vec2(0.9, 0.9))
+        );
+
+        let dir = temp_dir("map-positions");
+        let path = config_path(&dir);
+        let text = r#"{"map_positions": [
+            {"node": "server a:1", "x": 0.1, "y": 0.1},
+            {"node": "server b:1", "x": 1e39, "y": 0.1},
+            {"node": "", "x": 0.1, "y": 0.1},
+            {"node": "server a:1", "x": 0.7, "y": 0.7}
+        ]}"#;
+        write_atomic(&path, text.as_bytes()).unwrap();
+        let (read, warning) = Config::load(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(warning, None);
+        assert_eq!(
+            read.map_positions,
+            [MapPosition {
+                node: "server a:1".into(),
+                x: 0.7,
+                y: 0.7
+            }]
+        );
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let d =
