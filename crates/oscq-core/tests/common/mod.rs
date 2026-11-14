@@ -240,12 +240,28 @@ impl SyntheticServer {
         Self::start_with(bind, routes, true).await
     }
 
+    /// [`SyntheticServer::start_ws`] on a socket already bound and not yet listening: the port
+    /// was held, connections to it refused, and it is never free between the two.
+    pub async fn start_ws_on(
+        socket: tokio::net::TcpSocket,
+        routes: Vec<(&str, Reply)>,
+    ) -> std::io::Result<Self> {
+        Self::serve_on(socket.listen(1024)?, routes, true)
+    }
+
     async fn start_with(
         bind: &str,
         routes: Vec<(&str, Reply)>,
         accept_ws: bool,
     ) -> std::io::Result<Self> {
-        let listener = TcpListener::bind(bind).await?;
+        Self::serve_on(TcpListener::bind(bind).await?, routes, accept_ws)
+    }
+
+    fn serve_on(
+        listener: TcpListener,
+        routes: Vec<(&str, Reply)>,
+        accept_ws: bool,
+    ) -> std::io::Result<Self> {
         let addr = listener.local_addr()?;
         let routes: Arc<HashMap<String, Reply>> =
             Arc::new(routes.into_iter().map(|(k, v)| (k.to_owned(), v)).collect());
@@ -456,6 +472,16 @@ impl OscReceiver {
             .unwrap();
         rosc::decoder::decode_udp(&buf[..n]).unwrap().1
     }
+}
+
+/// A TCP socket bound to a port of the system's choosing and not listening: the port is held,
+/// so no other process takes it, and a connection to it is refused until
+/// [`SyntheticServer::start_ws_on`] makes it listen (PITFALLS.md, a port assumed free).
+pub fn held_port() -> (tokio::net::TcpSocket, u16) {
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let port = socket.local_addr().unwrap().port();
+    (socket, port)
 }
 
 /// Attempts at finding one port number free for both protocols before giving up.

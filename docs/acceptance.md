@@ -177,6 +177,32 @@ Setup: two applications that implement the `PEERS` and `CLIENT_NAME` extension a
 
 Proves: the extension read from two real implementations, the edge between them, the badge on exactly the methods a peer listens to and its leaving, a server without the extension drawn with neither edge nor badge. Cannot prove: implementations other than the two run, and a setup larger than the one on the table.
 
+The map handled by hand, since 0.3.0. Same setup; A entered with **+ manual** by its address, `host:port`, so that it is listed under the address until its `HOST_INFO` is read.
+
+7. Select A once. Look at the server list, the status bar and the **Map** tab.
+   Expected: A called by the `NAME` its `HOST_INFO` declares in all three, not by its address. Its address on the line below its title on the map, and first on hover of its row in the list and of the status bar's server zone.
+   Proves: what the server declares wins over the name it was entered under, everywhere the window names it, on a real implementation.
+8. On **Map**, drag B's node to an empty part of the map and let go. Take the hand off the mouse for ten seconds.
+   Expected: B where it was put; the other nodes where they were; nothing moves afterwards. B is drawn once, its hover only adding what its box does not show.
+   Proves: a position set by hand wins over the placement, moves that node alone, and the map stays still at rest after a drag; no node is drawn twice with the pointer resting on it.
+9. Quit OSCQuery Inspector and open it again; open **Map**.
+   Expected: B at the place it was put.
+   Proves: the position is written to the config and read back at the next launch, on the machine.
+10. Press **Release**, beside **Fit**.
+    Expected: B placed again by the map, with the others; **Release** greyed until a node is moved again. Quit and reopen: B is not where it was put.
+    Proves: Release lets go of every position set by hand, the config's included.
+11. Click a node that has edges, A for instance.
+    Expected: A, its edges and the nodes at their other ends at full colour, everything else dimmed, at once, with no fade. Click A again: everything at full colour. Click A, then press Escape: the same.
+    Proves: lighting a node and putting it out by a second click or by Escape, with no animation.
+12. Pin one method of B from its **Tree** tab, select A in the list, open **Map**. Click B's node. Then double click A's node. Then click the node "OSCQuery Inspector".
+    Expected: after the click, B selected in the server list and in the status bar, the pinned panel on the right showing B's pinned methods with their widgets, usable from the map, which stays shown. After the double click, A selected and its **Tree** tab open at its root. After the click on "OSCQuery Inspector", the selection unchanged: it is not a server.
+    Proves: one selection for the whole window, set from the map as from the list; a click on a node that is no known server lights it and selects nothing.
+13. Drag a node, Max 9's for instance, onto the middle of the edge from A to B and let go.
+    Expected: the edge's label, its count of values, moves along its edge, or is not drawn; it never covers the box of a node or its title.
+    Proves: an edge's label never covers a node, on the machine's fonts and display.
+
+Proves, 7 to 13: the map handled by hand on the machine that gives the verdict. Cannot prove: more than the setup on the table, and a pointer other than the one used.
+
 ## 7. Publication
 
 Last, and only when every section run above gave what was expected.

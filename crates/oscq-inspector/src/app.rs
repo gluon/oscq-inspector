@@ -780,7 +780,7 @@ impl InspectorApp {
                     .get(&key)
                     .cloned()
                     .unwrap_or_default();
-                let c = presets::capture(&key, &e.server.name, t, e.value_supported(), &pinned);
+                let c = presets::capture(&key, e.declared_name(), t, e.value_supported(), &pinned);
                 let scope = if pinned.is_empty() { "" } else { " pinned" };
                 let mut note = format!(
                     "Slot {slot:02}: {} values of{scope} methods captured",
@@ -1440,7 +1440,7 @@ impl InspectorApp {
                     });
             });
             zone(ui, 40.0 * GRID * scale, &mut |ui| {
-                ui.add(egui::Label::new(RichText::new(&e.server.name).strong()).truncate())
+                ui.add(egui::Label::new(RichText::new(e.declared_name()).strong()).truncate())
                     .on_hover_ui(|ui| {
                         ui.label(server_tooltip(e));
                     });
@@ -1991,7 +1991,7 @@ fn peers_failures(state: &AppState, all: bool) -> Vec<String> {
                 .iter()
                 .filter(|e| Some(e.server.id) != selected.map(|s| s.server.id))
                 .filter_map(|e| {
-                    reason(e).map(|r| format!("peers of {} not read: {r}", e.server.name))
+                    reason(e).map(|r| format!("peers of {} not read: {r}", e.declared_name()))
                 }),
         );
     }
@@ -2166,7 +2166,8 @@ fn server_row(
         ui.set_min_height(ROW_H);
         ui.spacing_mut().item_spacing.x = GRID;
         status_dot(ui, dot_colour(e));
-        let mut text = RichText::new(&e.server.name);
+        // Its declared name, its address second, first on hover (CLAUDE.md law 2).
+        let mut text = RichText::new(e.declared_name());
         if e.server.kind == ServiceKind::OscOnly || e.server.stale {
             text = text.weak();
         }
@@ -4091,8 +4092,9 @@ mod tests {
         h.events.send(Event::ServerFound(s)).unwrap();
         h.frame(Vec::new());
         h.app.act(&h.ctx.clone(), Action::SelectServer(id));
-        let (info, _) =
-            oscq_core::HostInfo::parse(br#"{"NAME":"x","EXTENSIONS":{"VALUE":true}}"#).unwrap();
+        // It declares the name it is listed under, as a server usually does.
+        let host_info = format!(r#"{{"NAME":"{name}","EXTENSIONS":{{"VALUE":true}}}}"#);
+        let (info, _) = oscq_core::HostInfo::parse(host_info.as_bytes()).unwrap();
         let destination = info.osc_destination(host, port);
         for event in [
             Event::HostInfo {
@@ -4683,17 +4685,16 @@ mod tests {
     /// superseded failure. Real service, synthetic server started on the refused port.
     #[test]
     fn a_failed_connection_is_not_shown_once_a_new_one_succeeds() {
-        use crate::synthetic::{SyntheticServer, borrowed, large_routes};
+        use crate::synthetic::{SyntheticServer, borrowed, held_port, large_routes};
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()
             .unwrap();
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
+        // The port held from the start, bound and not listening: the launch is refused, no other
+        // process takes it meanwhile, and the server listens on that same socket later. No port
+        // is assumed free at any moment.
+        let (socket, port) = held_port();
         let key = format!("127.0.0.1:{port}");
         let (ev_tx, ev_rx) = flume::unbounded();
         let commands = oscq_core::service::spawn(rt.handle(), ev_tx, Arc::new(|| {}));
@@ -4727,7 +4728,15 @@ mod tests {
         });
         let e = h.app.state.selected_entry().unwrap();
         let text = conn_text(e);
-        assert!(text.starts_with("error: could not connect to "), "{text}");
+        // The server unreachable, as the system answers a port held and not listening: refused
+        // on Linux and Windows, no answer within the timeout on macOS (PITFALLS.md). Either is
+        // a connection that failed; an answer of the server would be neither.
+        assert!(
+            text.starts_with("error: could not connect to ")
+                || (text.starts_with("error: no answer from ")
+                    && text.ends_with("within the timeout")),
+            "{text}"
+        );
         assert_eq!(
             error_text(e),
             None,
@@ -4738,7 +4747,7 @@ mod tests {
         let routes = large_routes(10, 9);
         let _server = h
             ._rt
-            .block_on(SyntheticServer::start_ws(&key, borrowed(&routes)))
+            .block_on(SyntheticServer::start_ws_on(socket, borrowed(&routes)))
             .unwrap();
         let id = h.app.state.selected.unwrap();
         h.app.act(&h.ctx.clone(), Action::SelectServer(id));
@@ -5704,7 +5713,9 @@ mod tests {
             ("/", Reply::json(doc)),
             (
                 "/?HOST_INFO",
-                Reply::json(r#"{"NAME":"rw","OSC_PORT":9,"EXTENSIONS":{"VALUE":true}}"#),
+                Reply::json(
+                    r#"{"NAME":"Declares access","OSC_PORT":9,"EXTENSIONS":{"VALUE":true}}"#,
+                ),
             ),
         ];
         let server = rt
@@ -7135,7 +7146,15 @@ mod tests {
         );
         h.frame_at(11.5, Vec::new());
         let out = h.frame_at(12.5, Vec::new());
-        let drawn: Vec<String> = shown_texts(&out).into_iter().map(|(t, _, _)| t).collect();
+        // Outside the server list, which names it too.
+        let list = egui::PanelState::load(&h.ctx, egui::Id::new("servers"))
+            .unwrap()
+            .outer_rect;
+        let drawn: Vec<String> = shown_texts(&out)
+            .into_iter()
+            .filter(|(_, r, _)| !list.contains_rect(*r))
+            .map(|(t, _, _)| t)
+            .collect();
         let whole = format!("not read since: {reason}");
         assert!(
             drawn.contains(&whole),
@@ -7145,6 +7164,86 @@ mod tests {
             drawn.iter().filter(|t| *t == "Capteurs").count(),
             1,
             "its name not repeated on hover"
+        );
+    }
+
+    /// CLAUDE.md law 2 beyond the map: a server entered by hand, listed under its address, whose
+    /// `HOST_INFO` declares a name, is called by that name in the server list and in the status
+    /// bar, its address second, first on hover. One that declares none keeps its address.
+    #[test]
+    fn the_declared_name_is_used_in_the_list_and_the_status_bar() {
+        let mut h = harness();
+        declared_server(&mut h, 5805, None, serde_json::json!({"CLIENTS": []}));
+        let id = declared_server(
+            &mut h,
+            5803,
+            Some("Plancher"),
+            serde_json::json!({"CLIENTS": []}),
+        );
+        h.app.act(&h.ctx.clone(), Action::SelectServer(id));
+        h.frame_at(10.0, Vec::new());
+        let out = h.frame_at(10.1, Vec::new());
+        let panel = |name: &str| {
+            egui::PanelState::load(&h.ctx, egui::Id::new(name))
+                .unwrap()
+                .outer_rect
+        };
+        let (list, bar) = (panel("servers"), panel("status"));
+        let in_rect = |area: egui::Rect| -> Vec<(String, egui::Rect)> {
+            shown_texts(&out)
+                .into_iter()
+                .filter(|(_, r, _)| area.contains_rect(*r))
+                .map(|(t, r, _)| (t, r))
+                .collect()
+        };
+        let listed: Vec<String> = in_rect(list).into_iter().map(|(t, _)| t).collect();
+        assert!(
+            listed.iter().any(|t| t == "Plancher"),
+            "the list: {listed:?}"
+        );
+        assert!(
+            !listed.iter().any(|t| t == "127.0.0.1:5803"),
+            "not its address: {listed:?}"
+        );
+        assert!(
+            listed.iter().any(|t| t == "127.0.0.1:5805"),
+            "no name declared: {listed:?}"
+        );
+        let barred: Vec<String> = in_rect(bar).into_iter().map(|(t, _)| t).collect();
+        assert!(
+            barred.iter().any(|t| t == "Plancher"),
+            "the status bar: {barred:?}"
+        );
+
+        // Its address on hover of its row, first.
+        let row = in_rect(list)
+            .into_iter()
+            .find(|(t, _)| t == "Plancher")
+            .map(|(_, r)| r)
+            .unwrap();
+        h.frame_at(11.0, vec![egui::Event::PointerMoved(row.center())]);
+        h.frame_at(
+            11.1,
+            vec![egui::Event::PointerMoved(
+                row.center() + egui::vec2(1.0, 0.0),
+            )],
+        );
+        h.frame_at(12.5, Vec::new());
+        let out = h.frame_at(13.0, Vec::new());
+        // What the hover brought, wherever drawn: what is there now and was not before. The OSC
+        // destination, "127.0.0.1:5803 UDP", was there before.
+        let before: Vec<String> = in_rect(egui::Rect::EVERYTHING)
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        let tip: Vec<String> = shown_texts(&out)
+            .into_iter()
+            .map(|(t, _, _)| t)
+            .filter(|t| !before.contains(t))
+            .collect();
+        assert!(
+            tip.iter().any(|t| t.starts_with("127.0.0.1:5803")),
+            "its address on hover: {tip:?}"
         );
     }
 

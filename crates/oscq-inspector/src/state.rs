@@ -261,6 +261,17 @@ impl ServerEntry {
         host_port(&self.server)
     }
 
+    /// What the server is called wherever the window names it: the `NAME` its `HOST_INFO`
+    /// declares, however it came into the list (CLAUDE.md law 2); the name it was found or
+    /// entered under when it declares none or an empty one. Its address comes second.
+    pub fn declared_name(&self) -> &str {
+        self.host_info
+            .as_ref()
+            .and_then(|h| h.name.as_deref())
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or(&self.server.name)
+    }
+
     /// The proposal: absent `ACCESS` is readable only if `VALUE` is listed in `EXTENSIONS`.
     pub fn value_supported(&self) -> bool {
         self.host_info.as_ref().is_some_and(|h| h.supports("VALUE"))
