@@ -4728,7 +4728,15 @@ mod tests {
         });
         let e = h.app.state.selected_entry().unwrap();
         let text = conn_text(e);
-        assert!(text.starts_with("error: could not connect to "), "{text}");
+        // The server unreachable, as the system answers a port held and not listening: refused
+        // on Linux and Windows, no answer within the timeout on macOS (PITFALLS.md). Either is
+        // a connection that failed; an answer of the server would be neither.
+        assert!(
+            text.starts_with("error: could not connect to ")
+                || (text.starts_with("error: no answer from ")
+                    && text.ends_with("within the timeout")),
+            "{text}"
+        );
         assert_eq!(
             error_text(e),
             None,
