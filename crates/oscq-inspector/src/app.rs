@@ -1656,10 +1656,22 @@ impl InspectorApp {
         });
         // Until the user moves the view, it follows the map as nodes come and go.
         let outer = ui.available_size_before_wrap();
-        let rects = map::layout(&model, outer.x / outer.y);
-        let bounds = map::bounds(&rects);
-        // Fit shows the whole map, however small it must be drawn for that.
-        let zoom = egui::Rangef::new(fit_scale(bounds, outer).min(0.2), 1.0);
+        let painter = ui.painter().clone();
+        let name_w = |text: &str| {
+            painter
+                .layout_no_wrap(
+                    text.to_owned(),
+                    egui::FontId::proportional(style::BODY),
+                    Color32::WHITE,
+                )
+                .size()
+                .x
+        };
+        let places = map::places(&model, outer, &name_w);
+        let bounds = places.bounds();
+        // Never under the scale at which a name is readable (decision of 2026-11-14): Fit shows
+        // the whole map when it holds at that scale, else as much as does, the rest panned to.
+        let zoom = egui::Rangef::new(map::NAMES_READABLE, 1.0);
         let fitted = fit_scene(bounds, outer, zoom);
         if !self.view.map_moved && self.view.map_fitted != Some(bounds) {
             self.view.map_fitted = Some(bounds);
@@ -1672,7 +1684,7 @@ impl InspectorApp {
             .max_inner_size(bounds.size())
             .show(ui, scene, |ui| {
                 ui.allocate_rect(bounds, egui::Sense::hover());
-                map::draw(ui, &model, &rects, selected);
+                map::draw(ui, &model, &places, selected);
             })
             .response;
         if response.changed() {
@@ -1709,17 +1721,10 @@ impl eframe::App for InspectorApp {
     }
 }
 
-/// The scale at which all of `bounds` holds in a pane of `outer` size; not finite for a pane or
-/// a map of no size.
-fn fit_scale(bounds: egui::Rect, outer: egui::Vec2) -> f32 {
-    let scale = (outer / bounds.size()).min_elem();
-    if scale > 0.0 { scale } else { f32::NAN }
-}
-
 /// The part of the map to show so that all of `bounds` is in view, in a pane of `outer` size:
 /// the whole map, at the scale that holds it, never larger than life.
 fn fit_scene(bounds: egui::Rect, outer: egui::Vec2, zoom: egui::Rangef) -> egui::Rect {
-    let scale = fit_scale(bounds, outer);
+    let scale = map::fit_scale(bounds, outer);
     let scale = if scale.is_finite() {
         zoom.clamp(scale)
     } else {
@@ -6399,136 +6404,337 @@ mod tests {
         }
     }
 
-    /// What a frame drew of the map: its canvas, the clip of the map's layer; the nodes, the
-    /// rectangles filled with the ground of a node; and each text with its size on screen,
-    /// the size it was laid out at times the scale the nodes are drawn at.
+    /// One text the map drew: its glyphs, an ellipsis included; where on screen; its size on
+    /// screen, the size it was laid out at times the scale of its layer.
+    #[derive(Debug, Clone)]
+    struct MapText {
+        shown: String,
+        rect: egui::Rect,
+        size: f32,
+    }
+
+    /// What a frame drew of the map: its canvas, the clip of the map's layer; the nodes drawn as
+    /// boxes or chips, the rectangles filled with the ground of a node; and every text.
     fn drawn_map(
         h: &Harness,
         out: &egui::FullOutput,
-    ) -> (egui::Rect, Vec<egui::Rect>, Vec<(String, f32)>) {
+    ) -> (egui::Rect, Vec<egui::Rect>, Vec<MapText>) {
         let ground = h.ctx.global_style().visuals.extreme_bg_color;
         let pane = egui::PanelState::load(&h.ctx, egui::Id::new("work"))
             .unwrap()
             .outer_rect;
-        let mut canvas = None;
-        let mut nodes = Vec::new();
+        let mut nodes_clips = Vec::new();
         let mut texts = Vec::new();
         fn walk(
             shape: &egui::Shape,
             clip: egui::Rect,
             ground: Color32,
             nodes: &mut Vec<(egui::Rect, egui::Rect)>,
-            texts: &mut Vec<(egui::Rect, String, f32)>,
+            texts: &mut Vec<(egui::Rect, std::sync::Arc<egui::Galley>, egui::Pos2)>,
         ) {
             match shape {
                 egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, clip, ground, nodes, texts)),
                 egui::Shape::Rect(r) if r.fill == ground => nodes.push((r.rect, clip)),
-                egui::Shape::Text(t) => {
-                    let size = t
-                        .galley
-                        .job
-                        .sections
-                        .first()
-                        .map_or(0.0, |s| s.format.font_id.size);
-                    texts.push((clip, t.galley.text().to_owned(), size));
-                }
+                egui::Shape::Text(t) => texts.push((clip, t.galley.clone(), t.pos)),
                 _ => {}
             }
         }
-        let mut all_nodes = Vec::new();
-        let mut all_texts = Vec::new();
         for c in &out.shapes {
-            walk(
-                &c.shape,
-                c.clip_rect,
-                ground,
-                &mut all_nodes,
-                &mut all_texts,
-            );
+            walk(&c.shape, c.clip_rect, ground, &mut nodes_clips, &mut texts);
         }
-        // The map's layer is clipped to its canvas, left of the right pane: the node grounds
-        // drawn there, of the width of a node at one scale.
-        for (r, clip) in all_nodes {
+        // The map's layer is clipped to its canvas, left of the right pane.
+        let mut canvas = None;
+        let mut nodes = Vec::new();
+        for (r, clip) in nodes_clips {
             if clip.max.x <= pane.min.x + 1.0 && clip.min.y > ROW_H {
                 canvas = Some(clip);
                 nodes.push(r);
             }
         }
         let canvas = canvas.expect("nodes drawn on the map");
-        let scale = nodes[0].width() / map::NODE_W;
-        for (clip, text, size) in all_texts {
-            if clip == canvas {
-                texts.push((text, size * scale));
+        let mut drawn = Vec::new();
+        for (clip, galley, pos) in texts {
+            if clip != canvas {
+                continue;
             }
+            let font = galley.job.sections[0].format.font_id.clone();
+            let logical = h.ctx.fonts_mut(|f| f.row_height(&font));
+            let rows = galley.rows.len().max(1) as f32;
+            let shown: String = galley
+                .rows
+                .iter()
+                .flat_map(|r| r.glyphs.iter().map(|g| g.chr))
+                .collect();
+            drawn.push(MapText {
+                shown,
+                rect: galley.rect.translate(pos.to_vec2()),
+                size: font.size * galley.rect.height() / (logical * rows),
+            });
         }
-        (canvas, nodes, texts)
+        (canvas, nodes, drawn)
     }
 
-    /// PRD 9.10, read with eight servers and 24 peers: after Fit, the map takes the canvas, its
-    /// box at least 60 percent of each side of it, the whole map in view; and no text is drawn
-    /// under the readable size, the nodes staying.
-    #[test]
-    fn after_fit_eight_servers_and_24_peers_take_the_canvas_and_no_label_is_unreadable() {
-        for size in [
-            egui::vec2(1100.0, 700.0),
-            egui::vec2(1600.0, 1000.0),
-            egui::vec2(800.0, 900.0),
-        ] {
-            let mut h = harness();
-            eight_servers_and_24_peers(&mut h);
-            h.app.view.tab = Tab::Map;
-            h.frame_sized(size, Vec::new());
-            h.app.view.map_moved = false;
-            h.app.view.map_fitted = None;
-            h.frame_sized(size, Vec::new());
-            let out = h.frame_sized(size, Vec::new());
-            let (canvas, nodes, texts) = drawn_map(&h, &out);
-            assert_eq!(nodes.len(), 8 + 24, "{size:?}: every node drawn");
-            let bbox = nodes.iter().fold(egui::Rect::NOTHING, |a, r| a.union(*r));
-            let cover = bbox.size() / canvas.size();
-            println!(
-                "MAP {size:?}: canvas {:?}, box {:?}, cover {:.2} x {:.2}, scale {:.3}, texts {}",
-                canvas.size(),
-                bbox.size(),
-                cover.x,
-                cover.y,
-                nodes[0].width() / map::NODE_W,
-                texts.len()
-            );
-            assert!(
-                canvas.expand(1.0).contains_rect(bbox),
-                "{size:?}: the whole map in view"
-            );
-            assert!(
-                cover.x >= 0.6 && cover.y >= 0.6,
-                "{size:?}: the box covers {:.2} x {:.2} of the canvas",
-                cover.x,
-                cover.y
-            );
-            for (text, on_screen) in &texts {
-                assert!(
-                    *on_screen >= map::READABLE - 0.01,
-                    "{size:?}: {text:?} drawn at {on_screen:.1} points"
-                );
-            }
-        }
-        // A map small enough to be drawn at full size has its texts, all readable.
-        let mut h = harness();
-        let id = peer_server(&mut h, "Alone", "10.0.0.1", 5000, true, ONE_METHOD);
-        h.events
-            .send(peers_read(id, Duration::ZERO, max_listening_to_a(), None))
-            .unwrap();
+    /// A map shown in a window of `size`, after Fit: what it drew.
+    fn fitted_map(
+        h: &mut Harness,
+        size: egui::Vec2,
+    ) -> (egui::Rect, Vec<egui::Rect>, Vec<MapText>) {
         h.app.view.tab = Tab::Map;
-        let size = egui::vec2(1600.0, 1000.0);
+        h.frame_sized(size, Vec::new());
+        h.app.view.map_moved = false;
+        h.app.view.map_fitted = None;
         h.frame_sized(size, Vec::new());
         let out = h.frame_sized(size, Vec::new());
-        let (_, nodes, texts) = drawn_map(&h, &out);
-        assert_eq!(nodes[0].width(), map::NODE_W, "full size");
-        let drawn: Vec<&str> = texts.iter().map(|(t, _)| t.as_str()).collect();
-        for expected in ["Alone", "Max", "connected", "4 packets"] {
-            assert!(drawn.contains(&expected), "{expected:?} drawn: {drawn:?}");
+        drawn_map(h, &out)
+    }
+
+    /// Eight servers and 24 peers as `eight_servers_and_24_peers`, the clients under `client`.
+    fn eight_servers_and_24_named(h: &mut Harness, client: impl Fn(usize, usize) -> String) {
+        let ids: Vec<ServerId> = (0..8)
+            .map(|i| {
+                peer_server(
+                    h,
+                    &format!("map {i}"),
+                    &format!("10.0.0.{}", i + 1),
+                    5000,
+                    true,
+                    ONE_METHOD,
+                )
+            })
+            .collect();
+        for (i, id) in ids.iter().enumerate() {
+            let clients: Vec<serde_json::Value> = (0..3)
+                .map(|c| {
+                    serde_json::json!({
+                        "IP": format!("10.1.{i}.{}", c + 1), "PORT": 40000 + c,
+                        "NAME": client(i, c), "PACKETS": 10 * c
+                    })
+                })
+                .collect();
+            h.events
+                .send(peers_read(
+                    *id,
+                    Duration::ZERO,
+                    serde_json::json!({ "CLIENTS": clients }),
+                    None,
+                ))
+                .unwrap();
         }
-        assert!(texts.iter().all(|(_, s)| *s >= map::READABLE));
+    }
+
+    /// The edge labels of the eight servers' map, as drawn.
+    fn is_edge_label(t: &MapText) -> bool {
+        t.shown.ends_with("packets") || t.shown == "no packet"
+    }
+
+    /// PRD 9.10 and the decision of 2026-11-14: eight servers and 24 peers in the default window,
+    /// after Fit. Every server's name is drawn, whole, at a readable size, inside the canvas,
+    /// covered by no other text; no text is drawn under the readable size; and an edge's label
+    /// is drawn only if every client's name is.
+    #[test]
+    fn eight_servers_and_24_peers_in_the_default_window_show_every_server_name_readable() {
+        let mut h = harness();
+        eight_servers_and_24_peers(&mut h);
+        let (canvas, _, texts) = fitted_map(&mut h, egui::vec2(1100.0, 700.0));
+        for i in 0..8 {
+            let name = format!("map {i}");
+            let drawn: Vec<&MapText> = texts.iter().filter(|t| t.shown == name).collect();
+            assert_eq!(drawn.len(), 1, "{name} drawn whole, once: {texts:?}");
+            let t = drawn[0];
+            assert!(
+                t.size >= map::READABLE - 0.01,
+                "{name} at {:.1} points",
+                t.size
+            );
+            assert!(
+                canvas.contains_rect(t.rect),
+                "{name} inside the canvas: {:?}",
+                t.rect
+            );
+            let covered: Vec<&str> = texts
+                .iter()
+                .filter(|o| o.shown != name && o.rect.intersects(t.rect))
+                .map(|o| o.shown.as_str())
+                .collect();
+            assert!(covered.is_empty(), "{name} covered by {covered:?}");
+        }
+        for t in &texts {
+            assert!(
+                t.size >= map::READABLE - 0.01,
+                "{:?} at {:.1} points",
+                t.shown,
+                t.size
+            );
+        }
+        let clients = texts
+            .iter()
+            .filter(|t| t.shown.starts_with("peer "))
+            .count();
+        if texts.iter().any(is_edge_label) {
+            assert_eq!(clients, 24, "an edge label drawn, so every client's name");
+        }
+    }
+
+    /// When room is short, the edge labels go first, then the clients' names, never a server's.
+    /// A canvas too narrow to read the edges' labels draws none, and still every server's name;
+    /// clients' names too long to sit side by side lose some of their number, the edge labels
+    /// all of theirs, the servers none of theirs.
+    #[test]
+    fn edge_labels_go_first_then_client_names_never_a_server_name() {
+        // Too narrow: at the least zoom, 11 point labels are not readable, 13 point names are.
+        let mut h = harness();
+        eight_servers_and_24_peers(&mut h);
+        let (canvas, _, texts) = fitted_map(&mut h, egui::vec2(800.0, 900.0));
+        assert!(!texts.iter().any(is_edge_label), "no edge label: {texts:?}");
+        assert_eq!(
+            texts
+                .iter()
+                .filter(|t| t.shown.starts_with("peer "))
+                .count(),
+            24
+        );
+        for i in 0..8 {
+            let t = texts
+                .iter()
+                .find(|t| t.shown == format!("map {i}"))
+                .unwrap();
+            assert!(t.size >= map::READABLE - 0.01 && canvas.contains_rect(t.rect));
+        }
+        // Names too long for their room, at a scale where the edges' labels would be readable:
+        // what keeps them out is a client's name left out, nothing else.
+        let mut h = harness();
+        eight_servers_and_24_named(&mut h, |i, c| format!("a client with a long name {i}.{c}"));
+        let (canvas, _, texts) = fitted_map(&mut h, egui::vec2(1600.0, 1000.0));
+        let server = texts.iter().find(|t| t.shown == "map 0").unwrap();
+        assert!(
+            server.size * style::SMALL / style::BODY >= map::READABLE,
+            "an 11 point label would be readable here: names at {:.1} points",
+            server.size
+        );
+        let clients = texts
+            .iter()
+            .filter(|t| t.shown.starts_with("a client"))
+            .count();
+        assert!(clients < 24, "some clients' names left out: {clients}");
+        assert!(
+            !texts.iter().any(is_edge_label),
+            "no edge label once a name is left out"
+        );
+        for i in 0..8 {
+            let t = texts
+                .iter()
+                .find(|t| t.shown == format!("map {i}"))
+                .unwrap();
+            assert!(t.size >= map::READABLE - 0.01 && canvas.contains_rect(t.rect));
+        }
+        for t in &texts {
+            assert!(
+                t.size >= map::READABLE - 0.01,
+                "{:?} at {:.1} points",
+                t.shown,
+                t.size
+            );
+        }
+    }
+
+    /// The maps of two and three servers of the tests above do not lose what they drew before
+    /// the compact map: at 1600 by 1000 every text they drew on `main` at `5161db3`, measured
+    /// then, is drawn, readable. In the default window, where they drew no text at all then,
+    /// every server's name is drawn, readable, inside the canvas.
+    #[test]
+    fn two_and_three_servers_keep_what_they_drew() {
+        let two = |h: &mut Harness| {
+            let a = peer_server(h, "Declares", "10.0.0.1", 5000, true, ONE_METHOD);
+            let b = peer_server(h, "Silent", "10.0.0.2", 5000, false, ONE_METHOD);
+            for id in [a, b] {
+                h.events
+                    .send(peers_read(id, Duration::ZERO, max_listening_to_a(), None))
+                    .unwrap();
+            }
+        };
+        let three = |h: &mut Harness| {
+            let hub = peer_server(h, "Hub", "10.0.0.1", 5000, true, ONE_METHOD);
+            peer_server(h, "Twin", "10.0.0.2", 5000, true, ONE_METHOD);
+            peer_server(h, "Twin", "10.0.0.3", 5000, true, ONE_METHOD);
+            h.events
+                .send(peers_read(
+                    hub,
+                    Duration::ZERO,
+                    serde_json::json!({"CLIENTS": [{"IP": "10.0.0.2", "PORT": 40001, "NAME": "Twin"}]}),
+                    None,
+                ))
+                .unwrap();
+        };
+        type Setup<'a> = &'a dyn Fn(&mut Harness);
+        let cases: [(&str, Setup, &[&str], &[&str]); 2] = [
+            (
+                "two",
+                &two,
+                &["Declares", "Silent"],
+                &[
+                    "Declares",
+                    "10.0.0.1:5000",
+                    "connected",
+                    "1 client, no UDP source",
+                    "read 0 s ago",
+                    "Silent",
+                    "10.0.0.2:5000",
+                    "connected",
+                    "does not publish its peers",
+                    "Max",
+                    "10.0.0.9",
+                    "4 packets",
+                ],
+            ),
+            (
+                "three",
+                &three,
+                &["Hub", "Twin", "Twin"],
+                &[
+                    "Hub",
+                    "10.0.0.1:5000",
+                    "connected",
+                    "1 client, no UDP source",
+                    "read 0 s ago",
+                    "Twin",
+                    "10.0.0.2:5000",
+                    "connected",
+                    "peers not read yet",
+                    "Twin",
+                    "10.0.0.3:5000",
+                    "connected",
+                    "peers not read yet",
+                    "Twin",
+                    "10.0.0.2",
+                    "name of 2 known servers: not matched",
+                    "ambiguous: name of 2 known servers: not matched",
+                ],
+            ),
+        ];
+        for (name, setup, servers, before) in cases {
+            let mut h = harness();
+            setup(&mut h);
+            let (_, _, texts) = fitted_map(&mut h, egui::vec2(1600.0, 1000.0));
+            let mut drawn: Vec<&str> = texts.iter().map(|t| t.shown.as_str()).collect();
+            let mut expected = before.to_vec();
+            drawn.sort_unstable();
+            expected.sort_unstable();
+            assert_eq!(drawn, expected, "{name} at 1600 by 1000");
+            assert!(texts.iter().all(|t| t.size >= map::READABLE - 0.01));
+
+            let mut h = harness();
+            setup(&mut h);
+            let (canvas, _, texts) = fitted_map(&mut h, egui::vec2(1100.0, 700.0));
+            for server in servers {
+                assert!(
+                    texts.iter().any(|t| t.shown == *server
+                        && t.size >= map::READABLE - 0.01
+                        && canvas.contains_rect(t.rect)),
+                    "{name} in the default window: {server} drawn readable, {texts:?}"
+                );
+            }
+            assert!(texts.iter().all(|t| t.size >= map::READABLE - 0.01));
+        }
     }
 
     /// M7: a server connected to itself. A client under the server's own name is drawn as a

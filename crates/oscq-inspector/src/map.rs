@@ -522,6 +522,28 @@ pub fn layout(model: &Model, aspect: f32) -> Vec<Rect> {
         .map(|n| node_size(n).y)
         .fold(0.0, f32::max);
     let stretch = stretch_for(aspect, outer, Vec2::new(NODE_W, tallest));
+    let centres = ring_centres(model, inner, outer, stretch);
+    let rects: Vec<Rect> = centres
+        .iter()
+        .zip(&model.nodes)
+        .map(|(c, n)| Rect::from_center_size(c.to_pos2(), node_size(n)))
+        .collect();
+    // From the origin, a margin around: loops and labels are drawn outside the nodes.
+    let shift = to_origin(rects.iter().copied());
+    rects.into_iter().map(|r| placed(r, shift)).collect()
+}
+
+/// The centres of the nodes, around the origin: the servers on the inner ring in their order,
+/// the first on the left, then clockwise; every other node on the outer ring, towards the
+/// servers it is connected to.
+fn ring_centres(model: &Model, inner: f32, outer: f32, stretch: Vec2) -> Vec<Vec2> {
+    let tau = std::f32::consts::TAU;
+    let servers: Vec<usize> = (0..model.nodes.len())
+        .filter(|i| matches!(model.nodes[*i].kind, NodeKind::Server(_)))
+        .collect();
+    let others: Vec<usize> = (0..model.nodes.len())
+        .filter(|i| !matches!(model.nodes[*i].kind, NodeKind::Server(_)))
+        .collect();
     let on_ring = |radius: f32, angle: f32| {
         Vec2::new(
             radius * stretch.x * angle.cos(),
@@ -561,31 +583,209 @@ pub fn layout(model: &Model, aspect: f32) -> Vec<Rect> {
             centres[*i] = on_ring(outer, start + k as f32 * step);
         }
     }
-    let rects: Vec<Rect> = centres
-        .iter()
-        .zip(&model.nodes)
-        .map(|(c, n)| Rect::from_center_size(c.to_pos2(), node_size(n)))
-        .collect();
-    // From the origin, a margin around: loops and labels are drawn outside the nodes.
-    let bounds = rects
-        .iter()
-        .fold(Rect::NOTHING, |a, r| a.union(*r))
-        .expand(MARGIN);
-    let shift = if rects.is_empty() {
+    centres
+}
+
+/// The translation that brings a box, a margin around it, to the origin.
+fn to_origin(rects: impl Iterator<Item = Rect>) -> Vec2 {
+    let bounds = rects.fold(Rect::NOTHING, |a, r| a.union(r));
+    if bounds.is_negative() {
         Vec2::ZERO
     } else {
-        -bounds.min.to_vec2()
+        -bounds.expand(MARGIN).min.to_vec2()
+    }
+}
+
+/// A rectangle moved by `shift`, its corner on whole points.
+fn placed(r: Rect, shift: Vec2) -> Rect {
+    let r = r.translate(shift);
+    Rect::from_min_size(Pos2::new(r.min.x.round(), r.min.y.round()), r.size())
+}
+
+/// How much of each node the map draws (PRD 9.10, decision of 2026-11-14).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Detail {
+    /// Every node a box with its title and its lines, every edge with its label.
+    Full,
+    /// A server a chip with its name alone; a peer a dot, its name beside it when there is room.
+    /// What else they say is on hover.
+    Compact,
+}
+
+/// The scale under which an 11 point text, a node's line or an edge's label, is not readable.
+pub const LINES_READABLE: f32 = READABLE / style::SMALL;
+/// The scale under which a 13 point name is not readable: the least zoom of the map, so that
+/// no server's name is ever drawn under the readable size.
+pub const NAMES_READABLE: f32 = READABLE / style::BODY;
+
+/// Where the nodes are drawn, and how.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Places {
+    pub detail: Detail,
+    /// Each node's rectangle: its box, its chip, or its dot.
+    pub rects: Vec<Rect>,
+    /// Compact only: where each peer's name is drawn beside its dot. `None` for a server, whose
+    /// name is in its chip, and for a name left out because it would cover something drawn.
+    pub names: Vec<Option<Rect>>,
+}
+
+impl Places {
+    /// The rectangle holding every node, every name and what is drawn around them.
+    pub fn bounds(&self) -> Rect {
+        if self.rects.is_empty() {
+            return Rect::from_min_size(Pos2::ZERO, Vec2::splat(2.0 * MARGIN));
+        }
+        self.rects
+            .iter()
+            .chain(self.names.iter().flatten())
+            .fold(Rect::NOTHING, |a, r| a.union(*r))
+            .expand(MARGIN)
+    }
+}
+
+/// The scale at which all of `bounds` holds in a canvas of `canvas` size; not finite for a
+/// canvas or a map of no size.
+pub fn fit_scale(bounds: Rect, canvas: Vec2) -> f32 {
+    let scale = (canvas / bounds.size()).min_elem();
+    if scale > 0.0 { scale } else { f32::NAN }
+}
+
+/// The places of the map in a canvas of `canvas` size: every node in full when the map holds
+/// in it with its lines readable, else compact. `name_w` is the width of a name drawn at 13
+/// points. The same model, canvas and widths give the same places.
+pub fn places(model: &Model, canvas: Vec2, name_w: &dyn Fn(&str) -> f32) -> Places {
+    let aspect = canvas.x / canvas.y;
+    let full = Places {
+        detail: Detail::Full,
+        rects: layout(model, aspect),
+        names: vec![None; model.nodes.len()],
     };
-    rects
-        .into_iter()
-        .map(|r| {
-            let r = r.translate(shift);
-            Rect::from_min_size(
-                Pos2::new(r.min.x.round(), r.min.y.round()),
-                Vec2::new(r.width(), r.height()),
-            )
+    if fit_scale(full.bounds(), canvas) >= LINES_READABLE {
+        full
+    } else {
+        layout_compact(model, aspect, name_w)
+    }
+}
+
+/// The side of a peer's dot.
+const DOT: f32 = 3.0 * GRID;
+/// A chip's height: its name and its padding.
+const CHIP_H: f32 = TITLE_H + 2.0 * PAD;
+/// The least length of an edge between a chip and a dot.
+const EDGE_COMPACT: f32 = 10.0 * GRID;
+
+/// A server's chip, as wide as its name and at most as wide as a box.
+fn chip_w(name_w: f32) -> f32 {
+    (name_w + 2.0 * PAD).clamp(16.0 * GRID, NODE_W)
+}
+
+/// Where the name of a dot at `dot` goes, of `size`: beside it, away from the centre of the
+/// map at `centre`, so that it stays outside the rings.
+fn name_beside(dot: Rect, centre: Pos2, size: Vec2) -> Rect {
+    let away = (dot.center() - centre).normalized();
+    let gap = GRID;
+    let (anchor, at) = if away.x > 0.38 {
+        (
+            Align2::LEFT_CENTER,
+            dot.right_center() + Vec2::new(gap, 0.0),
+        )
+    } else if away.x < -0.38 {
+        (
+            Align2::RIGHT_CENTER,
+            dot.left_center() - Vec2::new(gap, 0.0),
+        )
+    } else if away.y > 0.0 {
+        (
+            Align2::CENTER_TOP,
+            dot.center_bottom() + Vec2::new(0.0, gap),
+        )
+    } else {
+        (
+            Align2::CENTER_BOTTOM,
+            dot.center_top() - Vec2::new(0.0, gap),
+        )
+    };
+    anchor.anchor_size(at, size)
+}
+
+/// The compact places: chips for the servers on the inner ring, dots for the peers on the
+/// outer one, each ring as small as its nodes and an edge between them allow. A peer's name
+/// is placed beside its dot, in the order of the nodes, and left out when it would cover a
+/// chip, a dot or a name already placed: when room is short a client's name goes, a server's
+/// never.
+pub fn layout_compact(model: &Model, aspect: f32, name_w: &dyn Fn(&str) -> f32) -> Places {
+    let tau = std::f32::consts::TAU;
+    let is_server = |i: usize| matches!(model.nodes[i].kind, NodeKind::Server(_));
+    let n = model.nodes.len();
+    let servers = (0..n).filter(|i| is_server(*i)).count();
+    let others = n - servers;
+    let widths: Vec<f32> = model.nodes.iter().map(|m| name_w(&m.title)).collect();
+    let widest_chip = (0..n)
+        .filter(|i| is_server(*i))
+        .map(|i| chip_w(widths[i]))
+        .fold(0.0, f32::max);
+    let widest_name = (0..n)
+        .filter(|i| !is_server(*i))
+        .map(|i| widths[i].min(NODE_W))
+        .fold(0.0, f32::max);
+    // Along the ring at the least stretch: a chip and a gap across, a chip and a gap down.
+    let inner = if servers <= 1 {
+        0.0
+    } else {
+        let across = servers as f32 * (widest_chip + 4.0 * GRID) / (tau * STRETCH_MIN.x);
+        let down = servers as f32 * (CHIP_H + 4.0 * GRID) / (tau * STRETCH_MIN.y);
+        across.max(down).max(12.0 * GRID)
+    };
+    let outer = if others == 0 {
+        inner
+    } else {
+        // An edge between a chip and a dot, across at the rings' sides, down at their top.
+        let across = ((widest_chip + DOT) / 2.0 + EDGE_COMPACT) / STRETCH_MIN.x;
+        let down = ((CHIP_H + DOT) / 2.0 + EDGE_COMPACT) / STRETCH_MIN.y;
+        let gap = across.max(down);
+        (inner + gap).max(others as f32 * 6.0 * GRID / tau)
+    };
+    // The outer extent of a peer: its dot, and its name on either side.
+    let extent = Vec2::new(
+        widest_chip.max(DOT + 2.0 * (widest_name + GRID)),
+        CHIP_H.max(DOT + 2.0 * (TITLE_H + GRID)),
+    );
+    let stretch = stretch_for(aspect, outer, extent);
+    let centres = ring_centres(model, inner, outer, stretch);
+    let rects: Vec<Rect> = (0..n)
+        .map(|i| {
+            let size = if is_server(i) {
+                Vec2::new(chip_w(widths[i]), CHIP_H)
+            } else {
+                Vec2::splat(DOT)
+            };
+            Rect::from_center_size(centres[i].to_pos2(), size)
         })
-        .collect()
+        .collect();
+    let mut names: Vec<Option<Rect>> = vec![None; n];
+    let mut taken: Vec<Rect> = rects.iter().map(|r| r.expand(GRID)).collect();
+    for i in (0..n).filter(|i| !is_server(*i)) {
+        let size = Vec2::new(widths[i].min(NODE_W), TITLE_H);
+        let at = name_beside(rects[i], Pos2::ZERO, size);
+        // Its own dot is beside it, not under it.
+        let covers = taken
+            .iter()
+            .enumerate()
+            .any(|(k, t)| k != i && t.intersects(at));
+        if !covers {
+            names[i] = Some(at);
+            taken.push(at.expand(GRID));
+        }
+    }
+    let shift = to_origin(rects.iter().chain(names.iter().flatten()).copied());
+    Places {
+        detail: Detail::Compact,
+        rects: rects.into_iter().map(|r| placed(r, shift)).collect(),
+        names: names
+            .into_iter()
+            .map(|r| r.map(|r| placed(r, shift)))
+            .collect(),
+    }
 }
 
 /// The stretch of the rings, across and down, for a canvas of `aspect`: one at its least, the
@@ -604,17 +804,6 @@ fn stretch_for(aspect: f32, radius: f32, node: Vec2) -> Vec2 {
     // A canvas too narrow for that: the least across, and down what the aspect asks.
     let down = ((2.0 * radius * STRETCH_MIN.x + extra.x) / aspect - extra.y) / (2.0 * radius);
     Vec2::new(STRETCH_MIN.x, down.max(STRETCH_MIN.y))
-}
-
-/// The rectangle holding every node and what is drawn around them.
-pub fn bounds(rects: &[Rect]) -> Rect {
-    if rects.is_empty() {
-        return Rect::from_min_size(Pos2::ZERO, Vec2::splat(2.0 * MARGIN));
-    }
-    rects
-        .iter()
-        .fold(Rect::NOTHING, |a, r| a.union(*r))
-        .expand(MARGIN)
 }
 
 /// Where the ray from `origin`, inside `rect`, towards `dir` leaves the rectangle.
@@ -701,9 +890,14 @@ fn single_line(
     ui.painter().layout_job(job)
 }
 
-/// Draws the map in `ui`, whose coordinates are those of `rects`. Edges under the nodes, their
-/// labels over everything. What a node or a label cuts short is whole on hover.
-pub fn draw(ui: &mut egui::Ui, model: &Model, rects: &[Rect], selected: Option<ServerId>) {
+/// Draws the map in `ui`, whose coordinates are those of `places`. Edges under the nodes, their
+/// labels over everything. No text is drawn under the readable size, and what is drawn in
+/// compact follows an order: a server's name always, a client's name when it has its room, an
+/// edge's label only when every client's name is drawn and the label covers nothing. What a
+/// node or a label leaves out or cuts short is whole on hover.
+pub fn draw(ui: &mut egui::Ui, model: &Model, places: &Places, selected: Option<ServerId>) {
+    let rects = &places.rects;
+    let compact = places.detail == Detail::Compact;
     let visuals = ui.visuals().clone();
     let small = FontId::proportional(style::SMALL);
     let body = FontId::proportional(style::BODY);
@@ -713,7 +907,13 @@ pub fn draw(ui: &mut egui::Ui, model: &Model, rects: &[Rect], selected: Option<S
         .layer_transform_to_global(ui.layer_id())
         .map_or(1.0, |t| t.scaling);
     let readable = |font: &FontId| font.size * scale >= READABLE;
-    let (titles, lines, labels_shown) = (readable(&body), readable(&small), readable(&small));
+    let (titles, lines) = (readable(&body), readable(&small));
+    let every_name = model
+        .nodes
+        .iter()
+        .zip(&places.names)
+        .all(|(n, name)| matches!(n.kind, NodeKind::Server(_)) || name.is_some());
+    let labels_shown = lines && (!compact || (titles && every_name));
     let painter = ui.painter().clone();
     // The labels, drawn last: where, what, and the edge they belong to.
     let mut labels: Vec<(Pos2, usize)> = Vec::new();
@@ -732,7 +932,11 @@ pub fn draw(ui: &mut egui::Ui, model: &Model, rects: &[Rect], selected: Option<S
             labels.push((centre - Vec2::new(0.0, radius + 2.0 * GRID), i));
             continue;
         }
-        let aside = 1.5 * GRID + nth as f32 * 3.0 * GRID;
+        let aside = if compact {
+            nth as f32 * 3.0 * GRID
+        } else {
+            1.5 * GRID + nth as f32 * 3.0 * GRID
+        };
         let Some((a, b)) = segment(*from, *to, aside) else {
             continue;
         };
@@ -748,7 +952,17 @@ pub fn draw(ui: &mut egui::Ui, model: &Model, rects: &[Rect], selected: Option<S
         let left = Vec2::new(dir.y, -dir.x);
         labels.push((a + (b - a) * 0.5 + left * 2.5 * GRID, i));
     }
+    let hover = |ui: &mut egui::Ui, node: &Node| {
+        ui.label(egui::RichText::new(&node.title).strong());
+        for (text, _) in &node.lines {
+            ui.label(text);
+        }
+        for text in &node.detail {
+            ui.label(text);
+        }
+    };
     for (i, (node, rect)) in model.nodes.iter().zip(rects).enumerate() {
+        let warns = node.lines.iter().any(|(_, t)| *t == Tone::Warn);
         let (fill, mut edge) = (
             visuals.extreme_bg_color,
             visuals.widgets.noninteractive.bg_stroke,
@@ -758,7 +972,55 @@ pub fn draw(ui: &mut egui::Ui, model: &Model, rects: &[Rect], selected: Option<S
             NodeKind::Server(id) if selected == Some(id) => {
                 edge = Stroke::new(1.5, visuals.widgets.inactive.fg_stroke.color)
             }
+            // A chip says no line: that one of them is a warning shows on its border.
+            NodeKind::Server(_) if compact && warns => {
+                edge = Stroke::new(1.5, visuals.warn_fg_color)
+            }
             _ => {}
+        }
+        if compact {
+            let mut zone = *rect;
+            if matches!(node.kind, NodeKind::Server(_)) {
+                painter.rect(*rect, 1.5 * GRID, fill, edge, egui::StrokeKind::Inside);
+                // Always: the least zoom keeps a name readable.
+                let title = single_line(
+                    ui,
+                    &node.title,
+                    body.clone(),
+                    visuals.strong_text_color(),
+                    rect.width() - 2.0 * PAD,
+                );
+                painter.galley(
+                    rect.center() - title.size() / 2.0,
+                    title,
+                    visuals.strong_text_color(),
+                );
+            } else {
+                let colour = match node.kind {
+                    NodeKind::ThisApp => visuals.selection.bg_fill,
+                    NodeKind::Sender => EDGE_SENDER,
+                    _ => visuals.strong_text_color(),
+                };
+                painter.circle_filled(rect.center(), DOT / 2.0 - 1.0, colour);
+                if let (true, Some(at)) = (titles, places.names[i]) {
+                    let name = single_line(
+                        ui,
+                        &node.title,
+                        body.clone(),
+                        visuals.text_color(),
+                        at.width(),
+                    );
+                    painter.galley(at.min, name, visuals.text_color());
+                    zone = zone.union(at);
+                }
+            }
+            ui.interact(
+                zone.expand(GRID),
+                ui.id().with(("map node", i)),
+                Sense::hover(),
+            )
+            .on_hover_ui(|ui| hover(ui, node));
+            continue;
         }
         painter.rect(*rect, 1.5 * GRID, fill, edge, egui::StrokeKind::Inside);
         let width = rect.width() - 2.0 * PAD;
@@ -792,16 +1054,18 @@ pub fn draw(ui: &mut egui::Ui, model: &Model, rects: &[Rect], selected: Option<S
             at.y += LINE_H;
         }
         ui.interact(*rect, ui.id().with(("map node", i)), Sense::hover())
-            .on_hover_ui(|ui| {
-                ui.label(egui::RichText::new(&node.title).strong());
-                for (text, _) in &node.lines {
-                    ui.label(text);
-                }
-                for text in &node.detail {
-                    ui.label(text);
-                }
-            });
+            .on_hover_ui(|ui| hover(ui, node));
     }
+    // In compact, a label covers nothing drawn: not a chip, a dot, a name or another label.
+    let mut taken: Vec<Rect> = if compact {
+        rects
+            .iter()
+            .chain(places.names.iter().flatten())
+            .copied()
+            .collect()
+    } else {
+        Vec::new()
+    };
     for (pos, i) in labels.into_iter().filter(|_| labels_shown) {
         let edge = &model.edges[i];
         if edge.label.is_empty() && edge.detail.is_empty() {
@@ -822,6 +1086,12 @@ pub fn draw(ui: &mut egui::Ui, model: &Model, rects: &[Rect], selected: Option<S
         let rect = Align2::CENTER_CENTER
             .anchor_size(pos, galley.size())
             .expand2(Vec2::new(GRID, 0.5 * GRID));
+        if compact {
+            if taken.iter().any(|t| t.intersects(rect)) {
+                continue;
+            }
+            taken.push(rect);
+        }
         painter.rect_filled(rect, GRID, visuals.panel_fill);
         painter.galley(rect.min + Vec2::new(GRID, 0.5 * GRID), galley, colour);
         ui.interact(rect, ui.id().with(("map edge", i)), Sense::hover())
@@ -1131,6 +1401,65 @@ mod tests {
 
     /// The places are computed from the model alone: the same model, the same places, no node
     /// on another, whatever the number of nodes the budget names.
+    /// The compact places: the same model, aspect and widths give the same places; no chip, dot
+    /// or placed name covers another; a name left out is a client's, a server having none to
+    /// lose; and with names too long for their room, some are left out rather than drawn over.
+    #[test]
+    fn compact_places_cover_nothing_and_leave_out_only_clients_names() {
+        let now = Instant::now();
+        for (servers, peers, width) in [(2, 1, 7.0), (3, 6, 7.0), (8, 24, 7.0), (8, 24, 24.0)] {
+            let mut state = AppState::default();
+            let ids: Vec<ServerId> = (0..servers)
+                .map(|i| {
+                    add(
+                        &mut state,
+                        &format!("S{i}"),
+                        &format!("10.0.0.{}", i + 1),
+                        5000,
+                        true,
+                    )
+                })
+                .collect();
+            for (s, id) in ids.iter().enumerate() {
+                let clients: Vec<Value> = (0..peers)
+                    .filter(|q| q % servers == s)
+                    .map(|q| json!({"IP": "10.0.1.1", "PORT": 40000 + q, "NAME": format!("client {q}")}))
+                    .collect();
+                read(&mut state, *id, now, json!({ "CLIENTS": clients }), None);
+            }
+            let m = build(&state, now, POLL, "Inspector");
+            let name_w = |t: &str| t.chars().count() as f32 * width;
+            for aspect in [0.5, 1.0, 1.6, 4.0] {
+                let p = layout_compact(&m, aspect, &name_w);
+                assert_eq!(p, layout_compact(&m, aspect, &name_w), "the same places");
+                assert_eq!(p.detail, Detail::Compact);
+                let mut drawn: Vec<Rect> = p.rects.clone();
+                drawn.extend(p.names.iter().flatten());
+                for (i, a) in drawn.iter().enumerate() {
+                    assert!(a.min.x >= 0.0 && a.min.y >= 0.0, "{a:?}");
+                    for b in &drawn[i + 1..] {
+                        assert!(
+                            !a.intersects(*b),
+                            "{servers}+{peers}, width {width}, aspect {aspect}: {a:?} covers {b:?}"
+                        );
+                    }
+                }
+                for (node, name) in m.nodes.iter().zip(&p.names) {
+                    if matches!(node.kind, NodeKind::Server(_)) {
+                        assert_eq!(*name, None, "a server's name is in its chip");
+                    }
+                }
+                let placed = p.names.iter().flatten().count();
+                if width > 20.0 && servers == 8 {
+                    assert!(
+                        placed < peers,
+                        "aspect {aspect}: names too long, some left out"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn the_places_are_computed_and_no_node_covers_another() {
         for (servers, peers) in [(1, 0), (1, 1), (2, 1), (2, 3), (5, 6), (8, 24)] {

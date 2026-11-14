@@ -124,6 +124,9 @@ Case: `real_binary_map_visible_repaints_once_per_poll_interval`, gaps 1.988, 1.9
 The macOS CI machine is sometimes slow as a whole, not on one path: every budget of a run slows together. A gate on the budget with the least margin falls on such a run, and passes when the same commit is run again. Read the other budgets of the same run before reading a regression into the one that fell.
 Case: `budget_slider_to_udp_packet`, run 43461452493 on `main`, `e73104e`, 2026-11-13. First attempt, job 132009140477: median 0.762 ms, p95 2.119 ms, max 24.559 ms against 2 ms, failed; in the same run parse and model median 18.841 ms, scrolling p95 2.226 ms, map frame p95 1.283 ms, the budgets step 6 min 55 s. Second attempt, no code changed, job 132078840708: slider median 0.315 ms, p95 0.389 ms, max 0.553 ms; parse median 7.359 ms, scrolling p95 0.497 ms, map p95 0.377 ms, the step 2 min 6 s. The October reference on that machine was a p95 of 1.535 ms (docs/decisions.md, M6), 23 percent under the budget, the least margin of any budget there.
 
+A port the system gave in one protocol is not free in the other. A test bound its HTTP server on port 0, then its UDP receiver on the number TCP got, as if it were free in UDP too. Windows reserves port ranges per protocol, and draws them again at each boot (`netsh interface ipv4 show excludedportrange protocol=udp`): the number can be forbidden in UDP, and the bind fails with `WSAEACCES`, 10013, not with "address in use". Bind each protocol, never assume one from the other: the UDP receiver on port 0 first, then TCP on its number, another number if TCP refuses (`server_and_receiver_on_one_port`, `tests/common/mod.rs`). On Linux the same mistake fails as `AddrInUse` when the number is held in UDP.
+Case: `osc_port_absent_sends_to_http_port`, `http.rs:94`, Windows CI, run 43606863201 attempt 1, job 132483268518, on `void/map-honesty`, 2026-11-14; green on the rerun with no change.
+
 `cargo test -- --skip NAME` skips every test whose name contains `NAME`. `--skip ipv6_only` also skipped `ipv6_only_advertisement`. Use `--exact` or run the skipped one explicitly.
 
 The test filter is a substring too. A real binary test named `budget_cold_start...` was picked up by the in process `budget_` filter and failed in CI for want of a display. Real binary tests are named `real_binary_...`.
@@ -131,6 +134,9 @@ Case: CI run 38208380933, 2026-10-12.
 
 A test that reads a text of the map reads it whatever size it was drawn at. Four tests read node titles and edge labels the default window drew under 9 points, and passed: the text was in the shapes, nobody could read it on the screen. A text has a size on screen, the size it was laid out at times the scale of its layer; read that too.
 Case: four map tests failed once the map stopped drawing text under 9 points, 2026-11-14.
+
+A test that every drawn text is readable passes when nothing is drawn. The rule "no text under 9 points" and its test held for the map of eight servers and 24 peers while it drew no text at all, and so did the maps of two and three servers in the default window. A rule of what may not be drawn needs beside it what must be: here, every server's name.
+Case: `after_fit_eight_servers_and_24_peers_take_the_canvas_and_no_label_is_unreadable` green with "texts 0" in its own output, on `main` at `5161db3`; the human saw only boxes, 2026-11-14.
 
 A test that names a tree row by the leftmost text at its height takes a container's expander, `-` or `+`, for its name.
 Case: `drawn_badges` reported the badge of `/foo` on a row named `-`, 2026-11-13.

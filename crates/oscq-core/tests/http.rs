@@ -6,7 +6,10 @@ mod common;
 
 use std::time::Duration;
 
-use common::{OscReceiver, Reply, SyntheticServer, large_document, read_fixture};
+use common::{
+    OscReceiver, Reply, SyntheticServer, large_document, read_fixture,
+    server_and_receiver_on_one_port, server_and_receiver_on_one_port_with,
+};
 use oscq_core::{
     AttributeReply, ClientConfig, ClientError, DocumentError, OscError, OscPath, OscQueryClient,
     OscUdpSender, PortSource, SendBlocked,
@@ -79,19 +82,16 @@ async fn osc_port_differs_from_http_port() {
     );
 }
 
-/// `OSC_PORT` absent: the HTTP port is used, and the packet really arrives there over UDP.
+/// `OSC_PORT` absent: the HTTP port is used, and the packet really arrives there over UDP. The
+/// receiver and the server are each bound on that number, neither assumed free.
 #[tokio::test]
 async fn osc_port_absent_sends_to_http_port() {
-    let server = SyntheticServer::start(
-        "127.0.0.1:0",
-        vec![(
-            "/?HOST_INFO",
-            Reply::json(read_fixture("host_info/no_osc_port.json")),
-        )],
-    )
-    .await
-    .unwrap();
-    let target = OscReceiver::bind(&server.addr.to_string()).await.unwrap();
+    let (server, target) = server_and_receiver_on_one_port(vec![(
+        "/?HOST_INFO",
+        Reply::json(read_fixture("host_info/no_osc_port.json")),
+    )])
+    .await;
+    assert_eq!(server.addr.port(), target.port());
     let c = client(&server);
     let (info, _) = c.fetch_host_info().await.unwrap();
     let dest = info.osc_destination(c.http_host(), c.http_port()).unwrap();
@@ -113,6 +113,28 @@ async fn osc_port_absent_sends_to_http_port() {
             args: vec![OscType::Float(1.0)]
         })
     );
+}
+
+/// A number the receiver could bind in UDP and the server cannot bind in TCP is left for
+/// another: here the first number is taken in TCP, as Windows may reserve it, and the second
+/// attempt holds.
+#[tokio::test]
+async fn a_port_refused_in_tcp_is_left_for_another() {
+    let mut held = Vec::new();
+    let mut first = None;
+    let ((server, receiver), attempts) = server_and_receiver_on_one_port_with(
+        vec![("/?HOST_INFO", Reply::json(r#"{"NAME":"x"}"#))],
+        |port| {
+            if first.is_none() {
+                first = Some(port);
+                held.push(std::net::TcpListener::bind(("127.0.0.1", port)).unwrap());
+            }
+        },
+    )
+    .await;
+    assert_eq!(attempts, 2, "the refused number left, the next one bound");
+    assert_ne!(Some(server.addr.port()), first);
+    assert_eq!(server.addr.port(), receiver.port());
 }
 
 #[tokio::test]
