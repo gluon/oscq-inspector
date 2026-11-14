@@ -81,6 +81,9 @@ Case: the "Writable only" control, under Xvfb, 2026-10-13.
 
 ## Status display
 
+An `egui::Label` with `truncate()` shows its whole text in a tooltip of its own when it is cut, `show_tooltip_when_elided` being true by default. A cut label given `on_hover_text` as well shows two tooltips, one over the other. Turn one off.
+Case: the status bar's message, the reason of a failed `?PEERS` drawn twice on hover, found by `the_whole_reason_of_a_failed_peers_reading_reaches_the_status_line`, 2026-11-14. The other zones of the status bar cut their labels and add a hover of their own; not checked.
+
 An error kept until another error replaces it outlives what it described. The status bar showed a failed connection under the tree the next connection had loaded. Clear an error when the operation it comes from succeeds, and drop the errors of an attempt that a newer one replaced.
 Case: "could not connect to http://localhost:30339/" next to 35 nodes and an open WebSocket, Max 9 on the human's Mac, 2026-10-12.
 

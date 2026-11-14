@@ -14,6 +14,7 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 ### Fixed
 
 - **Failures in the log**: every failure the window shows is also written to the log, whole, naming its server, and a plain launch without `RUST_LOG` now logs at `warn`; before, it logged errors only, and a failed reading of a server's peers was logged nowhere.
+- **Failures of the map in the status bar**: a server whose peers cannot be read says so in the status bar, the selected server's on every tab and every other server's on the map, the reason whole on hover. Its hover no longer shows the message twice.
 
 ### Changed
 

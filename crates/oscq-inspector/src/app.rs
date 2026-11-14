@@ -1355,12 +1355,22 @@ impl InspectorApp {
                 }
                 return;
             };
-            // The message: the last error, or why nothing can be sent, or a note.
+            // The message: the last error, or a failed reading of peers, or why nothing can be
+            // sent, or a note. What it cuts short is whole on hover.
+            let peers = peers_failures(&self.state, self.view.tab == Tab::Map);
             let message = error_text(e)
                 .map(|t| (t, ui.visuals().error_fg_color))
                 .or_else(|| match &e.conn {
                     ConnState::Failed(r) => Some((r.clone(), ui.visuals().error_fg_color)),
                     _ => None,
+                })
+                .or_else(|| {
+                    let first = peers.first()?;
+                    let text = match peers.len() {
+                        1 => first.clone(),
+                        n => format!("{first} (and {} more)", n - 1),
+                    };
+                    Some((text, ui.visuals().error_fg_color))
                 })
                 .or_else(|| {
                     e.send_blocked()
@@ -1461,8 +1471,22 @@ impl InspectorApp {
                 }
             });
             if let Some((text, colour)) = message {
-                ui.add(egui::Label::new(RichText::new(&text).color(colour)).truncate())
-                    .on_hover_text(text);
+                // The whole is given on hover below: egui's own tooltip of a cut label would
+                // show it a second time.
+                let label = ui.add(
+                    egui::Label::new(RichText::new(&text).color(colour))
+                        .truncate()
+                        .show_tooltip_when_elided(false),
+                );
+                if peers.len() > 1 && text.starts_with(&peers[0]) {
+                    label.on_hover_ui(|ui| {
+                        for line in &peers {
+                            ui.label(line);
+                        }
+                    });
+                } else {
+                    label.on_hover_text(text);
+                }
             }
         });
     }
@@ -1809,6 +1833,36 @@ const CANNOT_SEND: &str = "cannot send";
 
 /// The error the status bar shows for a server, with the path it concerns. A failed connection
 /// is already told by the connection state, and is not said twice.
+/// The failed readings of peers, each whole, as the status line gives them (PRD 9.6): the
+/// selected server's first, then, on the map, which shows them all, every other server's, in
+/// the order of the list, each named.
+fn peers_failures(state: &AppState, all: bool) -> Vec<String> {
+    let reason = |e: &ServerEntry| match e.peers_view() {
+        PeersView::Failed(r) => Some(r.to_owned()),
+        PeersView::Read {
+            failure: Some(r), ..
+        } => Some(r.to_owned()),
+        _ => None,
+    };
+    let selected = state.selected_entry();
+    let mut out: Vec<String> = selected
+        .and_then(|e| reason(e).map(|r| format!("peers not read: {r}")))
+        .into_iter()
+        .collect();
+    if all {
+        out.extend(
+            state
+                .servers
+                .iter()
+                .filter(|e| Some(e.server.id) != selected.map(|s| s.server.id))
+                .filter_map(|e| {
+                    reason(e).map(|r| format!("peers of {} not read: {r}", e.server.name))
+                }),
+        );
+    }
+    out
+}
+
 fn error_text(e: &ServerEntry) -> Option<String> {
     let err = e.last_error.as_ref()?;
     if err.operation == oscq_core::Operation::Connect && matches!(e.conn, ConnState::Failed(_)) {
@@ -6634,6 +6688,143 @@ mod tests {
     }
 
     /// The window on the real network service, which names itself as the application does.
+    /// The status bar's message as the frame shows it: its glyphs, an ellipsis included, and
+    /// where.
+    fn status_message(h: &Harness, out: &egui::FullOutput, starts: &str) -> (String, egui::Rect) {
+        let bar = egui::PanelState::load(&h.ctx, egui::Id::new("status"))
+            .unwrap()
+            .outer_rect;
+        let found: Vec<(String, egui::Rect)> = shown_texts(out)
+            .into_iter()
+            .filter(|(t, r, _)| bar.contains_rect(*r) && t.starts_with(starts))
+            .map(|(t, r, _)| (t, r))
+            .collect();
+        assert_eq!(
+            found.len(),
+            1,
+            "one status message starting {starts:?}: {found:?}"
+        );
+        found[0].clone()
+    }
+
+    /// What the frame shows outside the status bar, each text's glyphs without their spaces:
+    /// a tooltip wraps its text where it has room, and a space at a break is not drawn.
+    fn shown_outside_status(h: &Harness, out: &egui::FullOutput) -> Vec<(String, egui::Rect)> {
+        let bar = egui::PanelState::load(&h.ctx, egui::Id::new("status"))
+            .unwrap()
+            .outer_rect;
+        shown_texts(out)
+            .into_iter()
+            .filter(|(_, r, _)| !bar.contains_rect(*r))
+            .map(|(t, r, _)| (t.chars().filter(|c| !c.is_whitespace()).collect(), r))
+            .collect()
+    }
+
+    /// The pointer left still on `rect` until its tooltip is shown: the frame that shows it.
+    fn hover_still(h: &mut Harness, rect: egui::Rect) -> egui::FullOutput {
+        let p = rect.center();
+        h.frame_at(100.0, vec![egui::Event::PointerMoved(p)]);
+        h.frame_at(100.1, Vec::new());
+        h.frame_at(102.0, Vec::new());
+        h.frame_at(102.1, Vec::new())
+    }
+
+    /// PRD 9.6: a failed reading of peers is in the status line with its reason, which the map
+    /// cuts to the width of a node. The line cuts it too, and its whole is on hover, drawn in
+    /// the window. The selected server's on every tab; on the map, which shows every server,
+    /// another server's too, named.
+    #[test]
+    fn the_whole_reason_of_a_failed_peers_reading_reaches_the_status_line() {
+        let mut h = harness();
+        let other = peer_server(&mut h, "Other", "10.0.0.2", 5000, true, ONE_METHOD);
+        let selected = peer_server(&mut h, "Selected", "10.0.0.1", 5000, true, ONE_METHOD);
+        let reason = format!(
+            "invalid PEERS reply from http://10.0.0.1:5000/?PEERS: LISTEN holds {} entries, \
+             more than the {} this client reads",
+            oscq_core::peers::MAX_LISTEN + 1,
+            oscq_core::peers::MAX_LISTEN
+        );
+        let refused = |id, reason: &str| Event::Peers {
+            server_id: id,
+            at: Instant::now(),
+            result: Err(reason.to_owned()),
+        };
+        h.events.send(refused(selected, &reason)).unwrap();
+        h.app.view.tab = Tab::Map;
+        h.frame_at(99.0, Vec::new());
+        let out = h.frame_at(99.1, Vec::new());
+        let whole = format!("peers not read: {reason}");
+        let (shown, rect) = status_message(&h, &out, "peers not read: ");
+        assert!(
+            shown.ends_with('\u{2026}') && shown.len() < whole.len(),
+            "the line cuts it: {shown:?}"
+        );
+        let squeezed = |t: &str| -> String { t.chars().filter(|c| !c.is_whitespace()).collect() };
+        let out = hover_still(&mut h, rect);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1100.0, 700.0));
+        let tips: Vec<(String, egui::Rect)> = shown_outside_status(&h, &out)
+            .into_iter()
+            .filter(|(t, _)| *t == squeezed(&whole))
+            .collect();
+        assert_eq!(tips.len(), 1, "the whole reason drawn on hover, once");
+        assert!(
+            screen.contains_rect(tips[0].1),
+            "inside the window: {:?}",
+            tips[0].1
+        );
+
+        // Another server's, on the map: named, after the selected one's, both whole on hover.
+        let short = "http://10.0.0.2:5000/?PEERS answered HTTP 500";
+        h.events.send(refused(other, short)).unwrap();
+        h.frame_at(103.0, vec![egui::Event::PointerGone]);
+        let out = h.frame_at(103.1, Vec::new());
+        let (shown, rect) = status_message(&h, &out, "peers not read: ");
+        assert!(shown.ends_with('\u{2026}'), "{shown:?}");
+        let out = hover_still(&mut h, rect);
+        let drawn: Vec<String> = shown_outside_status(&h, &out)
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        for line in [whole.clone(), format!("peers of Other not read: {short}")] {
+            assert!(
+                drawn.contains(&squeezed(&line)),
+                "{line:?} on hover: {drawn:?}"
+            );
+        }
+        // Without a failure of its own, the selected server's line names the other one.
+        h.events
+            .send(peers_read(
+                selected,
+                Duration::ZERO,
+                max_listening_to_a(),
+                None,
+            ))
+            .unwrap();
+        h.frame_at(104.0, vec![egui::Event::PointerGone]);
+        let out = h.frame_at(104.1, Vec::new());
+        let (_, rect) = status_message(&h, &out, "peers of Other");
+        let out = hover_still(&mut h, rect);
+        let line = squeezed(&format!("peers of Other not read: {short}"));
+        assert_eq!(
+            shown_outside_status(&h, &out)
+                .iter()
+                .filter(|(t, _)| *t == line)
+                .count(),
+            1,
+            "whole on hover, once"
+        );
+        // On the tree, the map's other servers are not this server's business.
+        h.app.view.tab = Tab::Tree;
+        h.frame_at(105.0, vec![egui::Event::PointerGone]);
+        let out = h.frame_at(105.1, Vec::new());
+        assert!(
+            !shown_texts(&out)
+                .iter()
+                .any(|(t, _, _)| t.contains("not read")),
+            "nothing of Other on the tree"
+        );
+    }
+
     fn named_service_harness(config: Config) -> Harness {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
