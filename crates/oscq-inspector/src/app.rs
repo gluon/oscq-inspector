@@ -4685,17 +4685,16 @@ mod tests {
     /// superseded failure. Real service, synthetic server started on the refused port.
     #[test]
     fn a_failed_connection_is_not_shown_once_a_new_one_succeeds() {
-        use crate::synthetic::{SyntheticServer, borrowed, large_routes};
+        use crate::synthetic::{SyntheticServer, borrowed, held_port, large_routes};
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()
             .unwrap();
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
+        // The port held from the start, bound and not listening: the launch is refused, no other
+        // process takes it meanwhile, and the server listens on that same socket later. No port
+        // is assumed free at any moment.
+        let (socket, port) = held_port();
         let key = format!("127.0.0.1:{port}");
         let (ev_tx, ev_rx) = flume::unbounded();
         let commands = oscq_core::service::spawn(rt.handle(), ev_tx, Arc::new(|| {}));
@@ -4740,7 +4739,7 @@ mod tests {
         let routes = large_routes(10, 9);
         let _server = h
             ._rt
-            .block_on(SyntheticServer::start_ws(&key, borrowed(&routes)))
+            .block_on(SyntheticServer::start_ws_on(socket, borrowed(&routes)))
             .unwrap();
         let id = h.app.state.selected.unwrap();
         h.app.act(&h.ctx.clone(), Action::SelectServer(id));
