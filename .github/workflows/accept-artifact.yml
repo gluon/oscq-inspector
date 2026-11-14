@@ -147,6 +147,65 @@ jobs:
           rm -rf "$COPY" && ditto bundle "$COPY"
           ACCEPT_ARTIFACT_BEFORE_QUIT="kill -KILL" ./ci/expect-refusal.sh "it quit with status 137, not 0" ./ci/accept-artifact.sh --dir "$COPY" "${{ steps.tag.outputs.tag }}"
 
+      - name: Refused, a tag that does not name a version
+        shell: bash
+        run: ./ci/expect-refusal.sh "is not v followed by a version" ./ci/accept-artifact.sh 0.3.0
+
+      # v0.2.2 is a tag of this repository with no Release.
+      - name: Refused, a tag with no Release
+        shell: bash
+        run: ./ci/expect-refusal.sh "no release or draft of v0.2.2" ./ci/accept-artifact.sh v0.2.2
+
+      - name: Refused, a version key absent
+        shell: bash
+        run: |
+          rm -rf "$COPY" && ditto bundle "$COPY"
+          plutil -remove CFBundleShortVersionString "$APP/Contents/Info.plist"
+          ./ci/expect-refusal.sh "no CFBundleShortVersionString in Info.plist" ./ci/accept-artifact.sh --dir "$COPY" "${{ steps.tag.outputs.tag }}"
+
+      - name: Refused, no CFBundleExecutable
+        shell: bash
+        run: |
+          rm -rf "$COPY" && ditto bundle "$COPY"
+          plutil -remove CFBundleExecutable "$APP/Contents/Info.plist"
+          ./ci/expect-refusal.sh "no CFBundleExecutable in Info.plist" ./ci/accept-artifact.sh --dir "$COPY" "${{ steps.tag.outputs.tag }}"
+
+      - name: Refused, no CFBundleIdentifier
+        shell: bash
+        run: |
+          rm -rf "$COPY" && ditto bundle "$COPY"
+          plutil -remove CFBundleIdentifier "$APP/Contents/Info.plist"
+          ./ci/expect-refusal.sh "no CFBundleIdentifier in Info.plist" ./ci/accept-artifact.sh --dir "$COPY" "${{ steps.tag.outputs.tag }}"
+
+      # The real application, stopped as soon as started: it draws nothing, as one that hangs at
+      # its start.
+      - name: Refused, an application that never draws its first frame
+        shell: bash
+        run: |
+          rm -rf "$COPY" && ditto bundle "$COPY"
+          ACCEPT_ARTIFACT_AFTER_START="kill -STOP" ./ci/expect-refusal.sh "no first frame within 30 s" ./ci/accept-artifact.sh --dir "$COPY" "${{ steps.tag.outputs.tag }}"
+          if pgrep -f "$COPY/OSCQuery Inspector.app/Contents/MacOS/oscq-inspector"; then echo "FAIL: left running"; exit 1; fi
+
+      # The real application, killed as soon as started: gone before its first frame.
+      - name: Refused, an application that ends before its first frame
+        shell: bash
+        run: |
+          rm -rf "$COPY" && ditto bundle "$COPY"
+          ACCEPT_ARTIFACT_AFTER_START="kill -KILL" ./ci/expect-refusal.sh "it exited before its first frame" ./ci/accept-artifact.sh --dir "$COPY" "${{ steps.tag.outputs.tag }}"
+
+      # Simulated: an osascript that fails, first on the PATH, as one the system refused to run;
+      # the application, never told to quit, is ended by the script's cleanup.
+      - name: Refused, a quit event that cannot be sent (simulated)
+        shell: bash
+        run: |
+          rm -rf "$COPY" && ditto bundle "$COPY"
+          mkdir -p fakebin
+          printf '#!/bin/sh\necho "osascript: simulated refusal" >&2\nexit 1\n' > fakebin/osascript
+          chmod +x fakebin/osascript
+          PATH="$PWD/fakebin:$PATH" ./ci/expect-refusal.sh "the quit event could not be sent" ./ci/accept-artifact.sh --dir "$COPY" "${{ steps.tag.outputs.tag }}"
+          sleep 1
+          if pgrep -f "$COPY/OSCQuery Inspector.app/Contents/MacOS/oscq-inspector"; then echo "FAIL: left running"; exit 1; fi
+
       # The one bundle the refusals were made from passes, in the directory mode they used.
       - name: Accepted, the unmaltreated bundle in directory mode
         shell: bash

@@ -9,8 +9,9 @@
 #                                           against the version and the license texts of TAG
 # The two modes check a bundle with the same code. Each check prints what it proves and its
 # result; the script exits at the first failure.
-# ACCEPT_ARTIFACT_BEFORE_QUIT, for the workflow's refusals only: a command run with the
-# application's pid just before the quit event is sent.
+# For the workflow's refusals only, each a command run with the application's pid:
+# ACCEPT_ARTIFACT_AFTER_START just after it is started, ACCEPT_ARTIFACT_BEFORE_QUIT just before
+# the quit event is sent.
 set -euo pipefail
 dir=""
 if [ "${1:-}" = "--dir" ]; then
@@ -109,7 +110,8 @@ bundle() {
 
     proves "The binary is universal: it runs natively on Apple Silicon and on Intel"
     local exe_name exe archs
-    exe_name=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$plist")
+    exe_name=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$plist" 2>/dev/null) ||
+        fail "no CFBundleExecutable in Info.plist"
     exe="$app/Contents/MacOS/$exe_name"
     [ -x "$exe" ] || fail "the executable $exe_name is missing or not executable"
     archs=$(lipo -archs "$exe")
@@ -133,12 +135,17 @@ bundle() {
 
     proves "The application starts, draws its first frame, and quits cleanly when asked to"
     local bundle_id home log started status
-    bundle_id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$plist")
+    bundle_id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$plist" 2>/dev/null) ||
+        fail "no CFBundleIdentifier in Info.plist"
     home="$work/home"
     mkdir -p "$home"
     log="$work/start.log"
     HOME="$home" NO_COLOR=1 RUST_LOG=oscq_inspector::startup=info "$exe" >"$log" 2>&1 &
     pid=$!
+    if [ -n "${ACCEPT_ARTIFACT_AFTER_START:-}" ]; then
+        echo "  after the start: $ACCEPT_ARTIFACT_AFTER_START $pid"
+        $ACCEPT_ARTIFACT_AFTER_START "$pid"
+    fi
     started=""
     for _ in $(seq 1 300); do
         if grep -q "first frame" "$log"; then
