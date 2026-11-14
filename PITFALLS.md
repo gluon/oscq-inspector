@@ -145,6 +145,9 @@ Case: `ws::tests::hostile_nesting_is_refused_without_recursion`, run on a 256 Ki
 
 ## OSCQuery servers
 
+Not reproduced. Against a real server among the eight of the human's setup, which one was not recorded, the map showed `peers not read: invalid PEERS reply: L...`, cut to the width of its node, and the log at `RUST_LOG=info` held nothing, since no line was written (fixed, see Logging). What is proved, and only that: the map drops the address of the request, so what followed `invalid PEERS reply: ` was the text of the refusal, and of every refusal the parser can build exactly one starts with `L`: one client's `LISTEN` holding more than 8192 addresses (`the_prefix_seen_on_2026_11_13_names_one_variant`). Suspected, not reproduced: that server listed a client listening to more than 8192 addresses, or listed one address several times, the bound being checked on the list as received, before the window removes repeats (`Peers::parse`, then `AppState::apply` on `Event::Peers`). What would settle it: the line the log now writes for that server, `peers not read: ...` with its `server=`, or the reply of `/?PEERS` saved when it happens. Every refusal a conforming server can cause, `CLIENTS`, `SENDERS` or `LISTEN` over their bounds, a `NAME` or a listened address over its length, the reply over its size, is now drawn whole on hover of the status bar and logged whole (`every_refusal_a_conforming_server_can_cause_is_shown_and_logged_whole`).
+Case: the human's Mac, eight servers and their peers on the map, 2026-11-13; reported 2026-11-14.
+
 The `PEERS` extension lists this application among each server's clients, under the name it sent. Another client may send the same name. Telling it from this application by name drew two clients as one; by the local address of its own socket, address and port both, it is found for certain, and only it.
 Case: `this_application_is_one_node_told_from_a_namesake`, 2026-11-13.
 

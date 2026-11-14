@@ -6688,6 +6688,157 @@ mod tests {
     }
 
     /// The window on the real network service, which names itself as the application does.
+    /// Every refusal a conforming server can cause, through the real service: its reason is
+    /// the one the client gives, whole; the status bar's hover draws it whole, once; the log
+    /// holds it whole, once, though it was refused twice. The defect of 2026-11-13 is not
+    /// reproduced by this: see PITFALLS.md.
+    #[test]
+    fn every_refusal_a_conforming_server_can_cause_is_shown_and_logged_whole() {
+        use oscq_core::peers::{MAX_CLIENTS, MAX_LISTEN, MAX_PEERS_BODY, MAX_SENDERS, MAX_TEXT};
+        let cases = logged_peers_failures();
+        let names: Vec<&str> = cases.iter().map(|c| c.0.as_str()).collect();
+        assert_eq!(
+            names,
+            peers_failure_cases()
+                .iter()
+                .map(|c| c.0)
+                .collect::<Vec<_>>()
+        );
+        for (case, server, asked, reason, lines, shown) in cases {
+            let invalid = |what: String| format!("invalid PEERS reply from {server}?PEERS: {what}");
+            let expected = match case.as_str() {
+                "CLIENTS over its bound" => invalid(format!(
+                    "CLIENTS holds {} entries, more than the {MAX_CLIENTS} this client reads",
+                    MAX_CLIENTS + 1
+                )),
+                "SENDERS over its bound" => invalid(format!(
+                    "SENDERS holds {} entries, more than the {MAX_SENDERS} this client reads",
+                    MAX_SENDERS + 1
+                )),
+                "LISTEN over its bound" => invalid(format!(
+                    "LISTEN holds {} entries, more than the {MAX_LISTEN} this client reads",
+                    MAX_LISTEN + 1
+                )),
+                "NAME over its length" => invalid(format!(
+                    "CLIENTS entry 0: NAME is longer than {MAX_TEXT} bytes"
+                )),
+                "a listened address over its length" => invalid(format!(
+                    "CLIENTS entry 0: LISTEN is longer than {MAX_TEXT} bytes"
+                )),
+                "the reply over its size" => {
+                    format!("response from {server}?PEERS is larger than {MAX_PEERS_BODY} bytes")
+                }
+                other => panic!("no expected reason for {other}"),
+            };
+            assert_eq!(reason, expected, "{case}: the client's reason");
+            assert!(asked >= 2, "{case}: refused twice, asked {asked}");
+            assert_eq!(shown, 1, "{case}: drawn whole on hover of the status bar");
+            assert_eq!(lines, 1, "{case}: logged whole, once");
+        }
+    }
+
+    /// Which `PeersError` a server that follows the extension can cause. The match has no
+    /// wildcard: a new variant does not compile until it is placed here, and given a case in
+    /// [`peers_failure_cases`] if a conforming server can cause it.
+    fn conforming_can_cause(e: &oscq_core::PeersError) -> bool {
+        use oscq_core::PeersError as E;
+        match e {
+            // A conforming reply is a JSON object, its depth four: not JSON, too deep, not an
+            // object, not a node are of another document.
+            E::Document(_) => false,
+            // A conforming reply holds the two lists, as lists.
+            E::NotPeers | E::NotAList(_) => false,
+            // Every entry has an IP and a PORT (PRD 7.6).
+            E::InvalidEntry { .. } => false,
+            // The extension bounds neither list nor any client's LISTEN.
+            E::TooMany { .. } => true,
+            // A name and an OSC address have no bound; an address of 1025 bytes is no address.
+            E::TooLong { field, .. } => *field != "IP",
+        }
+    }
+
+    /// One `PeersError` of each shape the parser builds, every list it names included.
+    fn every_peers_error() -> Vec<oscq_core::PeersError> {
+        use oscq_core::PeersError as E;
+        use oscq_core::document::DocumentError as D;
+        let not_json = serde_json::from_str::<serde_json::Value>("x").unwrap_err();
+        let mut all = vec![
+            E::Document(D::NotJson(not_json)),
+            E::Document(D::TooDeep),
+            E::Document(D::NotAnObject),
+            E::Document(D::NotAnAddressSpace),
+            E::NotPeers,
+        ];
+        // A `SENDERS` entry is read for its IP only of the bounded texts (`peers.rs`).
+        for (list, fields) in [
+            ("CLIENTS", &["IP", "NAME", "LISTEN"][..]),
+            ("SENDERS", &["IP"][..]),
+        ] {
+            all.push(E::NotAList(list));
+            all.push(E::InvalidEntry { list, index: 0 });
+            for field in fields {
+                all.push(E::TooLong {
+                    list,
+                    index: 0,
+                    field,
+                });
+            }
+        }
+        for list in ["CLIENTS", "SENDERS", "LISTEN"] {
+            all.push(E::TooMany {
+                list,
+                limit: 1,
+                received: 2,
+            });
+        }
+        all
+    }
+
+    /// The variants a conforming server can cause are exactly those of the cases read through
+    /// the service: CLIENTS, SENDERS and LISTEN over their bounds, a NAME and a listened
+    /// address over their length. The body over its size is a client error, not a
+    /// `PeersError`, and has its case too.
+    #[test]
+    fn a_conforming_server_can_produce_these_variants_and_no_other() {
+        let can: Vec<String> = every_peers_error()
+            .iter()
+            .filter(|e| conforming_can_cause(e))
+            .map(|e| format!("{e:?}"))
+            .collect();
+        assert_eq!(
+            can,
+            [
+                r#"TooLong { list: "CLIENTS", index: 0, field: "NAME" }"#,
+                r#"TooLong { list: "CLIENTS", index: 0, field: "LISTEN" }"#,
+                r#"TooMany { list: "CLIENTS", limit: 1, received: 2 }"#,
+                r#"TooMany { list: "SENDERS", limit: 1, received: 2 }"#,
+                r#"TooMany { list: "LISTEN", limit: 1, received: 2 }"#,
+            ]
+        );
+    }
+
+    /// 2026-11-13, the map showed `peers not read: invalid PEERS reply: L...`. The client writes
+    /// `invalid PEERS reply from <address>: <the variant>`, and the map drops the address: what
+    /// followed was a variant whose text starts with `L`. Of every variant, one does: `LISTEN`
+    /// over its bound. A deduction from the text shown, not a reproduction.
+    #[test]
+    fn the_prefix_seen_on_2026_11_13_names_one_variant() {
+        let reply = |e: &oscq_core::PeersError| {
+            crate::state::short_reason(&format!(
+                "invalid PEERS reply from http://10.0.0.2:5000/?PEERS: {e}"
+            ))
+        };
+        let starting_l: Vec<String> = every_peers_error()
+            .iter()
+            .filter(|e| reply(e).starts_with("invalid PEERS reply: L"))
+            .map(|e| format!("{e:?}"))
+            .collect();
+        assert_eq!(
+            starting_l,
+            [r#"TooMany { list: "LISTEN", limit: 1, received: 2 }"#]
+        );
+    }
+
     /// The status bar's message as the frame shows it: its glyphs, an ellipsis included, and
     /// where.
     fn status_message(h: &Harness, out: &egui::FullOutput, starts: &str) -> (String, egui::Rect) {
@@ -6861,25 +7012,65 @@ mod tests {
     /// Between the fields of a line the child reports.
     const SEP: char = '\u{1f}';
 
-    /// The `?PEERS` replies whose failure the log must hold whole, by name.
+    /// Every way a server that follows the extension (PRD 7.6) can make this client refuse its
+    /// `?PEERS` reply, by name: the bounds are this client's (decision of 2026-11-13), the
+    /// extension sets none, so a conforming server can pass each. See
+    /// [`a_conforming_server_can_produce_these_variants_and_no_other`] for the variants it
+    /// cannot produce.
     fn peers_failure_cases() -> Vec<(&'static str, crate::synthetic::Reply)> {
         use crate::synthetic::Reply;
+        use oscq_core::peers::{MAX_CLIENTS, MAX_LISTEN, MAX_PEERS_BODY, MAX_SENDERS, MAX_TEXT};
         let json = |v: serde_json::Value| Reply::json(v.to_string());
-        let listen: Vec<String> = (0..=oscq_core::peers::MAX_LISTEN)
-            .map(|i| format!("/p{i}"))
-            .collect();
-        vec![(
-            "LISTEN over its bound",
+        let paths = |n: usize| -> Vec<String> { (0..n).map(|i| format!("/p{i}")).collect() };
+        let entry = |i: usize| serde_json::json!({"IP": "10.0.0.9", "PORT": 1 + i % 60000});
+        let long_path = format!("/{}", "a".repeat(MAX_TEXT));
+        // Valid JSON, valid entries, more bytes than the client reads.
+        let over_body = {
+            let n = MAX_PEERS_BODY / 8 + 1;
             json(serde_json::json!({"CLIENTS": [
-                {"IP": "10.0.0.9", "PORT": 40001, "NAME": "Max", "LISTEN": listen}
-            ]})),
-        )]
+                {"IP": "10.0.0.9", "PORT": 1, "LISTEN": paths(n)}
+            ]}))
+        };
+        vec![
+            (
+                "CLIENTS over its bound",
+                json(
+                    serde_json::json!({ "CLIENTS": (0..=MAX_CLIENTS).map(entry).collect::<Vec<_>>() }),
+                ),
+            ),
+            (
+                "SENDERS over its bound",
+                json(
+                    serde_json::json!({ "SENDERS": (0..=MAX_SENDERS).map(entry).collect::<Vec<_>>() }),
+                ),
+            ),
+            (
+                "LISTEN over its bound",
+                json(serde_json::json!({"CLIENTS": [
+                    {"IP": "10.0.0.9", "PORT": 40001, "NAME": "Max", "LISTEN": paths(MAX_LISTEN + 1)}
+                ]})),
+            ),
+            (
+                "NAME over its length",
+                json(serde_json::json!({"CLIENTS": [
+                    {"IP": "10.0.0.9", "PORT": 40001, "NAME": "n".repeat(MAX_TEXT + 1)}
+                ]})),
+            ),
+            (
+                "a listened address over its length",
+                json(serde_json::json!({"CLIENTS": [
+                    {"IP": "10.0.0.9", "PORT": 40001, "LISTEN": [long_path]}
+                ]})),
+            ),
+            ("the reply over its size", over_body),
+        ]
     }
 
     /// One server that declares `PEERS` and answers `/?PEERS` with `reply`, read twice through
     /// the real service with the map shown: the reason the window holds, the server's address
-    /// as the log names it, and how many times `?PEERS` was asked.
-    fn read_failing_peers(reply: crate::synthetic::Reply) -> (String, String, usize) {
+    /// as the log names it, how many times `?PEERS` was asked, and how many times the reason
+    /// is drawn whole on hover of the status bar's message.
+    fn read_failing_peers(reply: crate::synthetic::Reply) -> (String, String, usize, usize) {
         use crate::synthetic::{Reply, SyntheticServer, borrowed, host_info_json, large_routes};
         let srv = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
@@ -6928,7 +7119,19 @@ mod tests {
             .entry(id)
             .and_then(|e| e.peers.failure.clone())
             .unwrap();
-        (reason, format!("http://{key}/"), asked())
+        h.frame_at(99.0, Vec::new());
+        let out = h.frame_at(99.1, Vec::new());
+        let (_, rect) = status_message(&h, &out, "peers not read");
+        let out = hover_still(&mut h, rect);
+        let whole: String = format!("peers not read: {reason}")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let shown = shown_outside_status(&h, &out)
+            .iter()
+            .filter(|(t, _)| *t == whole)
+            .count();
+        (reason, format!("http://{key}/"), asked(), shown)
     }
 
     /// The process the test of the log starts: logging as the application does, it reads each
@@ -6941,9 +7144,9 @@ mod tests {
         }
         crate::init_logging();
         for (case, reply) in peers_failure_cases() {
-            let (reason, server, asked) = read_failing_peers(reply);
+            let (reason, server, asked, shown) = read_failing_peers(reply);
             // On a line of its own: the test harness writes the test's name before it.
-            println!("\nCASE{SEP}{case}{SEP}{server}{SEP}{asked}{SEP}{reason}");
+            println!("\nCASE{SEP}{case}{SEP}{server}{SEP}{asked}{SEP}{shown}{SEP}{reason}");
         }
     }
 
@@ -6967,8 +7170,9 @@ mod tests {
 
     /// Each case of [`peers_failure_cases`] read in a process of its own, started as the
     /// application is with no `RUST_LOG` in its environment: (case, server, times asked, reason
-    /// held by the window, the lines of the log that name the server and give the reason whole).
-    fn logged_peers_failures() -> Vec<(String, String, usize, String, usize)> {
+    /// held by the window, the lines of the log that name the server and give the reason whole,
+    /// the times the status bar's hover draws it whole).
+    fn logged_peers_failures() -> Vec<(String, String, usize, String, usize, usize)> {
         let out = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -6987,12 +7191,12 @@ mod tests {
             String::from_utf8_lossy(&out.stderr)
         ));
         assert!(out.status.success(), "the child failed: {text}");
-        let cases: Vec<(String, String, usize, String, usize)> = text
+        let cases: Vec<(String, String, usize, String, usize, usize)> = text
             .lines()
             .filter_map(|l| l.split_once(&format!("CASE{SEP}")).map(|(_, r)| r))
             .map(|l| {
-                let f: Vec<&str> = l.splitn(4, SEP).collect();
-                let (server, reason) = (f[1], f[3]);
+                let f: Vec<&str> = l.splitn(5, SEP).collect();
+                let (server, reason) = (f[1], f[4]);
                 let lines = text
                     .lines()
                     .filter(|l| {
@@ -7007,6 +7211,7 @@ mod tests {
                     f[2].parse().unwrap(),
                     reason.to_owned(),
                     lines,
+                    f[3].parse().unwrap(),
                 )
             })
             .collect();
@@ -7025,7 +7230,7 @@ mod tests {
     /// In a process of its own: a log is a process's, and a test beside others shares it.
     #[test]
     fn a_failed_peers_reading_is_logged_whole_without_rust_log() {
-        for (case, server, asked, reason, lines) in logged_peers_failures() {
+        for (case, server, asked, reason, lines, _) in logged_peers_failures() {
             assert!(asked >= 2, "{case}: asked twice, {asked}");
             assert_eq!(
                 lines, 1,
