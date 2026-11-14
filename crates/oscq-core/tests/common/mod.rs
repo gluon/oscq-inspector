@@ -458,6 +458,39 @@ impl OscReceiver {
     }
 }
 
+/// Attempts at finding one port number free for both protocols before giving up.
+const ONE_PORT_ATTEMPTS: usize = 32;
+
+/// A synthetic server and an OSC receiver on one port number, as a server that leaves its OSC
+/// port to be inferred from its HTTP port has them. Each bind is made, never assumed: the
+/// receiver first, on a port the system chose and so could bind, then the server on that
+/// number, and another number if TCP refuses this one. A number free in TCP may be refused in
+/// UDP, and the reverse: Windows reserves ranges per protocol, anew at each boot (PITFALLS.md).
+pub async fn server_and_receiver_on_one_port(
+    routes: Vec<(&str, Reply)>,
+) -> (SyntheticServer, OscReceiver) {
+    server_and_receiver_on_one_port_with(routes, |_| {}).await.0
+}
+
+/// [`server_and_receiver_on_one_port`], `before_tcp` called with each number before the server
+/// is bound on it, and the number of attempts it took.
+pub async fn server_and_receiver_on_one_port_with(
+    routes: Vec<(&str, Reply)>,
+    mut before_tcp: impl FnMut(u16),
+) -> ((SyntheticServer, OscReceiver), usize) {
+    let mut refused = Vec::new();
+    for attempt in 1..=ONE_PORT_ATTEMPTS {
+        let receiver = OscReceiver::bind("127.0.0.1:0").await.unwrap();
+        let port = receiver.port();
+        before_tcp(port);
+        match SyntheticServer::start(&format!("127.0.0.1:{port}"), routes.clone()).await {
+            Ok(server) => return ((server, receiver), attempt),
+            Err(e) => refused.push(format!("{port}: {e}")),
+        }
+    }
+    panic!("no port free in both UDP and TCP in {ONE_PORT_ATTEMPTS} attempts: {refused:?}")
+}
+
 /// A document of `n` methods spread over containers of 100 children, as a JSON string.
 pub fn large_document(n: usize) -> String {
     let groups: Vec<String> = (0..n.div_ceil(100))
