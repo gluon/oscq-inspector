@@ -44,3 +44,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: ./ci/accept-artifact.sh "${{ steps.tag.outputs.tag }}"
+
+      # A check that has never failed proves nothing (CLAUDE.md law 12): against the files of
+      # another version, the published v0.2.3 named void-oscq-..., the script must stop, and at the
+      # check of the three files.
+      - name: The script refuses the files of another version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ./ci/accept-artifact.sh v0.2.3 > refused.log 2>&1; then
+            cat refused.log
+            echo "FAIL: the files of v0.2.3 passed as those of v0.2.3 named oscq-inspector"
+            exit 1
+          fi
+          cat refused.log
+          grep -q "FAIL: the release holds" refused.log
+          echo "ok: refused at the check of the three files"

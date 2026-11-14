@@ -54,6 +54,15 @@ for f in "$mac" "$win" "$linux"; do
 done
 ok "three files, named with $version"
 
+proves "The Release's notes are the version's section of CHANGELOG.md at $tag"
+body=$(gh release view "$tag" --repo "$repo" --json body --jq .body) || fail "the notes of $tag cannot be read"
+git show "$tag:CHANGELOG.md" >"$work/CHANGELOG.md"
+section=$(./ci/changelog-section.sh "$version" "$work/CHANGELOG.md") || fail "no section for $version in CHANGELOG.md at $tag"
+# The notes as the release workflow wrote them, trailing blank lines aside.
+[ "$(printf '%s' "$body" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}')" = "$section" ] ||
+    fail "the notes of $tag are not the section of $version in CHANGELOG.md at $tag"
+ok "$(printf '%s\n' "$section" | wc -l | tr -d ' ') lines, the section of $version"
+
 proves "The macOS zip holds one application bundle"
 ditto -x -k "$work/download/$mac" "$work/unzipped" || fail "$mac does not unzip"
 app="$work/unzipped/OSCQuery Inspector.app"
