@@ -4,6 +4,24 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-17
+
+### Changed
+
+- **A new look, applied everywhere.** Both themes are now the application's own, built from one palette of the Structure Void design system rather than from the toolkit's defaults: a black ground in the dark theme, white in the light one, square corners, no shadows, borders of one hairline. The light theme is not the dark one subtracted from white: each of its greys is chosen so that every control and every text stands out from its ground at least as strongly as in the dark theme.
+- **One colour, and it means something.** `#FF7A1A` is the only colour either theme uses, and it is kept for what is live or wants attention: a connection pushing values, a value that arrived, the count of other clients listening to a method, a failure, which also says in words what it is. Everything the window has merely observed is grey. The map's edges and the JSON tab lost their colours to this rule.
+- **Typefaces of its own.** Space Grotesk for the interface and Space Mono for paths, values, flags, traffic and JSON, both under the SIL Open Font License and compiled into the binary, so a window looks the same on the three systems. Their license texts travel with every download.
+- **Icons instead of letters.** Refresh, copy, save, unpin, remove a manual entry and the tree's expanders are thin drawn marks rather than text, and no icon font or icon library was added to do it.
+- **Controls that read as a set.** The four tabs and the traffic log's direction filter are each one segmented bar with the chosen cell inverted; the status bar's zones are parted by thin rules; sliders are a 2 px track with a 2 px upright thumb; toggles are square; pinned nodes are parted by hairlines; the map draws its servers as square boxes whose border says the state.
+- **The preset slots.** Sixteen squares, four to a row, each carrying its number. A slot holding values is bordered, the one last recalled is inverted, an empty one is dim and shows a capture mark under the pointer. A left click recalls a slot that holds values and captures into one that is empty, a shift click captures into any slot, and the right click menu names **Recall** and **Capture** in words: neither action needs the right click.
+- **The repository's address.** The about box and the download links now point at `github.com/gluon/oscq-inspector`, the repository's name since it was renamed. The settings folder and the macOS bundle identifier deliberately keep the old name, so an installed copy stays the same application to the system and finds its settings again.
+- **The README.** The map at the top is the application as it looks now, the servers it has really been tried with are listed with what each one does, and every view is shown before and after in `docs/images/screenshots`.
+
+### Fixed
+
+- **The toolbars of the JSON and Traffic tabs at a narrow window.** At the smallest window the Traffic tab's row of controls ran past the edge: the direction filter was cut in the middle of a word and Pause, Clear and Export were off screen with no way to reach them. Both rows now wrap onto further lines, as the row of tabs above them already did, and every control stays on screen at any width down to the 640 px minimum.
+- **A line of the traffic log is one line.** A record was cut at the edge of the pane with no way to see the rest of it. Each record is now drawn whole on one line, and the log's own sideways scrolling reaches the type tags and the arguments.
+
 ## [0.3.0] - 2026-11-14
 
 ### Added
@@ -104,7 +122,8 @@ The first version whose files are on the Releases page.
 
 - First release: discovery over Bonjour and manual entries, the address space as a tree, values read and sent with widgets fitting their types, values live over the WebSocket where the server pushes them, the JSON and Traffic tabs. Unsigned artifacts for macOS (universal), Windows and Linux.
 
-[Unreleased]: https://github.com/gluon/oscq-inspector/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/gluon/oscq-inspector/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/gluon/oscq-inspector/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/gluon/oscq-inspector/compare/v0.2.3...v0.3.0
 [0.2.3]: https://github.com/gluon/oscq-inspector/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/gluon/oscq-inspector/compare/v0.2.1...v0.2.2

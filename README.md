@@ -118,7 +118,9 @@ Copyright (C) 2026 Julien Bayle, Structure Void. OSCQuery Inspector is free soft
 
 ## Status
 
-Version 0.3.0 is prepared: the map and its listener badges, the map handled by hand, declared names everywhere. It is tagged once merged, and its draft Release is published when [docs/acceptance.md](docs/acceptance.md) has passed, its section 6 included; until then it is not published. Proven in CI against the synthetic server; not yet checked by a person against two applications that implement the `PEERS` extension, one a client of the other, which that section asks.
+Version 0.4.0 is prepared: the visual system of the Structure Void design, its own two themes with one signal colour, its own typefaces and icons, the preset slots as a grid, and the toolbars of the JSON and Traffic tabs held on screen at the narrowest window. It is tagged once merged, and its draft Release is published when [docs/acceptance.md](docs/acceptance.md) has passed; until then it is not published. Every view of it is shown before and after in [docs/images/screenshots](docs/images/screenshots), taken against the prism-oscquery demo device and the synthetic servers of this repository.
+
+Version 0.3.0 is tagged, at `v0.3.0`, and its draft Release was never published: the acceptance it waits on, section 6, asks for two applications implementing the `PEERS` extension, one a client of the other, and that has not been done by a person. 0.4.0 carries everything 0.3.0 holds, so publishing 0.4.0 is what settles it.
 
 Latest published version: 0.2.3, tagged and released on 2026-10-14, the first whose files are on the Releases page, published under the application's former name. Its macOS download was installed and checked by hand on a Mac against Max 9; earlier versions were checked the same way, and against OSCQuery Helper on a local network. What each check proved is recorded in [docs/acceptance.md](docs/acceptance.md), under "Acceptance record".
 
@@ -243,6 +245,6 @@ cargo test --release -p oscq-inspector --test budgets_binary -- --ignored --noca
 The workflow `.github/workflows/release.yml` builds and starts the three artifacts on a tag `v*`, and on any push that changes the packaging. On a tag it then creates a draft GitHub Release holding the three files, with the version's section of [CHANGELOG.md](CHANGELOG.md) as its notes; the draft is published by hand once [docs/acceptance.md](docs/acceptance.md) has passed. The scripts are in `packaging/`. A tag must equal the workspace version, and CHANGELOG.md must have a section for it:
 
 ```
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.4.0
+git push origin v0.4.0
 ```

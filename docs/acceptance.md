@@ -113,22 +113,28 @@ Proves: the artifacts of that system. Cannot prove: the systems not run.
 Setup: the synthetic server of section 3 running, Max 9 with its patch as in section 2, both entered with **+ manual**.
 
 1. Look at the window with the synthetic server selected and `/g0` expanded.
-   Expected: in the tree, three columns: names, widgets on one vertical line, type tags and flags right aligned; a thin vertical guide per level of indentation. Paths, values and type tags in a monospace face, the rest in a proportional one. The status bar is one line: state, server, OSC destination, node count, then the last message. Groups apart by space, no rules between them.
+   Expected: in the tree, three columns: names, widgets on one vertical line, type tags and flags right aligned; a thin vertical guide per level of indentation. Paths, values and type tags in Space Mono, the rest in Space Grotesk. The status bar is one line, its zones parted by thin rules: state, server, OSC destination, node count, then the last message. Square corners everywhere, no shadow, borders of one hairline. The only colour anywhere is `#FF7A1A`, and only on what is live or wants attention: the state dot and its word while values are being pushed, the "sent" mark, a listener badge, a failure. Everything else is grey.
 2. Switch **Theme** to light, then dark, then system; quit and open again.
    Expected: each one applied at once; system follows the setting of macOS; the last choice kept after the restart.
 3. In the server pane, look at the **Discovered** and **Manual** sections.
-   Expected: the manual entries under **Manual**, each with an **x**; a discovered server has none.
+   Expected: the manual entries under **Manual**, each with a cross at the end of its row; a discovered server has none.
 4. Right click `/g0/p0`, **Pin**; the same for `/g0/p1` and `/g0/p2`. Collapse `/g0`, open the **JSON** tab.
    Expected: the three nodes in **Pinned** on the right, with their widgets, whatever the tree or the tab shows. Moving a pinned widget sends, as in the tree.
-5. Set the three pinned values to 0.1, 0.2, 0.3. The preset section is folded: click **+ PRESETS** to open it. Then click **Capture** on slot 01.
-   Expected: a note "Slot 01: 3 values of pinned methods captured". Slot 01 turns tinted, its number plain, its **Recall** on; the other slots stay plain, numbers faint, **Recall** off.
-6. Move the three values elsewhere, then click **Recall** on slot 01.
-   Expected: the three widgets back to 0.1, 0.2, 0.3 at once, with no confirmation. The **Traffic** tab shows one line, its time then `out preset 01  (3 messages)`; clicking it lists the three messages.
-7. In **Traffic**, click **in**, then **out**, then **all**.
-   Expected: **in** shows only values received, **out** only what was sent, **all** both.
+5. Set the three pinned values to 0.1, 0.2, 0.3. The preset section is folded: click **PRESETS** to open it.
+   Expected: sixteen square slots, four to a row, each carrying its number and nothing else; all of them dim, since none holds anything. Rest the pointer on slot 02: it shows a mark of an arrow coming down onto a floor, which is what a click there would do.
+   Then click slot 01, which is empty.
+   Expected: a note "Slot 01: 3 values of pinned methods captured". Slot 01 is now bordered in the brightest ink on the control surface, told apart from the fifteen dim ones at a glance.
+6. Move the three values elsewhere, then click slot 01, which now holds values.
+   Expected: the three widgets back to 0.1, 0.2, 0.3 at once, with no confirmation, and slot 01 drawn inverted, ink and ground swapped, as the slot last recalled. The **Traffic** tab shows one line, its time then `out preset 01  (3 messages)`; clicking it lists the three messages.
+   Then shift click slot 01, which holds values.
+   Expected: it captures again rather than recalling, the note saying so: capture needs no right click. Right click any slot.
+   Expected: a menu naming **Recall** and **Capture** in words.
+7. In **Traffic**, click **IN**, then **OUT**, then **ALL**, in the segmented bar beside the filter.
+   Expected: **IN** shows only values received, **OUT** only what was sent, **ALL** both; the chosen one is drawn inverted. Narrow the window to its smallest, 640 points.
+   Expected: the tab's own row of controls wraps onto further lines and every one of them stays on screen, the filter, the bar, **PAUSE**, **CLEAR**, **EXPORT** and the count; each record of the log stays on one line, the rest of it reached by scrolling sideways.
 8. Right click a node, **Copy path**, and paste it somewhere.
    Expected: its full path.
-   Then click the **×** at the end of the row of `/g0/p2` in **Pinned**.
+   Then click the cross at the end of the row of `/g0/p2` in **Pinned**.
    Expected: `/g0/p2` leaves the panel; pin it again from the tree.
    Type `p1` in the filter.
    Expected: each hit named first, `p1  /g0`, `p10  /g0`, `p100  /g1`, the containers after the name; the full path on hover.
@@ -138,12 +144,12 @@ Setup: the synthetic server of section 3 running, Max 9 with its patch as in sec
    Check **Writable** in the toolbar, clear the filter.
    Expected: Max 9's tree without `longname`, `shortname`, `type`, `min`, `max` and the other read only metadata; the status bar says how many nodes are hidden. Quit and open again: still checked.
    Switch **Theme** to light.
-   Expected: buttons and fields white and edged, sliders on a firm grey rail, text dark: an editable value stands out from a read only one as clearly as in the dark theme.
+   Expected: the same system inverted, a white ground and black text, the signal colour unchanged: an editable value stands out from a read only one as clearly as in the dark theme.
 9. Quit and open again, select the synthetic server.
    Expected: the three pinned nodes and slot 01 still there.
-10. Select Max 9, click **Recall** on slot 01.
+10. Select Max 9, click slot 01.
    Expected: nothing sent, the note says "Slot 01 recalled: 0 sent, 3 not found on this server (captured on ...)". Nothing blocks.
-11. Click the **x** of Max 9's manual entry, then **+ manual** `localhost:30339` again.
+11. Click the cross of Max 9's manual entry, then **+ MANUAL** `localhost:30339` again.
    Expected: the entry leaves the list at once; added again, its OSC port is inferred from the HTTP port, 30339: the port set earlier was forgotten with the entry.
 
 Proves: the interface rework seen by a person, the server list removal, the pinned panel across tabs and restarts, a capture and recall cycle on the same server and on another one, the traffic direction filter. Cannot prove: anything beyond this Mac and these two servers.
