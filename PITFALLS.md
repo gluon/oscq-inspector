@@ -186,6 +186,9 @@ Case: "only 0 frames measured" on the human's Mac on 2026-11-17, and the same on
 The pinned panel asks `show_rows` for rows of `ROW_H`, 24 points, and draws them 28 apart: the row is a `ui.horizontal` block `ROW_H` tall and the panel's own `item_spacing.y`, 4 points, follows each one. The virtualised list's arithmetic is out of step with what it draws by 4 points a row.
 Case: measured at 28 on `void/visual-refresh` and at 28 on d3df218 by the same probe, 2026-11-17, so it is older than that branch. Left as it is there, and held where it is by `the_pinned_rows_keep_one_row_height_each_hairline_and_all`, so it cannot grow unnoticed.
 
+The Traffic tab's own toolbar does not wrap and its filter field asks for a fixed 192 points, while the centre pane keeps only 224 at the 640 point minimum window. The direction filter is cut mid-word and Pause, Clear and Export are off screen entirely. `every_toolbar_control_stays_on_screen_whatever_the_width` does not cover it: it checks the tab bar's own toolbar, the preset slots, the pinned row and the status bar, not the toolbar a tab draws for itself.
+Case: seen at 640 by 800 on the human's Mac on 2026-11-17, on `void/visual-refresh` and, in the same screenshot taken from the build of d3df218, before it: the same cut at the same place, so it is not that branch's doing. Left as it is there, the branch being for visuals.
+
 ## OSC decoding
 
 `rosc` 0.11 decodes nested bundles by recursion, and a deeply nested `OscType::Array` is dropped by recursion. A hostile binary WebSocket frame of 4 MB can nest bundles 200 000 deep and overflow the stack. Check the nesting without recursion before decoding.
