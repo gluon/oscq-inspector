@@ -329,9 +329,13 @@ Narrow windows: whatever the window width, down to its 640 px minimum, and howev
 Visual system, applied everywhere:
 
 - A 4 px base grid. Every size, margin and gap is a multiple of 4 px: rows 24 px, tree indentation 16 px per level, gaps between groups 16 px, inside a group 4 or 8 px.
-- One type scale: 11, 13 and 15 px for the interface, 12 px monospace for data. Data, meaning paths, values, type tags, access flags, traffic and JSON, is monospace; the interface around it is proportional.
+- One type scale: 11, 13 and 15 px for the interface, 12 px monospace for data. Data, meaning paths, values, type tags, access flags, traffic and JSON, is monospace; the interface around it is proportional. Since the human's decision of 2026-11-17 the typefaces are named: Space Grotesk for the interface, Space Mono for data, both under the SIL Open Font License and compiled into the binary, so that a window looks the same on the three systems. Their license texts ship with every release and `ci/check-licenses.sh` checks each against the family and the copyright its font file declares. Space Grotesk is about a tenth wider than the font before it at one size, measured, which is a thing to remember of any box whose width is fixed.
 - Groups are told apart by space, not by rules. Elements that belong together sit close: a node's name is next to its control, not at the far side of the window.
-- The theme follows the OS by default; dark or light can be forced; the choice is kept (9.7). The light theme is toned so that its hierarchy reads as the dark one's: each control stands out from the panel, and text from its ground, at least as much as in the dark theme, which is egui's own.
+- The theme follows the OS by default; dark or light can be forced; the choice is kept (9.7). The light theme is toned so that its hierarchy reads as the dark one's: each control stands out from the panel, and text from its ground, at least as much as in the dark theme.
+- Since the human's decision of 2026-11-17, which reverses "the dark theme, which is egui's own": both themes are this repository's own, built from one palette of the Structure Void design system through `style::visuals_of`. The dark palette is a black ground, `#000000`, with `#0A0A0A` raised, `#111111` for a control's own surface, `#1A1A1A` under the pointer, borders `#222222` and `#333333`, and text `#FFFFFF`, `#BBBBBB` and `#999999`, `#666666` for what is disabled. The light theme is the same system inverted; its greys are not the dark ones subtracted from white, each being chosen so that the five measures of the rule above hold, which `the_light_theme_contrasts_as_the_dark_one_does` checks.
+- One signal colour, `#FF7A1A`, in both themes, for what is live or wants attention and for nothing else: a live connection, a value pushed, a listener count, a failure, which also says in words what it is. Everything merely observed is grey, which is law 1 drawn rather than written. No second colour anywhere, the map's edges and the JSON tab included.
+- Square corners everywhere, no shadow, borders of one hairline. A selection in a list inverts, the ground taking the ink and the ink the ground; the selected row of the tree instead keeps its text on the control surface with a 2 px bar of the brightest ink down its left edge. Sliders are a 2 px track with a 2 px vertical thumb; toggles are square. `both_themes_are_square_flat_and_of_one_signal_colour` checks the whole of this paragraph.
+- A toolbar a tab draws for itself is a toolbar: the rule above on narrow windows holds for it, and it wraps as the tab bar's own does (`every_control_a_tab_draws_for_itself_stays_on_screen`).
 
 ### 9.2 Tree tab
 
@@ -395,7 +399,17 @@ The working surface. A node is pinned or unpinned from the tree, by right click,
 
 ### 9.9 Presets
 
-Sixteen slots, for debugging, not for performance: one click captures, one click recalls, no confirmation. The section is folded to its header until opened, the pinned panel taking the room; open or folded, it stays so (9.7). Each slot names its two actions, **Recall** and **Capture**; a slot holding values is told from an empty one at a glance, on a tinted ground, its number plain, Recall on; an empty slot has a faint number and Recall off.
+Sixteen slots, for debugging, not for performance: one click captures, one click recalls, no confirmation. The section is folded to its header until opened, the pinned panel taking the room; open or folded, it stays so (9.7).
+
+Since the human's decision of 2026-11-17, which reverses "each slot names its two actions, **Recall** and **Capture**", and a tinted ground: a slot is a square carrying its number alone, four to a row. A slot holding values has a border of the brightest ink on the control surface; the slot last recalled is drawn inverted; an empty slot is dim and shows a capture glyph under the pointer. The word was tried there first and did not fit, 56.4 points of text in a 40 point square, so a glyph is drawn to the square it is given instead.
+
+Both actions stay reachable without a right click, since a context menu is itself a right click:
+
+- A left click recalls a slot that holds values, and captures into one that is empty. A click on an empty slot had no other meaning, there being nothing to recall, and it is the only route to capture that needs no modifier.
+- A shift click captures into any slot, replacing what it holds. A slot holding values is reached only this way, or by the menu, so an unasked capture cannot overwrite one.
+- The right click menu names **Recall** and **Capture** in words, and is the one place that does.
+
+The slot last recalled is kept in the view for the session and never in the config, which 9.7 fixes the contents of, and it is set only once a recall has run, so the mark follows what was sent (law 1).
 
 - Capture takes every writable method of the loaded tree of the selected server or, when nodes of that server are pinned, only the pinned ones. No selection interface: the pinned set states the scope. A method's value is the value sent and not yet confirmed if there is one, else the value read; a method with neither, or with an impulse, nil or array argument, is skipped, and the count says so.
 - A slot records the server it came from (`host:port` and name), each method's path, type tags and arguments.

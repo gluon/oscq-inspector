@@ -3632,11 +3632,26 @@ fn json_tab(ui: &mut egui::Ui, entry: &ServerEntry, view: &mut View, actions: &m
         view.json.note = note;
         view.json.key = Some(key);
     }
-    ui.horizontal(|ui| {
-        ui.label(match &view.selected_path {
+    // PRD 9.1 holds for a toolbar a tab draws for itself: down to the 640 px minimum no control
+    // of it leaves the screen. The two buttons keep their room, and the line that says what is
+    // shown takes what is left and is cut rather than pushing them off.
+    ui.horizontal_wrapped(|ui| {
+        ui.set_min_height(ROW_H);
+        let gap = ui.spacing().item_spacing.x;
+        // What the two buttons need, kept back from the line before the text is given its room.
+        let buttons = 2.0 * style::CONTROL_H + 2.0 * gap;
+        let room = (ui.max_rect().right() - ui.cursor().min.x - buttons).max(8.0 * GRID);
+        let said = match &view.selected_path {
             Some(p) => format!("Subtree at {p}, as received"),
             None => "Whole document, as received".to_owned(),
-        });
+        };
+        ui.add_sized(
+            egui::vec2(room, style::CONTROL_H),
+            egui::Label::new(said.clone())
+                .truncate()
+                .halign(egui::Align::LEFT),
+        )
+        .on_hover_text(said);
         if glyph::icon_button(ui, glyph::Icon::Copy, "json_copy")
             .on_hover_text("Copy the document to the clipboard")
             .clicked()
@@ -3737,13 +3752,18 @@ fn traffic_tab(
     actions: &mut Vec<Action>,
 ) {
     use traffic::DirFilter;
-    ui.horizontal(|ui| {
+    // Wrapped, as the toolbar of the tabs is (PRD 9.1): at the 640 px minimum the centre pane
+    // keeps 224 points, and this row asked for about 400 on one line, which cut the direction
+    // bar mid word and put Pause, Clear and Export off screen. Wrapping is the whole fix: the
+    // filter's 192 points fit the 224 on a line of their own, and the rest follows underneath.
+    ui.horizontal_wrapped(|ui| {
         ui.set_min_height(ROW_H);
+        let filter_w = 48.0 * GRID;
         ui.add(
             egui::TextEdit::singleline(&mut view.traffic_filter)
                 .font(egui::TextStyle::Monospace)
                 .hint_text("filter path or type tags")
-                .desired_width(48.0 * GRID),
+                .desired_width(filter_w),
         );
         ui.spacing_mut().item_spacing.x = 0.0;
         style::segmented(
@@ -3805,12 +3825,17 @@ fn traffic_tab(
         .stick_to_bottom(true)
         .show_rows(ui, row_h, lines.len(), |ui, range| {
             for (block, text) in &lines[range] {
+                // One line a record, however narrow the pane: the scroll area goes both ways
+                // and its bar is how the rest of a line is reached. Left to wrap, a record
+                // became two lines at the 640 px minimum and the log stopped being scannable.
+                // Until the toolbar above wrapped, the width it forced on this area hid that:
+                // the lines did not wrap, they were cut with no way to reach what was cut.
+                let label = |text: &str| {
+                    egui::Label::new(style::data(text)).wrap_mode(egui::TextWrapMode::Extend)
+                };
                 match block {
                     Some(at) => {
-                        let r = ui.add(
-                            egui::Label::new(style::data(text.as_str()))
-                                .sense(egui::Sense::click()),
-                        );
+                        let r = ui.add(label(text.as_str()).sense(egui::Sense::click()));
                         if r.on_hover_text("Click to show or hide the messages")
                             .clicked()
                             && !view.traffic_open.remove(at)
@@ -3819,7 +3844,7 @@ fn traffic_tab(
                         }
                     }
                     None => {
-                        ui.label(style::data(text.as_str()));
+                        ui.add(label(text.as_str()));
                     }
                 }
             }
@@ -6155,6 +6180,132 @@ mod tests {
                     "the status bar drawn at width {width}: {status:?}"
                 );
                 status.iter().for_each(|(t, r, c)| whole(t, r, c));
+            }
+        }
+    }
+
+    /// A tab draws a toolbar of its own, under the one with the tabs in it, and PRD 9.1 holds
+    /// for it too: whatever the window width, down to its 640 px minimum, and however the side
+    /// panes were dragged, no control of it leaves the screen. The JSON tab's copy and save, and
+    /// the Traffic tab's filter, its direction bar, Pause, Clear, Export and its count.
+    ///
+    /// Seen on screen on 2026-11-17 at 640 by 800: the Traffic tab's row did not wrap and its
+    /// filter asked for a fixed 192 points of the 224 the centre pane keeps there, so the
+    /// direction bar was cut mid word and Pause, Clear and Export were off screen entirely. The
+    /// toolbar test of the tab bar did not reach it.
+    #[test]
+    fn every_control_a_tab_draws_for_itself_stays_on_screen() {
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
+        for width in [640.0, 680.0, 720.0, 800.0, 960.0, 1100.0, 1440.0, 1920.0] {
+            for dragged in [false, true] {
+                let mut h = harness();
+                let id = controllable(&mut h, "127.0.0.1", 2345, "S", doc);
+                if dragged {
+                    // Both side panes as a previous session left them, wider than any window.
+                    for pane in ["servers", "work"] {
+                        h.ctx.data_mut(|d| {
+                            d.insert_persisted(
+                                egui::Id::new(pane),
+                                egui::PanelState {
+                                    outer_rect: egui::Rect::from_min_size(
+                                        egui::Pos2::ZERO,
+                                        egui::vec2(2000.0, 600.0),
+                                    ),
+                                },
+                            )
+                        });
+                    }
+                }
+                // Something in the log, so the Traffic tab draws its rows and its count.
+                h.app.act(
+                    &h.ctx.clone(),
+                    Action::Send(
+                        SendReq {
+                            server_id: id,
+                            path: OscPath::parse("/a").unwrap(),
+                            signature: TypeSignature::parse("f").unwrap(),
+                            args: vec![OscType::Float(0.25)],
+                            readable: true,
+                        },
+                        SendMode::Final,
+                    ),
+                );
+                let size = egui::vec2(width, 700.0);
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+                let whole = |what: &str, rect: &egui::Rect, clip: &egui::Rect, tab: Tab| {
+                    assert!(
+                        // Half a pixel of slack: clip rectangles are rounded to the pixel.
+                        clip.intersect(screen).expand(0.5).contains_rect(*rect),
+                        "{tab:?}: {what:?} at {rect:?} cut by {clip:?} at width {width}, panes \
+                         dragged {dragged}"
+                    );
+                };
+                for (tab, texts, icons) in [
+                    (
+                        Tab::Json,
+                        vec!["Whole document, as received"],
+                        vec!["json_copy", "json_save"],
+                    ),
+                    (
+                        Tab::Traffic,
+                        vec![
+                            "filter path or type tags",
+                            "ALL",
+                            "IN",
+                            "OUT",
+                            "PAUSE",
+                            "CLEAR",
+                            "EXPORT",
+                        ],
+                        vec![],
+                    ),
+                ] {
+                    h.app.view.tab = tab;
+                    h.frame_sized(size, Vec::new());
+                    let out = h.frame_sized(size, Vec::new());
+                    let drawn = drawn_text_rects(&out);
+                    for text in texts {
+                        let found: Vec<_> = drawn.iter().filter(|(t, _, _)| t == text).collect();
+                        assert_eq!(
+                            found.len(),
+                            1,
+                            "{tab:?}: {text:?} drawn once at width {width}, panes dragged \
+                             {dragged}"
+                        );
+                        whole(text, &found[0].1, &found[0].2, tab);
+                    }
+                    for salt in icons {
+                        let at = icon_place(&h, salt);
+                        let strokes = strokes_inside(&out, at);
+                        assert!(
+                            !strokes.is_empty(),
+                            "{tab:?}: the {salt} icon drawn at width {width}, panes dragged \
+                             {dragged}"
+                        );
+                        for (r, c) in &strokes {
+                            whole(salt, r, c, tab);
+                        }
+                    }
+                    // Wrapping keeps a control on screen; it must not be the everyday answer.
+                    // On a window with room to spare the JSON toolbar holds on one line, which
+                    // it does only because the text keeps its two buttons' room back from the
+                    // line before taking what is left.
+                    if tab == Tab::Json && width >= 1100.0 && !dragged {
+                        let said = drawn
+                            .iter()
+                            .find(|(t, _, _)| t == "Whole document, as received")
+                            .map(|(_, r, _)| r.center().y)
+                            .expect("the line that says what is shown");
+                        for salt in ["json_copy", "json_save"] {
+                            let at = icon_place(&h, salt).center().y;
+                            assert!(
+                                (at - said).abs() < ROW_H / 2.0,
+                                "{salt} on another line than the text at width {width}: \
+                                 {at} against {said}"
+                            );
+                        }
+                    }
+                }
             }
         }
     }
