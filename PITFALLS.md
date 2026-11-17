@@ -79,6 +79,18 @@ Case: the v0.2.2 light theme, white buttons and fields over grey rails, 2026-10-
 An unselected `toggle_value` is drawn with no frame, like a plain label: nothing tells a user it can be clicked. A `checkbox` shows its state either way.
 Case: the "Writable only" control, under Xvfb, 2026-10-13.
 
+`egui::RawInput` carries no modifier field: `InputState::modifiers`, which a widget reads to tell a shift click from a plain one, is moved by `Event::ModifiersChanged` and by nothing else. A test that fed a `PointerButton` event with `modifiers: SHIFT` set left `InputState::modifiers` empty, so the widget saw a plain click and the shift route went untested while the test passed. Announce the key going down before the click and up after it, as a window system does.
+Case: the shift click that captures into a full preset slot, caught by the mutation that removed the route, 2026-11-17.
+
+`Context::read_response(id)` falls back to the pass before when this pass holds no such widget. A test that removed a control and read its place back one frame later still got the old rectangle and concluded the control was still drawn. Run two frames after a change before reading a response back.
+Case: `a_manual_entry_is_removed_with_its_osc_port_a_discovered_one_is_not`, reading the icon button of a removed manual entry, 2026-11-17.
+
+A control that carries no text, an icon button, cannot be found in a frame's shapes by its label, and `allocate_exact_size` gives it an id of its own that a test cannot rebuild. Interact with a whole `Id` the call site names, and read the response back from the context by it; check the strokes painted inside that rectangle, or a button that paints nothing passes.
+Case: `glyph::id_of`, and the mutation that makes `button_sized` paint no icon, 2026-11-17.
+
+A theme's fill chosen for one purpose may collide with another's. `extreme_bg_color` and the ground of a button at rest became one grey, and a test that found the map's node boxes by `fill == extreme_bg_color` counted the theme box and About in the server pane's footer as two more nodes. Tell a region by its place as well as its fill when a fill is shared.
+Case: `a_server_moved_by_hand_is_drawn_once`, 8 nodes found for 6, 2026-11-17.
+
 ## Status display
 
 An `egui::Label` with `truncate()` shows its whole text in a tooltip of its own when it is cut, `show_tooltip_when_elided` being true by default. A cut label given `on_hover_text` as well shows two tooltips, one over the other. Turn one off.
@@ -168,6 +180,15 @@ Case: `real_binary_map_frame_time`, 72 then 892 input events in the idle window,
 `pkill -f PATTERN` matches its own shell when the pattern is in the command line, and kills it. Stop processes by the pid recorded when they were started.
 Case: killing the synthetic server by name ended the session's shell, 2026-10-12.
 
+`real_binary_map_frame_time` measures nothing unless its first two windows were disturbed. It reads frames `since = start + IDLE_WINDOW * (MEASUREMENT_ATTEMPTS - 1)`, that is 20 s after the measurement began, clamped by `.min(Instant::now())`; a run whose first window is accepted lasts about 10 s, so `since` is clamped to the present and no frame is at or after it. It then fails on `assert!(n >= 20, "only {n} frames measured")`. It passes only when the retries pushed the run past 20 s. It sits in the CI step marked `continue-on-error: true`, which is why it went unnoticed.
+Case: "only 0 frames measured" on the human's Mac on 2026-11-17, and the same on d3df218, the state before `void/visual-refresh`, so it is not that branch's doing. Not fixed there: the branch was for visuals.
+
+The pinned panel asks `show_rows` for rows of `ROW_H`, 24 points, and draws them 28 apart: the row is a `ui.horizontal` block `ROW_H` tall and the panel's own `item_spacing.y`, 4 points, follows each one. The virtualised list's arithmetic is out of step with what it draws by 4 points a row.
+Case: measured at 28 on `void/visual-refresh` and at 28 on d3df218 by the same probe, 2026-11-17, so it is older than that branch. Left as it is there, and held where it is by `the_pinned_rows_keep_one_row_height_each_hairline_and_all`, so it cannot grow unnoticed.
+
+The Traffic tab's own toolbar does not wrap and its filter field asks for a fixed 192 points, while the centre pane keeps only 224 at the 640 point minimum window. The direction filter is cut mid-word and Pause, Clear and Export are off screen entirely. `every_toolbar_control_stays_on_screen_whatever_the_width` does not cover it: it checks the tab bar's own toolbar, the preset slots, the pinned row and the status bar, not the toolbar a tab draws for itself.
+Case: seen at 640 by 800 on the human's Mac on 2026-11-17, on `void/visual-refresh` and, in the same screenshot taken from the build of d3df218, before it: the same cut at the same place, so it is not that branch's doing. Fixed the same day, on the human's word: both rows wrap, and `every_control_a_tab_draws_for_itself_stays_on_screen` reaches what the toolbar test did not.
+
 ## OSC decoding
 
 `rosc` 0.11 decodes nested bundles by recursion, and a deeply nested `OscType::Array` is dropped by recursion. A hostile binary WebSocket frame of 4 MB can nest bundles 200 000 deep and overflow the stack. Check the nesting without recursion before decoding.
@@ -192,3 +213,8 @@ Case: `tests/fixtures/max-hostinfo.json`, identical to `max-root.json`, 2026-10-
 
 An accepted WebSocket, and an accepted `LISTEN`, do not mean the server notifies. Max 9 accepts both on its HTTP port and never sends a frame. Showing "live" on open told the user values were pushed when none ever would be. Claim live only after the first frame from the server.
 Case: Max 9 on the human's Mac, `LISTEN /test/param/fader/raw`, fader moved, nothing on the socket, checked with `websocat`, 2026-10-11.
+
+## Typefaces
+
+A bundled typeface is not a drop in replacement at the same nominal size. Space Grotesk is about a tenth wider than Ubuntu-Light at 11 px, 205.9 px against 190.0 for the longest line the map draws, while Space Mono matches Hack within 2 percent. Every fixed width tuned to the pixel against the old font has to be measured again: a node box whose longest line fitted with 2 px to spare no longer fits it, and a force layout given wider boxes flattens in a small canvas. Measure the strings that sit in fixed boxes before changing a font, not after.
+Case: the map's node line elided and the largest gap around a centre going from 134.2 to 170.6 degrees at 1100 by 700, 2026-11-17.

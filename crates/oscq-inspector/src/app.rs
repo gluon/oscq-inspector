@@ -19,6 +19,7 @@ use oscq_discovery::{ManualEntry, ManualHistory};
 use rosc::{OscColor, OscType};
 
 use crate::config::{self, Config, Theme, WindowGeometry};
+use crate::glyph;
 use crate::json_view::{self, Line, Token};
 use crate::map;
 use crate::presets;
@@ -202,6 +203,9 @@ struct View {
     map_arranged: Option<(MapKey, map::Arrangement)>,
     /// Bumped when the positions set by hand are let go: the placement is computed again.
     map_generation: u64,
+    /// The preset slot last recalled, drawn inverted. Of the session only: PRD 9.7 fixes what
+    /// the config file holds, and this is not in it.
+    preset_recalled: Option<usize>,
 }
 
 /// What the map's placement depends on: the nodes, who they are and what they are called, the
@@ -350,14 +354,20 @@ impl InspectorApp {
         app
     }
 
-    /// What a launch is asked besides its config, as words separated by commas: `map` opens on
-    /// the map tab, `connect-all` connects every known server instead of the selected one
-    /// alone. For the real binary tests, which have no hand to click with; the variable
-    /// `OSCQ_INSPECTOR_STARTUP` carries it, and nothing is kept of it.
+    /// What a launch is asked besides its config, as words separated by commas: `tree`, `json`,
+    /// `traffic` and `map` open on that tab, `about` opens the about box, `connect-all` connects
+    /// every known server instead of the selected one alone. For the real binary tests and for
+    /// the screenshots, neither of which has a hand to click with; the variable
+    /// `OSCQ_INSPECTOR_STARTUP` carries it, and nothing is kept of it. The tab is not in the
+    /// config and must not be: PRD 9.7 fixes what the config file holds.
     pub fn startup(&mut self, ctx: &egui::Context, what: &str) {
         for word in what.split(',').map(str::trim) {
             match word {
+                "tree" => self.view.tab = Tab::Tree,
+                "json" => self.view.tab = Tab::Json,
+                "traffic" => self.view.tab = Tab::Traffic,
                 "map" => self.view.tab = Tab::Map,
+                "about" => request_about(ctx),
                 "connect-all" => {
                     let idle: Vec<ServerId> = self
                         .state
@@ -919,6 +929,7 @@ impl InspectorApp {
             self.view.note = Some(format!(
                 "Slot {slot:02} not recalled: cannot send: {reason}"
             ));
+            // Nothing was sent, so no slot is shown as the one last recalled.
             return;
         }
         let Some(t) = e.tree.as_ref() else {
@@ -952,6 +963,9 @@ impl InspectorApp {
             note.push_str(&format!(" (captured on {name})"));
         }
         self.view.note = Some(note);
+        // The slot the window shows as the one last recalled: set once the recall has run, so
+        // that it marks what was actually sent and not what was asked for (CLAUDE.md law 1).
+        self.view.preset_recalled = Some(slot);
         if !messages.is_empty() {
             let _ = self.backend.commands.send(Command::SendBlock {
                 server_id: id,
@@ -1025,22 +1039,26 @@ impl InspectorApp {
                     let mut theme = self.config.theme;
                     egui::ComboBox::from_id_salt("theme")
                         .width(24.0 * GRID)
-                        .selected_text(match theme {
+                        .selected_text(style::caps(match theme {
                             Theme::System => "Theme: system",
                             Theme::Dark => "Theme: dark",
                             Theme::Light => "Theme: light",
-                        })
+                        }))
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut theme, Theme::System, "System");
-                            ui.selectable_value(&mut theme, Theme::Dark, "Dark");
-                            ui.selectable_value(&mut theme, Theme::Light, "Light");
+                            for (value, label) in [
+                                (Theme::System, "System"),
+                                (Theme::Dark, "Dark"),
+                                (Theme::Light, "Light"),
+                            ] {
+                                ui.selectable_value(&mut theme, value, style::caps(label));
+                            }
                         });
                     if theme != self.config.theme {
                         self.config.theme = theme;
                         apply_theme(ui.ctx(), theme);
                         self.save_config(ui.ctx());
                     }
-                    if ui.button("About").clicked() {
+                    if ui.button(style::caps("About")).clicked() {
                         request_about(ui.ctx());
                     }
                 });
@@ -1080,12 +1098,14 @@ impl InspectorApp {
                 for e in manual {
                     server_row(ui, e, self.state.selected, actions);
                 }
-                if ui.button("+ manual").clicked() {
+                if ui.button(style::caps("+ manual")).clicked() {
                     self.view.manual_open = true;
                     self.view.manual_error = None;
                 }
                 if let Some(e) = self.state.selected_entry() {
-                    if e.conn == ConnState::Connected && ui.button("Disconnect").clicked() {
+                    if e.conn == ConnState::Connected
+                        && ui.button(style::caps("Disconnect")).clicked()
+                    {
                         actions.push(Action::Disconnect(e.server.id));
                     }
                     ui.add_space(GROUP_GAP);
@@ -1139,7 +1159,8 @@ impl InspectorApp {
             Some(e) => {
                 // What the preset section takes below, open or folded to its header.
                 let presets = if self.config.presets_open {
-                    64.0 * GRID
+                    // The header, four rows of square slots and the gaps between them.
+                    58.0 * GRID
                 } else {
                     8.0 * GRID
                 };
@@ -1156,17 +1177,30 @@ impl InspectorApp {
             }
         }
         ui.add_space(GROUP_GAP);
-        // Folded until opened: open, the sixteen slots take a third of the pane.
+        // Folded until opened: open, the sixteen slots take four rows of four.
         let open = self.config.presets_open;
-        if ui
-            .add(
-                egui::Button::new(
-                    RichText::new(if open { "- PRESETS" } else { "+ PRESETS" })
-                        .small()
-                        .weak(),
-                )
-                .frame(false),
-            )
+        let header = ui
+            .horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = GRID;
+                let chevron = if open {
+                    glyph::Icon::ChevronDown
+                } else {
+                    glyph::Icon::ChevronRight
+                };
+                let icon = glyph::button_sized(
+                    ui,
+                    chevron,
+                    "presets_fold",
+                    egui::vec2(3.0 * GRID, style::CONTROL_H),
+                    false,
+                );
+                let colour = ui.visuals().weak_text_color();
+                let label =
+                    ui.add(egui::Button::new(style::caps("Presets").color(colour)).frame(false));
+                icon.union(label)
+            })
+            .inner;
+        if header
             .on_hover_text(if open {
                 "Fold the preset slots"
             } else {
@@ -1185,91 +1219,144 @@ impl InspectorApp {
         } else {
             "the pinned nodes"
         };
-        // Each slot names its two actions, Recall and Capture, and shows whether it holds
-        // anything: a held slot on a tinted ground, its number plain, Recall on; an empty slot,
-        // its number faint, Recall off. Rows of as many slots as the pane holds, two at most.
-        const NUMBERS: [&str; presets::SLOTS] = [
-            "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14",
-            "15", "16",
-        ];
-        let (number_w, recall_w, capture_w) = (6.0 * GRID, 12.0 * GRID, 14.0 * GRID);
-        let cell = number_w + recall_w + capture_w;
-        let cols = (((ui.available_width() + GRID) / (cell + GRID)).floor() as usize).clamp(1, 2);
-        let held_fill = ui.visuals().selection.bg_fill.gamma_multiply(0.35);
-        for (r, numbers) in NUMBERS.chunks(cols).enumerate() {
+        self.preset_slots(ui, scope, actions);
+    }
+
+    /// The sixteen preset slots (PRD 9.9), as the human chose them on 2026-11-17: square slots,
+    /// four to a row, the number alone on each. A slot holding values has a 1 px border in the
+    /// palette's brightest ink on the control surface; the slot last recalled is inverted; an
+    /// empty slot is dim and says "capture" under the pointer.
+    ///
+    /// Both actions are reachable without a right click: a left click recalls a slot that holds
+    /// values and captures into one that is empty, and a shift click captures into any slot,
+    /// replacing what it holds. The context menu names both in words for either button.
+    fn preset_slots(&mut self, ui: &mut egui::Ui, scope: &str, actions: &mut Vec<Action>) {
+        const SIDE: f32 = 10.0 * GRID;
+        let p = style::palette(ui.visuals());
+        let (bg, surface, ink, border, dim) = (p.bg, p.surface, p.text, p.border, p.dim);
+        let cols = (((ui.available_width() + GRID) / (SIDE + GRID)).floor() as usize).clamp(1, 4);
+        let mut capture = None;
+        let mut recall = None;
+        for row in 0..presets::SLOTS.div_ceil(cols) {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = GRID;
-                for (c, number) in numbers.iter().enumerate() {
-                    let slot = r * cols + c + 1;
+                for col in 0..cols {
+                    let slot = row * cols + col + 1;
+                    if slot > presets::SLOTS {
+                        break;
+                    }
                     let held = self.config.presets.get(&slot);
-                    let (rect, _) = ui.allocate_exact_size(
-                        egui::vec2(cell, style::CONTROL_H),
-                        egui::Sense::hover(),
-                    );
-                    if held.is_some() {
-                        ui.painter().rect_filled(rect, 2.0, held_fill);
+                    let (held_count, held_server) = match held {
+                        Some(pre) => (Some(pre.values.len()), Some(pre.server_name.clone())),
+                        None => (None, None),
+                    };
+                    let last = self.view.preset_recalled == Some(slot);
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(SIDE, SIDE), egui::Sense::hover());
+                    let id = ui.id().with(("preset", slot));
+                    let response = ui.interact(rect, id, egui::Sense::click());
+                    let hovered = response.hovered();
+                    if ui.is_rect_visible(rect) {
+                        // Inverted when it was the last recalled, bordered when it holds
+                        // values, dim when it is empty.
+                        let (ground, edge, text) = match (held_count.is_some(), last) {
+                            (true, true) => (ink, ink, bg),
+                            (true, false) => (surface, ink, ink),
+                            (false, _) => (bg, border, dim),
+                        };
+                        let ground = if hovered && !last {
+                            style::palette(ui.visuals()).muted
+                        } else {
+                            ground
+                        };
+                        ui.painter().rect(
+                            rect,
+                            0.0,
+                            ground,
+                            egui::Stroke::new(style::HAIRLINE, edge),
+                            egui::StrokeKind::Inside,
+                        );
+                        // An empty slot says what a click on it does, in its own box: the
+                        // capture glyph in place of its number. The word would not fit, and
+                        // was drawn cut on 2026-11-17, "CAPTURE" being 56 points of text in a
+                        // 40 point square; a glyph is drawn to the square it is given and
+                        // cannot overflow, whatever the width (the human's decision, same day).
+                        if held_count.is_none() && hovered {
+                            glyph::paint(
+                                ui.painter(),
+                                egui::Rect::from_center_size(
+                                    rect.center(),
+                                    egui::Vec2::splat(glyph::SIZE),
+                                ),
+                                glyph::Icon::Capture,
+                                ink,
+                            );
+                        } else {
+                            let galley = ui.ctx().fonts_mut(|f| {
+                                f.layout_no_wrap(
+                                    format!("{slot:02}"),
+                                    egui::FontId::new(style::DATA, egui::FontFamily::Monospace),
+                                    text,
+                                )
+                            });
+                            let at = rect.center() - galley.size() * 0.5;
+                            ui.painter().galley(at, galley, text);
+                        }
                     }
-                    let ui = &mut ui.new_child(
-                        egui::UiBuilder::new()
-                            .max_rect(rect)
-                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                    );
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    let n = style::data(*number);
-                    // Hover texts are built only when shown: a frame builds none.
-                    ui.add_sized(
-                        egui::vec2(number_w, style::CONTROL_H),
-                        egui::Label::new(if held.is_some() { n } else { n.weak() }),
-                    )
-                    .on_hover_ui(|ui| {
-                        ui.label(match held {
-                            Some(p) => format!(
-                                "Slot {number}: {} values, captured on {}",
-                                p.values.len(),
-                                p.server_name
-                            ),
-                            None => format!("Slot {number}: empty"),
-                        });
+                    // A shift click captures whatever the slot holds; a plain click recalls a
+                    // full slot and captures into an empty one.
+                    let shifted = ui.input(|i| i.modifiers.shift);
+                    if response.clicked() {
+                        if shifted || held_count.is_none() {
+                            capture = Some(slot);
+                        } else {
+                            recall = Some(slot);
+                        }
+                    }
+                    let menu_capture = &mut capture;
+                    let menu_recall = &mut recall;
+                    let hover = response.clone();
+                    response.context_menu(|ui| {
+                        if ui
+                            .add_enabled(
+                                held_count.is_some(),
+                                egui::Button::new("Recall").frame(false),
+                            )
+                            .clicked()
+                        {
+                            *menu_recall = Some(slot);
+                            ui.close();
+                        }
+                        if ui.add(egui::Button::new("Capture").frame(false)).clicked() {
+                            *menu_capture = Some(slot);
+                            ui.close();
+                        }
                     });
-                    let recall = ui
-                        .add_enabled(
-                            held.is_some(),
-                            egui::Button::new(RichText::new("Recall").small())
-                                .min_size(egui::vec2(recall_w, style::CONTROL_H)),
-                        )
-                        .on_hover_ui(|ui| {
-                            if let Some(p) = held {
-                                ui.label(format!(
-                                    "Send its {} values to this server",
-                                    p.values.len()
-                                ));
+                    // Hover texts are built only when shown: a frame builds none.
+                    hover.on_hover_ui(|ui| {
+                        match (held_count, &held_server) {
+                            (Some(n), Some(name)) => {
+                                ui.label(format!("Slot {slot:02}: {n} values, captured on {name}"));
+                                ui.label("Click to send them to this server.");
                             }
-                        })
-                        .on_disabled_hover_text("Empty: Capture first");
-                    if recall.clicked() {
-                        actions.push(Action::Recall(slot));
-                    }
-                    if ui
-                        .add(
-                            egui::Button::new(RichText::new("Capture").small())
-                                .min_size(egui::vec2(capture_w, style::CONTROL_H)),
-                        )
-                        .on_hover_ui(|ui| {
-                            ui.label(format!(
-                                "Store {scope} of this server in this slot{}",
-                                if held.is_some() {
-                                    ", replacing what it holds"
-                                } else {
-                                    ""
-                                }
-                            ));
-                        })
-                        .clicked()
-                    {
-                        actions.push(Action::Capture(slot));
-                    }
+                            _ => {
+                                ui.label(format!("Slot {slot:02}: empty"));
+                                ui.label(format!("Click to store {scope} of this server."));
+                            }
+                        }
+                        ui.label(
+                            "Shift click, or the right click menu, captures into it; the menu \
+                             names both actions.",
+                        );
+                    });
                 }
             });
+        }
+        if let Some(slot) = capture {
+            actions.push(Action::Capture(slot));
+        }
+        if let Some(slot) = recall {
+            actions.push(Action::Recall(slot));
         }
     }
 
@@ -1346,7 +1433,7 @@ impl InspectorApp {
                 }
             }
             ui.add_space(style::ITEM_GAP);
-            if ui.button("Close").clicked() {
+            if ui.button(style::caps("Close")).clicked() {
                 self.view.about_open = false;
             }
         });
@@ -1371,7 +1458,10 @@ impl InspectorApp {
             );
         };
         ui.horizontal_centered(|ui| {
-            ui.spacing_mut().item_spacing.x = GROUP_GAP;
+            // The zones are split by 1 px rules, each drawn down the middle of the gap that
+            // separated two zones before: `style::divider` carries the gap, so the item spacing
+            // is zero and the line of zones is exactly as wide as it was.
+            ui.spacing_mut().item_spacing.x = 0.0;
             let Some(e) = self.state.selected_entry() else {
                 ui.weak("No server selected");
                 if let Some(n) = &self.view.note {
@@ -1428,10 +1518,12 @@ impl InspectorApp {
             } else {
                 None
             };
+            // The state: a dot in the signal colour when the connection is live or wants
+            // attention, grey otherwise, and the state in words beside it (PRD 9.6).
             zone(ui, 36.0 * GRID * scale, &mut |ui| {
                 ui.spacing_mut().item_spacing.x = GRID;
-                status_dot(ui, dot_colour(e));
-                ui.add(egui::Label::new(state_text(e)).truncate())
+                status_dot(ui, dot_colour(ui.visuals(), e));
+                ui.add(egui::Label::new(style::caps(state_text(e))).truncate())
                     .on_hover_ui(|ui| {
                         ui.label(conn_text(e));
                         if let Some((v, _)) = values_text(e) {
@@ -1439,12 +1531,14 @@ impl InspectorApp {
                         }
                     });
             });
+            style::divider(ui, ROW_H);
             zone(ui, 40.0 * GRID * scale, &mut |ui| {
                 ui.add(egui::Label::new(RichText::new(e.declared_name()).strong()).truncate())
                     .on_hover_ui(|ui| {
                         ui.label(server_tooltip(e));
                     });
             });
+            style::divider(ui, ROW_H);
             zone(ui, 52.0 * GRID * scale, &mut |ui| {
                 let text = match &e.destination {
                     Some(Ok(d)) => {
@@ -1474,6 +1568,7 @@ impl InspectorApp {
                         None => {}
                     });
             });
+            style::divider(ui, ROW_H);
             zone(ui, 40.0 * GRID * scale, &mut |ui| {
                 if let Some(t) = &e.tree {
                     let mut text = format!("{} nodes", t.nodes.saturating_sub(1));
@@ -1495,6 +1590,7 @@ impl InspectorApp {
                 }
             });
             if let Some((text, colour)) = message {
+                style::divider(ui, ROW_H);
                 // The whole is given on hover below: egui's own tooltip of a cut label would
                 // show it a second time.
                 let label = ui.add(
@@ -1530,20 +1626,35 @@ impl InspectorApp {
         ui.horizontal_wrapped(|ui| {
             ui.set_min_height(ROW_H);
             let width = ui.available_width();
-            // The four tabs are one group: nothing between them, so that the fourth takes the
-            // room of its own label and no more, and the line still holds at 1060 points.
+            // The four tabs are one segmented bar, allocated as one rectangle: the group never
+            // breaks across two lines, and the line still holds at 1060 points.
             let gap = ui.spacing().item_spacing.x;
-            ui.spacing_mut().item_spacing.x = 0.0;
-            ui.selectable_value(&mut self.view.tab, Tab::Tree, "Tree");
-            ui.selectable_value(&mut self.view.tab, Tab::Json, "JSON");
-            ui.selectable_value(&mut self.view.tab, Tab::Traffic, "Traffic");
-            ui.spacing_mut().item_spacing.x = gap;
-            ui.selectable_value(&mut self.view.tab, Tab::Map, "Map");
+            style::segmented(
+                ui,
+                &mut self.view.tab,
+                &[
+                    (
+                        Tab::Tree,
+                        "Tree",
+                        "The address space of the selected server",
+                    ),
+                    (
+                        Tab::Json,
+                        "JSON",
+                        "The document exactly as the server sent it",
+                    ),
+                    (Tab::Traffic, "Traffic", "Every OSC message in and out"),
+                    (
+                        Tab::Map,
+                        "Map",
+                        "What the servers publish of their own connections",
+                    ),
+                ],
+            );
             // Groups apart by GROUP_GAP, the item spacing included.
             ui.add_space(GROUP_GAP - gap);
             let on_map = self.view.tab == Tab::Map;
-            if ui
-                .button("Refresh")
+            if glyph::icon_button(ui, glyph::Icon::Refresh, "refresh")
                 .on_hover_text(if on_map {
                     "Read the peers of every server again (F5)"
                 } else {
@@ -1561,7 +1672,7 @@ impl InspectorApp {
             ui.add_space(GROUP_GAP - gap);
             let mut hide = self.config.hide_read_only;
             if ui
-                .checkbox(&mut hide, "Writable")
+                .checkbox(&mut hide, style::caps("Writable"))
                 .on_hover_text(
                     "Hide the nodes that cannot be written, and the containers left with none",
                 )
@@ -2095,20 +2206,34 @@ fn apply_theme(ctx: &egui::Context, theme: Theme) {
     });
 }
 
-fn dot_colour(e: &ServerEntry) -> Color32 {
+/// The colour of a server's state dot. One signal colour, and the greys of the palette: the
+/// signal is for a connection that is live, and for one that wants attention; everything merely
+/// observed is grey, brighter the further the connection has got. A dot never carries the state
+/// alone: the word beside it says which of the two the signal means (PRD 9.6).
+fn dot_colour(visuals: &egui::Visuals, e: &ServerEntry) -> Color32 {
+    let p = style::palette(visuals);
     if e.server.kind == ServiceKind::OscOnly {
-        return Color32::from_gray(110);
+        return p.dim;
     }
+    // Stale: last seen a while ago, and worth noticing.
     if e.server.stale {
-        return Color32::from_rgb(200, 140, 40);
+        return style::SIGNAL;
     }
+    // The greys climb with how far the connection has got, and the signal is kept for the two
+    // states that want the eye: a socket that is pushing values, and a failure.
     match e.conn {
-        ConnState::Idle | ConnState::Disconnected => Color32::from_gray(150),
-        ConnState::Connecting => Color32::from_rgb(220, 200, 60),
-        ConnState::Connected if e.ws == WsState::Live => Color32::from_rgb(60, 150, 230),
-        ConnState::Connected if e.ws == WsState::Open => Color32::from_rgb(120, 170, 160),
-        ConnState::Connected => Color32::from_rgb(60, 180, 90),
-        ConnState::Failed(_) => Color32::from_rgb(210, 60, 60),
+        ConnState::Idle | ConnState::Disconnected => p.dim,
+        ConnState::Connecting => p.label,
+        // Live: the server is pushing values of its own accord.
+        ConnState::Connected if e.ws == WsState::Live => style::SIGNAL,
+        // A socket that was up and dropped wants attention as a failure does.
+        ConnState::Connected if matches!(e.ws, WsState::Lost { .. }) => style::SIGNAL,
+        // Open and silent is not live (CLAUDE.md law 1), so it stays grey, the brightest grey:
+        // the socket is up, and nothing has come down it yet.
+        ConnState::Connected if e.ws == WsState::Open => p.text,
+        // Connected over HTTP alone, values on refresh only.
+        ConnState::Connected => p.body,
+        ConnState::Failed(_) => style::SIGNAL,
     }
 }
 
@@ -2165,7 +2290,7 @@ fn server_row(
     ui.horizontal(|ui| {
         ui.set_min_height(ROW_H);
         ui.spacing_mut().item_spacing.x = GRID;
-        status_dot(ui, dot_colour(e));
+        status_dot(ui, dot_colour(ui.visuals(), e));
         // Its declared name, its address second, first on hover (CLAUDE.md law 2).
         let mut text = RichText::new(e.declared_name());
         if e.server.kind == ServiceKind::OscOnly || e.server.stale {
@@ -2200,20 +2325,32 @@ fn server_row(
         {
             actions.push(Action::SelectServer(e.server.id));
         }
+        // An icon since the visual refresh: no text to find, so a test reads its place back by
+        // the `Id` `glyph::row_button` interacts with, under this row's own id.
         if manual
-            && ui
-                .small_button("x")
-                .on_hover_text("Remove this manual entry and its saved OSC port")
-                .clicked()
+            && glyph::row_button(
+                ui,
+                glyph::Icon::Close,
+                &format!("remove {}", e.key()),
+                remove_w - GRID,
+            )
+            .on_hover_text("Remove this manual entry and its saved OSC port")
+            .clicked()
         {
             actions.push(Action::RemoveManual(e.server.id));
         }
     });
 }
 
+/// A server's state dot: a square, since the system has no round corners (the human's decision
+/// of 2026-11-17). It keeps the 10 point box the round dot had, so no row moves.
 fn status_dot(ui: &mut egui::Ui, colour: Color32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-    ui.painter().circle_filled(rect.center(), 4.0, colour);
+    ui.painter().rect_filled(
+        egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(2.0 * GRID)),
+        0.0,
+        colour,
+    );
 }
 
 fn conn_text(e: &ServerEntry) -> String {
@@ -2579,13 +2716,15 @@ fn listener_badge(ui: &mut egui::Ui, snapshot: &PeersSnapshot, path: &str) {
     let width = (text.len() as f32 * 2.0 * GRID + 2.0 * GRID).max(5.0 * GRID);
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(width, 4.0 * GRID), egui::Sense::hover());
-    ui.painter().rect_filled(rect, 2.0 * GRID, map::EDGE_CLIENT);
+    // A listener count is a live fact about this method, so it carries the signal colour, on a
+    // square ground as everything else is.
+    ui.painter().rect_filled(rect, 0.0, style::SIGNAL);
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         text,
         FontId::monospace(style::DATA),
-        Color32::BLACK,
+        style::DARK.bg,
     );
     response.on_hover_ui(|ui| {
         ui.label(if count == 1 {
@@ -2708,6 +2847,19 @@ fn node_row(
         );
     }
     let selected = view.selected_path.as_deref() == Some(node.full_path.as_str());
+    // The selected row of the tree is not inverted, as a list's selected line is: it keeps its
+    // text and takes the control surface with a 2 px bar of the brightest ink down its left
+    // edge (the human's decision of 2026-11-17). A row is the width of three columns, and the
+    // bar marks where it starts whatever the indentation of the name inside it.
+    if selected && ui.is_rect_visible(row) {
+        let p = style::palette(ui.visuals());
+        ui.painter().rect_filled(row, 0.0, p.surface);
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(row.min, egui::vec2(2.0, row.height())),
+            0.0,
+            p.text,
+        );
+    }
     // Each column is a child ui inside the row already allocated: none moves the row's cursor.
     {
         let ui = &mut ui.new_child(cell_ui(name_rect, left));
@@ -2716,13 +2868,20 @@ fn node_row(
         ui.add_space(cell.depth as f32 * style::INDENT);
         match cell.open {
             Some(open) => {
-                if ui
-                    .add_sized(
-                        egui::vec2(style::INDENT, style::CONTROL_H),
-                        egui::Button::new(style::data(if open { "-" } else { "+" })).frame(false),
-                    )
-                    .on_hover_text(if open { "Collapse" } else { "Expand" })
-                    .clicked()
+                let icon = if open {
+                    glyph::Icon::ChevronDown
+                } else {
+                    glyph::Icon::ChevronRight
+                };
+                if glyph::button_sized(
+                    ui,
+                    icon,
+                    &format!("expand {}", node.full_path),
+                    egui::vec2(style::INDENT, style::CONTROL_H),
+                    false,
+                )
+                .on_hover_text(if open { "Collapse" } else { "Expand" })
+                .clicked()
                 {
                     actions.push(Action::Toggle(node.full_path.clone()));
                 }
@@ -2731,9 +2890,12 @@ fn node_row(
             None if cell.focusable => ui.add_space(style::INDENT),
             None => {}
         }
+        // Frameless: the row's own ground and its left bar carry the selection, so the name
+        // keeps its colour instead of inverting with it.
         let label = ui
             .add(
-                egui::Button::selectable(selected, cell.label)
+                egui::Button::new(cell.label)
+                    .frame(false)
                     .right_text("")
                     .truncate()
                     .min_size(egui::vec2(ui.available_width(), style::CONTROL_H)),
@@ -2871,19 +3033,34 @@ fn pinned_row(
     view: &mut View,
     actions: &mut Vec<Action>,
 ) {
-    // The row, then its unpin button at the right: unpinning needs no right click.
+    // The row, then its unpin button at the right: unpinning needs no right click. The button
+    // is an icon since the visual refresh, so it carries no text: tests find it by the `Id`
+    // `glyph::row_button` interacts with, `("icon", "unpin <path>")` under the row's own id.
     let unpin_w = 6.0 * GRID;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        pinned_cells(ui, e, path, ui.available_width() - unpin_w, view, actions);
-        if ui
-            .add(egui::Button::new("\u{d7}").min_size(egui::vec2(unpin_w, style::CONTROL_H)))
-            .on_hover_text("Unpin")
-            .clicked()
-        {
-            actions.push(Action::TogglePin(path.to_owned()));
-        }
-    });
+    let row = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            pinned_cells(ui, e, path, ui.available_width() - unpin_w, view, actions);
+            if glyph::row_button(ui, glyph::Icon::Close, &format!("unpin {path}"), unpin_w)
+                .on_hover_text("Unpin")
+                .clicked()
+            {
+                actions.push(Action::TogglePin(path.to_owned()));
+            }
+        })
+        .response
+        .rect;
+    // Pinned items are told apart by a hairline, the one place in the working surface where a
+    // rule does the work that space does elsewhere (the human's decision of 2026-11-17). It is
+    // painted on the row's own bottom edge and takes no height of its own: the panel is a
+    // virtualised list of rows exactly `ROW_H` tall, and a rule that allocated space would put
+    // every row out of step with the scroll.
+    let colour = style::palette(ui.visuals()).subtle;
+    ui.painter().hline(
+        row.x_range(),
+        row.max.y - style::HAIRLINE * 0.5,
+        egui::Stroke::new(style::HAIRLINE, colour),
+    );
 }
 
 /// The cells of a pinned row: the node as the tree draws it, its full path for a name, or the
@@ -3455,15 +3632,36 @@ fn json_tab(ui: &mut egui::Ui, entry: &ServerEntry, view: &mut View, actions: &m
         view.json.note = note;
         view.json.key = Some(key);
     }
-    ui.horizontal(|ui| {
-        ui.label(match &view.selected_path {
+    // PRD 9.1 holds for a toolbar a tab draws for itself: down to the 640 px minimum no control
+    // of it leaves the screen. The two buttons keep their room, and the line that says what is
+    // shown takes what is left and is cut rather than pushing them off.
+    ui.horizontal_wrapped(|ui| {
+        ui.set_min_height(ROW_H);
+        let gap = ui.spacing().item_spacing.x;
+        // What the two buttons need, kept back from the line before the text is given its room.
+        let buttons = 2.0 * style::CONTROL_H + 2.0 * gap;
+        let room = (ui.max_rect().right() - ui.cursor().min.x - buttons).max(8.0 * GRID);
+        let said = match &view.selected_path {
             Some(p) => format!("Subtree at {p}, as received"),
             None => "Whole document, as received".to_owned(),
-        });
-        if ui.button("Copy").clicked() {
+        };
+        ui.add_sized(
+            egui::vec2(room, style::CONTROL_H),
+            egui::Label::new(said.clone())
+                .truncate()
+                .halign(egui::Align::LEFT),
+        )
+        .on_hover_text(said);
+        if glyph::icon_button(ui, glyph::Icon::Copy, "json_copy")
+            .on_hover_text("Copy the document to the clipboard")
+            .clicked()
+        {
             actions.push(Action::Copy(view.json.exact.clone()));
         }
-        if ui.button("Save to file").clicked() {
+        if glyph::icon_button(ui, glyph::Icon::Save, "json_save")
+            .on_hover_text("Save the document to a file")
+            .clicked()
+        {
             actions.push(Action::Save {
                 stem: "document",
                 ext: "json",
@@ -3523,22 +3721,20 @@ fn selected_raw(t: &crate::state::TreeState, selected: Option<&str>) -> (String,
 fn json_line(line: &Line, dark: bool) -> LayoutJob {
     let mut job = LayoutJob::default();
     let font = FontId::monospace(12.0);
-    let colour = |k: Token| match (k, dark) {
-        (Token::Key, true) => Color32::from_rgb(130, 180, 240),
-        (Token::Key, false) => Color32::from_rgb(20, 80, 160),
-        (Token::Str, true) => Color32::from_rgb(170, 210, 140),
-        (Token::Str, false) => Color32::from_rgb(40, 120, 40),
-        (Token::Number, true) => Color32::from_rgb(230, 180, 110),
-        (Token::Number, false) => Color32::from_rgb(170, 90, 0),
-        (Token::Literal, true) => Color32::from_rgb(210, 150, 220),
-        (Token::Literal, false) => Color32::from_rgb(140, 40, 150),
-        (Token::Punct, true) => Color32::from_gray(170),
-        (Token::Punct, false) => Color32::from_gray(90),
+    // One signal colour, and it is not spent on syntax: the document is drawn in the palette's
+    // greys alone, the structure quiet and the values bright (the human's decision of
+    // 2026-11-17). Nothing in a document is live or wants attention.
+    let p = if dark { &style::DARK } else { &style::LIGHT };
+    let colour = |k: Token| match k {
+        Token::Str | Token::Number => p.text,
+        Token::Key => p.body,
+        Token::Literal => p.label,
+        Token::Punct => p.dim,
     };
     job.append(
         &"  ".repeat(line.indent),
         0.0,
-        TextFormat::simple(font.clone(), Color32::GRAY),
+        TextFormat::simple(font.clone(), p.dim),
     );
     for (k, text) in &line.tokens {
         job.append(text, 0.0, TextFormat::simple(font.clone(), colour(*k)));
@@ -3556,32 +3752,39 @@ fn traffic_tab(
     actions: &mut Vec<Action>,
 ) {
     use traffic::DirFilter;
-    ui.horizontal(|ui| {
+    // Wrapped, as the toolbar of the tabs is (PRD 9.1): at the 640 px minimum the centre pane
+    // keeps 224 points, and this row asked for about 400 on one line, which cut the direction
+    // bar mid word and put Pause, Clear and Export off screen. Wrapping is the whole fix: the
+    // filter's 192 points fit the 224 on a line of their own, and the rest follows underneath.
+    ui.horizontal_wrapped(|ui| {
         ui.set_min_height(ROW_H);
+        let filter_w = 48.0 * GRID;
         ui.add(
             egui::TextEdit::singleline(&mut view.traffic_filter)
                 .font(egui::TextStyle::Monospace)
                 .hint_text("filter path or type tags")
-                .desired_width(48.0 * GRID),
+                .desired_width(filter_w),
         );
         ui.spacing_mut().item_spacing.x = 0.0;
-        for (dir, text) in [
-            (DirFilter::All, "all"),
-            (DirFilter::In, "in"),
-            (DirFilter::Out, "out"),
-        ] {
-            ui.selectable_value(&mut view.traffic_dir, dir, text);
-        }
+        style::segmented(
+            ui,
+            &mut view.traffic_dir,
+            &[
+                (DirFilter::All, "all", "Both directions"),
+                (DirFilter::In, "in", "Values received"),
+                (DirFilter::Out, "out", "Messages sent"),
+            ],
+        );
         ui.spacing_mut().item_spacing.x = style::ITEM_GAP;
         ui.add_space(GROUP_GAP);
         let mut paused = entry.traffic.paused();
-        if ui.toggle_value(&mut paused, "Pause").changed() {
+        if ui.toggle_value(&mut paused, style::caps("Pause")).changed() {
             entry.traffic.set_paused(paused);
         }
-        if ui.button("Clear").clicked() {
+        if ui.button(style::caps("Clear")).clicked() {
             entry.traffic.clear();
         }
-        if ui.button("Export").clicked() {
+        if ui.button(style::caps("Export")).clicked() {
             let view_records = entry.traffic.view(&view.traffic_filter, view.traffic_dir);
             actions.push(Action::Save {
                 stem: "traffic",
@@ -3622,12 +3825,17 @@ fn traffic_tab(
         .stick_to_bottom(true)
         .show_rows(ui, row_h, lines.len(), |ui, range| {
             for (block, text) in &lines[range] {
+                // One line a record, however narrow the pane: the scroll area goes both ways
+                // and its bar is how the rest of a line is reached. Left to wrap, a record
+                // became two lines at the 640 px minimum and the log stopped being scannable.
+                // Until the toolbar above wrapped, the width it forced on this area hid that:
+                // the lines did not wrap, they were cut with no way to reach what was cut.
+                let label = |text: &str| {
+                    egui::Label::new(style::data(text)).wrap_mode(egui::TextWrapMode::Extend)
+                };
                 match block {
                     Some(at) => {
-                        let r = ui.add(
-                            egui::Label::new(style::data(text.as_str()))
-                                .sense(egui::Sense::click()),
-                        );
+                        let r = ui.add(label(text.as_str()).sense(egui::Sense::click()));
                         if r.on_hover_text("Click to show or hide the messages")
                             .clicked()
                             && !view.traffic_open.remove(at)
@@ -3636,7 +3844,7 @@ fn traffic_tab(
                         }
                     }
                     None => {
-                        ui.label(style::data(text.as_str()));
+                        ui.add(label(text.as_str()));
                     }
                 }
             }
@@ -4131,11 +4339,20 @@ mod tests {
         let discovered = server();
         let discovered_id = discovered.id;
         h.events.send(Event::ServerFound(discovered)).unwrap();
-        let texts = drawn_texts(&h.frame(Vec::new()));
-        assert_eq!(
-            texts.iter().filter(|t| *t == "x").count(),
-            2,
-            "one remove button per manual entry, none for the discovered one: {texts:?}"
+        // The remove button is an icon since the visual refresh, so it is found by its id and
+        // not by a text, and its strokes must really be painted: a frame on screen.
+        let out = h.frame(Vec::new());
+        let removable = ["localhost:30339", "10.0.0.2:2345"];
+        for key in removable {
+            let rect = icon_place(&h, &format!("remove {key}"));
+            assert!(
+                !strokes_inside(&out, rect).is_empty(),
+                "the remove icon of {key} drawn inside {rect:?}"
+            );
+        }
+        assert!(
+            icon_drawn(&h, "remove 127.0.0.1:2345").is_none(),
+            "no remove button for the discovered server"
         );
         let local = h
             .app
@@ -4170,8 +4387,18 @@ mod tests {
             h.app.state.entry(discovered_id).is_some(),
             "a discovered server stays: it would come back"
         );
-        let texts = drawn_texts(&h.frame(Vec::new()));
-        assert_eq!(texts.iter().filter(|t| *t == "x").count(), 1);
+        // Twice: `Context::read_response` falls back to the pass before when this one has no
+        // such widget, so one frame after a removal would still answer with the old place.
+        h.frame(Vec::new());
+        h.frame(Vec::new());
+        assert!(
+            icon_drawn(&h, "remove localhost:30339").is_none(),
+            "the entry that was removed has no button left"
+        );
+        assert!(
+            icon_drawn(&h, "remove 10.0.0.2:2345").is_some(),
+            "the entry that stays keeps its button"
+        );
     }
 
     /// PRD 9.8: nodes pinned from the tree are listed in their own panel, whatever the tree
@@ -4556,7 +4783,8 @@ mod tests {
             let e = h.app.state.entry(id).unwrap();
             let (text, warning) = values_text(e).unwrap();
             assert!(!warning);
-            seen.push((e.ws.clone(), text, conn_text(e), dot_colour(e)));
+            let dark = h.ctx.style_of(egui::Theme::Dark).visuals.clone();
+            seen.push((e.ws.clone(), text, conn_text(e), dot_colour(&dark, e)));
         }
         let [absent, open, live] = &seen[..] else {
             panic!()
@@ -4857,18 +5085,58 @@ mod tests {
         found[0].1
     }
 
+    /// The place of the icon button whose salt is `salt`, read back from the context by the id
+    /// `glyph::id_of` gives it. An icon button carries no text, so this is how a test finds it:
+    /// "refresh", "json_copy", `format!("unpin {path}")`, and so on.
+    fn icon_place(h: &Harness, salt: &str) -> egui::Rect {
+        icon_drawn(h, salt).unwrap_or_else(|| panic!("no icon button {salt:?} this frame"))
+    }
+
+    /// The place of the icon button whose salt is `salt`, or `None` when the frame drew none.
+    fn icon_drawn(h: &Harness, salt: &str) -> Option<egui::Rect> {
+        h.ctx
+            .read_response(glyph::id_of(salt))
+            .map(|r| r.interact_rect)
+    }
+
+    /// The bounding rectangle of every stroke painted inside `rect`, with its clip: what an icon
+    /// button actually drew. An icon is line segments and open paths, never text, so a button
+    /// that painted nothing comes back empty however much of its frame is on screen.
+    fn strokes_inside(out: &egui::FullOutput, rect: egui::Rect) -> Vec<(egui::Rect, egui::Rect)> {
+        fn walk(shape: &egui::Shape, clip: egui::Rect, out: &mut Vec<(egui::Rect, egui::Rect)>) {
+            match shape {
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, clip, out)),
+                egui::Shape::LineSegment { points, .. } => {
+                    out.push((egui::Rect::from_points(points), clip));
+                }
+                egui::Shape::Path(p) => {
+                    out.push((egui::Rect::from_points(&p.points), clip));
+                }
+                _ => {}
+            }
+        }
+        let mut all = Vec::new();
+        for clipped in &out.shapes {
+            walk(&clipped.shape, clipped.clip_rect, &mut all);
+        }
+        // Half a pixel of slack: a stroke is centred on its line and spills by its own width.
+        all.retain(|(r, _)| rect.expand(glyph::WEIGHT).contains_rect(*r));
+        all
+    }
+
     /// On a wide window, 1060 points or more, under the default width of 1100, the side panes keep
     /// their width, the centre takes the rest, and the toolbar holds on one line: the four tabs,
     /// Refresh, Writable, the filter and the root fields side by side, frame after frame.
     #[test]
     fn the_toolbar_holds_one_line_on_a_wide_window() {
-        const CONTROLS: [&str; 8] = [
-            "Tree",
+        // Since the visual refresh the tabs are capitals in a segmented bar and Refresh is an
+        // icon with no text, so it is placed by its id and the rest by their drawn text.
+        const CONTROLS: [&str; 7] = [
+            "TREE",
             "JSON",
-            "Traffic",
-            "Map",
-            "Refresh",
-            "Writable",
+            "TRAFFIC",
+            "MAP",
+            "WRITABLE",
             "filter  /",
             "root at path",
         ];
@@ -4895,7 +5163,8 @@ mod tests {
                     "the {pane} pane {w} px wide, not {expected}, window {width}"
                 );
             }
-            let rows: Vec<f32> = CONTROLS.iter().map(|c| place(&out, c).center().y).collect();
+            let mut rows: Vec<f32> = CONTROLS.iter().map(|c| place(&out, c).center().y).collect();
+            rows.push(icon_place(&h, "refresh").center().y);
             let (top, bottom) = rows
                 .iter()
                 .fold((f32::MAX, f32::MIN), |(a, b), y| (a.min(*y), b.max(*y)));
@@ -4918,15 +5187,19 @@ mod tests {
         h.frame_sized(size, Vec::new());
         let out = h.frame_sized(size, Vec::new());
         let y = |c: &str| place(&out, c).center().y;
-        for c in ["JSON", "Traffic", "Map", "Refresh"] {
-            assert!((y(c) - y("Tree")).abs() < 2.0, "{c} beside Tree");
+        for c in ["JSON", "TRAFFIC", "MAP"] {
+            assert!((y(c) - y("TREE")).abs() < 2.0, "{c} beside TREE");
         }
+        assert!(
+            (icon_place(&h, "refresh").center().y - y("TREE")).abs() < 2.0,
+            "Refresh, an icon since the visual refresh, beside TREE"
+        );
         assert!(
             (y("filter  /") - y("root at path")).abs() < 2.0,
             "the two fields on one line"
         );
         assert!(
-            y("filter  /") - y("Tree") < 1.5 * ROW_H,
+            y("filter  /") - y("TREE") < 1.5 * ROW_H,
             "the fields on the line right after the tabs"
         );
     }
@@ -5043,7 +5316,7 @@ mod tests {
         let out = h.frame(Vec::new());
         click(
             &mut h,
-            place(&out, "Writable"),
+            place(&out, "WRITABLE"),
             egui::PointerButton::Primary,
         );
         assert!(h.app.config.hide_read_only, "the toggle set");
@@ -5084,32 +5357,40 @@ mod tests {
 
     /// The preset section is folded until opened: its header only, no slot, and the pinned
     /// panel takes the room. Opened by its header, it shows the sixteen slots, and stays open in
-    /// the config.
+    /// the config. Since the visual refresh the header is a chevron and the word PRESETS, and a
+    /// slot carries its number alone, so the slots are counted by their numbers.
     #[test]
     fn the_preset_section_is_folded_until_opened() {
         let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
         let mut h = harness();
         controllable(&mut h, "127.0.0.1", 2345, "S", doc);
         let out = h.frame(Vec::new());
-        let texts = drawn_texts(&out);
+        let slot_numbers = |out: &egui::FullOutput| {
+            drawn_texts(out)
+                .into_iter()
+                .filter(|t| {
+                    t.len() == 2
+                        && t.parse::<usize>()
+                            .is_ok_and(|n| (1..=presets::SLOTS).contains(&n))
+                })
+                .count()
+        };
         assert!(!h.app.config.presets_open, "folded by default");
+        assert_eq!(slot_numbers(&out), 0, "no slot while folded");
         assert!(
-            !texts.iter().any(|t| t == "Recall" || t == "Capture"),
-            "no slot while folded"
+            drawn_texts(&out).iter().any(|t| t == "PRESETS"),
+            "the header is there while folded"
         );
-        click(
-            &mut h,
-            place(&out, "+ PRESETS"),
-            egui::PointerButton::Primary,
-        );
+        click(&mut h, place(&out, "PRESETS"), egui::PointerButton::Primary);
         assert!(h.app.config.presets_open, "opened by its header");
         let out = h.frame(Vec::new());
-        let texts = drawn_texts(&out);
-        assert_eq!(
-            texts.iter().filter(|t| *t == "Recall").count(),
-            presets::SLOTS
+        assert_eq!(slot_numbers(&out), presets::SLOTS);
+        // The chevron turns down when the section is open: the strokes of the icon move.
+        let folded_chevron = icon_place(&h, "presets_fold");
+        assert!(
+            !strokes_inside(&out, folded_chevron).is_empty(),
+            "the chevron of the header drawn inside {folded_chevron:?}"
         );
-        assert!(texts.iter().any(|t| t == "- PRESETS"));
         let saved: Config = serde_json::from_slice(&h.app.config.to_bytes()).unwrap();
         assert!(saved.presets_open, "kept open in the config");
     }
@@ -5137,13 +5418,24 @@ mod tests {
 
     /// The light theme reads as the dark one does: each control stands out from the panel at
     /// least as much, text and weak text at least as much, a control's text on its own ground at
-    /// least as much. The dark theme is egui's, unchanged.
+    /// least as much. Since the human's decision of 2026-11-17 the dark theme is this
+    /// repository's own, not egui's: both themes come from one palette through
+    /// `style::visuals_of`, so the comparison is between two deliberate themes.
     #[test]
     fn the_light_theme_contrasts_as_the_dark_one_does() {
         let h = harness();
         let dark = h.ctx.style_of(egui::Theme::Dark).visuals.clone();
         let light = h.ctx.style_of(egui::Theme::Light).visuals.clone();
-        assert_eq!(dark, egui::Visuals::dark(), "the dark theme unchanged");
+        assert_eq!(
+            dark,
+            style::visuals_of(&style::DARK, true),
+            "the dark theme is the one built from the dark palette"
+        );
+        assert_eq!(
+            light,
+            style::visuals_of(&style::LIGHT, false),
+            "the light theme is the one built from the light palette"
+        );
         // A button or field at rest: its ground, or its edge when it has one.
         fn edge(v: &egui::Visuals) -> f32 {
             let w = &v.widgets.inactive;
@@ -5181,6 +5473,390 @@ mod tests {
         assert!(contrast(light.text_color(), light.panel_fill) >= 4.5);
     }
 
+    /// Nothing a preset slot draws ever leaves the slot's own square, at any window width down
+    /// to the 640 px minimum, and under the pointer as well as at rest. Seen on screen on
+    /// 2026-11-17: an empty slot hovered drew the word CAPTURE, 44 points of text in a 40 point
+    /// square, and the window showed "CAPTURI".
+    #[test]
+    fn a_preset_slot_draws_nothing_outside_its_own_square() {
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
+        for width in [640.0, 720.0, 900.0, 1100.0, 1440.0, 1920.0] {
+            let mut h = harness();
+            controllable(&mut h, "127.0.0.1", 2345, "S", doc);
+            h.app.config.presets_open = true;
+            let size = egui::vec2(width, 700.0);
+            h.frame_sized(size, Vec::new());
+            let out = h.frame_sized(size, Vec::new());
+            // Slot 01 at rest, and then with the pointer resting on it.
+            let at_rest = place(&out, "01");
+            let slot =
+                egui::Rect::from_center_size(at_rest.center(), egui::Vec2::splat(10.0 * GRID));
+            let hovered = {
+                let p = slot.center();
+                h.frame_sized(size, vec![egui::Event::PointerMoved(p)]);
+                h.frame_sized(
+                    size,
+                    vec![egui::Event::PointerMoved(p + egui::vec2(1.0, 0.0))],
+                )
+            };
+            for (what, frame) in [("at rest", &out), ("hovered", &hovered)] {
+                // Everything drawn whose centre falls in the slot belongs to the slot: its
+                // text, and the strokes of the glyph that replaces the number under the
+                // pointer. The two together, so a fix that swaps one for the other is covered.
+                let texts: Vec<(String, egui::Rect, egui::Rect)> = drawn_text_rects(frame)
+                    .into_iter()
+                    .filter(|(_, r, _)| slot.contains(r.center()))
+                    .collect();
+                let strokes: Vec<(String, egui::Rect, egui::Rect)> =
+                    strokes_inside(frame, slot.expand(2.0 * GRID))
+                        .into_iter()
+                        .filter(|(r, _)| slot.contains(r.center()))
+                        .map(|(r, c)| ("a stroke".to_owned(), r, c))
+                        .collect();
+                let drawn: Vec<(String, egui::Rect, egui::Rect)> =
+                    texts.into_iter().chain(strokes).collect();
+                assert!(
+                    !drawn.is_empty(),
+                    "slot 01 drew nothing {what} at width {width}"
+                );
+                for (t, r, clip) in drawn {
+                    assert!(
+                        slot.expand(0.5).contains_rect(r),
+                        "{t:?} is {:.1} points wide in a {} point slot, {what} at width \
+                         {width}: {r:?} outside {slot:?}",
+                        r.width(),
+                        10.0 * GRID
+                    );
+                    assert!(
+                        clip.expand(0.5).contains_rect(r),
+                        "{t:?} cut by its clip {clip:?}, {what} at width {width}"
+                    );
+                }
+            }
+            // Under the pointer the empty slot really draws the capture glyph, and not just
+            // nothing: its strokes, where its number was.
+            let glyph_strokes = strokes_inside(&hovered, slot)
+                .into_iter()
+                .filter(|(r, _)| slot.contains(r.center()))
+                .count();
+            assert!(
+                glyph_strokes >= 4,
+                "the capture glyph drawn in the hovered empty slot at width {width}: \
+                 {glyph_strokes} strokes"
+            );
+        }
+    }
+
+    /// The visual system of 2026-11-17, in both themes: square corners everywhere, no shadow,
+    /// borders of one hairline, one signal colour and no other colour, and a selection that
+    /// inverts. A theme that rounds a corner, casts a shadow, thickens a border or brings in a
+    /// second hue fails here.
+    #[test]
+    fn both_themes_are_square_flat_and_of_one_signal_colour() {
+        let h = harness();
+        for theme in [egui::Theme::Dark, egui::Theme::Light] {
+            let v = h.ctx.style_of(theme).visuals.clone();
+            let p = style::palette(&v);
+            assert_eq!(
+                v.window_corner_radius,
+                egui::CornerRadius::ZERO,
+                "{theme:?}"
+            );
+            assert_eq!(v.menu_corner_radius, egui::CornerRadius::ZERO, "{theme:?}");
+            assert_eq!(v.window_shadow, egui::epaint::Shadow::NONE, "{theme:?}");
+            assert_eq!(v.popup_shadow, egui::epaint::Shadow::NONE, "{theme:?}");
+            for (what, w) in [
+                ("noninteractive", &v.widgets.noninteractive),
+                ("inactive", &v.widgets.inactive),
+                ("hovered", &v.widgets.hovered),
+                ("active", &v.widgets.active),
+                ("open", &v.widgets.open),
+            ] {
+                assert_eq!(
+                    w.corner_radius,
+                    egui::CornerRadius::ZERO,
+                    "{theme:?} {what}: a square corner"
+                );
+                assert_eq!(
+                    w.bg_stroke.width,
+                    style::HAIRLINE,
+                    "{theme:?} {what}: a border of one hairline"
+                );
+                assert_eq!(w.expansion, 0.0, "{theme:?} {what}: no expansion");
+            }
+            // The selection inverts: the ground takes the ink and the ink the ground.
+            assert_eq!(v.selection.bg_fill, p.text, "{theme:?}");
+            assert_eq!(v.selection.stroke.color, p.bg, "{theme:?}");
+            // The slider is a 2 px track with a 2 px vertical thumb.
+            assert_eq!(h.ctx.global_style().spacing.slider_rail_height, 2.0);
+            let egui::style::HandleShape::Rect { aspect_ratio } = v.handle_shape else {
+                panic!("{theme:?}: a square handle, not a circle");
+            };
+            // `Slider` makes the handle `2 * (radius * aspect_ratio, radius)` with a radius of
+            // the row's height over 2.5, so this is a bar 2 points wide.
+            let width = 2.0 * (ROW_H / 2.5) * aspect_ratio;
+            assert!(
+                (width - 2.0).abs() < 0.01,
+                "{theme:?}: a thumb {width} points wide, not 2"
+            );
+            // One colour and no other: every colour of the theme is a grey, or the signal.
+            let grey = |c: Color32| c.r() == c.g() && c.g() == c.b();
+            let mut colours: Vec<(&str, Color32)> = vec![
+                ("panel_fill", v.panel_fill),
+                ("window_fill", v.window_fill),
+                ("extreme_bg_color", v.extreme_bg_color),
+                ("faint_bg_color", v.faint_bg_color),
+                ("code_bg_color", v.code_bg_color),
+                ("window_stroke", v.window_stroke.color),
+                ("warn_fg_color", v.warn_fg_color),
+                ("error_fg_color", v.error_fg_color),
+                ("hyperlink_color", v.hyperlink_color),
+                ("text_color", v.text_color()),
+                ("weak_text_color", v.weak_text_color()),
+                ("strong_text_color", v.strong_text_color()),
+                ("selection", v.selection.bg_fill),
+            ];
+            for (what, w) in [
+                ("noninteractive", &v.widgets.noninteractive),
+                ("inactive", &v.widgets.inactive),
+                ("hovered", &v.widgets.hovered),
+                ("active", &v.widgets.active),
+                ("open", &v.widgets.open),
+            ] {
+                colours.push((what, w.bg_fill));
+                colours.push((what, w.weak_bg_fill));
+                colours.push((what, w.bg_stroke.color));
+                colours.push((what, w.fg_stroke.color));
+            }
+            for (what, c) in colours {
+                assert!(
+                    grey(c) || c == style::SIGNAL,
+                    "{theme:?} {what}: {c:?} is neither a grey nor the signal colour"
+                );
+            }
+        }
+        // The signal colour is the one the brief names, and it is the same in both themes.
+        assert_eq!(style::SIGNAL, Color32::from_rgb(0xFF, 0x7A, 0x1A));
+    }
+
+    /// Space Grotesk leads the proportional family and Space Mono the monospace one, with the
+    /// fonts `epaint` ships kept behind them as the fallbacks that carry the glyphs `egui`
+    /// itself draws. Both are bundled in the binary, so their license texts are required:
+    /// `ci/check-licenses.sh` is what checks that, and this checks they are really in use.
+    #[test]
+    fn the_bundled_typefaces_lead_each_family() {
+        let f = style::fonts();
+        assert!(f.font_data.contains_key("SpaceGrotesk"));
+        assert!(f.font_data.contains_key("SpaceMono"));
+        for (family, first) in [
+            (egui::FontFamily::Proportional, "SpaceGrotesk"),
+            (egui::FontFamily::Monospace, "SpaceMono"),
+        ] {
+            let list = f.families.get(&family).unwrap();
+            assert_eq!(list.first().map(String::as_str), Some(first), "{family:?}");
+            for kept in [
+                "Hack",
+                "Ubuntu-Light",
+                "NotoEmoji-Regular",
+                "emoji-icon-font",
+            ] {
+                let default = egui::FontDefinitions::default();
+                if default.families[&family].contains(&kept.to_owned()) {
+                    assert!(
+                        list.contains(&kept.to_owned()),
+                        "{family:?} keeps {kept} as a fallback"
+                    );
+                }
+            }
+        }
+        // The window really lays text out in them, and not in the fonts it fell back on before.
+        // `epaint` offers no way to ask which face supplied a glyph, so the proof is the
+        // metrics: Space Grotesk is about a tenth wider than Ubuntu-Light at one size, which a
+        // laid out width shows. A family left empty, or a name misspelled, falls back to the
+        // old font and the two widths come out equal.
+        let mut h = harness();
+        h.frame(Vec::new());
+        let width = |ctx: &egui::Context, family: egui::FontFamily, size: f32| {
+            ctx.fonts_mut(|f| {
+                f.layout_no_wrap(
+                    "name of 2 known servers: not matched".to_owned(),
+                    egui::FontId::new(size, family),
+                    Color32::WHITE,
+                )
+                .size()
+                .x
+            })
+        };
+        // The same context, with the fonts of `epaint` alone, for the comparison.
+        let before = egui::Context::default();
+        before.set_fonts(egui::FontDefinitions::default());
+        before.begin_pass(egui::RawInput::default());
+        for (family, size) in [
+            (egui::FontFamily::Proportional, style::SMALL),
+            (egui::FontFamily::Monospace, style::DATA),
+        ] {
+            let ours = width(&h.ctx, family.clone(), size);
+            let theirs = width(&before, family.clone(), size);
+            println!("FONT {family:?} at {size}: {ours:.1} px, epaint's own {theirs:.1} px");
+            assert!(ours > 0.0 && theirs > 0.0, "{family:?} laid nothing out");
+            assert_ne!(
+                ours, theirs,
+                "{family:?} is still laid out in epaint's own font"
+            );
+        }
+        // Space Grotesk is the wider of the two, by about a tenth: the figure the map's box
+        // width and the toolbar's widths were checked against.
+        let ours = width(&h.ctx, egui::FontFamily::Proportional, style::SMALL);
+        let theirs = width(&before, egui::FontFamily::Proportional, style::SMALL);
+        assert!(
+            ours > theirs * 1.05,
+            "Space Grotesk wider than Ubuntu-Light: {ours:.1} against {theirs:.1}"
+        );
+    }
+
+    /// The map's four kinds of edge keep four colours, and only one of them is the signal
+    /// colour: a `CLIENTS` edge, a named client holding a WebSocket, is the live fact the map
+    /// exists to show. A `SENDERS` edge, an ambiguous one and a stale reading are weaker facts
+    /// and must not be drawn as that one (PRD 9.10, CLAUDE.md law 1). Each also has its own
+    /// line, which the map's own tests check; this guards the colours.
+    #[test]
+    fn only_the_live_edge_of_the_map_carries_the_signal_colour() {
+        let kinds = [
+            ("CLIENTS", map::EDGE_CLIENT),
+            ("SENDERS", map::EDGE_SENDER),
+            ("ambiguous", map::EDGE_AMBIGUOUS),
+            ("stale", map::EDGE_STALE),
+        ];
+        for (i, (one, a)) in kinds.iter().enumerate() {
+            for (other, b) in kinds.iter().skip(i + 1) {
+                assert_ne!(a, b, "the {one} edge and the {other} edge share a colour");
+            }
+        }
+        assert_eq!(
+            map::EDGE_CLIENT,
+            style::SIGNAL,
+            "the live edge is the signal"
+        );
+        for (what, c) in kinds.iter().skip(1) {
+            assert_ne!(
+                *c,
+                style::SIGNAL,
+                "the {what} edge must not carry the signal colour"
+            );
+            assert!(
+                c.r() == c.g() && c.g() == c.b(),
+                "the {what} edge is a grey: {c:?}"
+            );
+        }
+    }
+
+    /// The hairline that parts two pinned items takes no height of its own: it is painted on
+    /// the row's own bottom edge, so the pitch of the rows is what it was before the visual
+    /// refresh, `ROW_H` and the panel's own item spacing. A rule given height would add a point
+    /// a row and put the virtualised list further out of step with its scroll.
+    ///
+    /// The pitch is `ROW_H + item_spacing.y`, 28 points, while the panel asks `show_rows` for
+    /// rows of `ROW_H`, 24: that mismatch is older than this test, measured at 28 on d3df218
+    /// too, and is recorded in PITFALLS.md rather than changed here. This test holds the pitch
+    /// where it is, so the mismatch cannot grow unnoticed.
+    #[test]
+    fn the_pinned_rows_keep_one_row_height_each_hairline_and_all() {
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]},"b":{"FULL_PATH":"/b","TYPE":"f","ACCESS":3,"VALUE":[0.5]},"c":{"FULL_PATH":"/c","TYPE":"f","ACCESS":3,"VALUE":[0.5]},"d":{"FULL_PATH":"/d","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
+        let mut h = harness();
+        controllable(&mut h, "127.0.0.1", 2345, "S", doc);
+        h.app.config.pinned_paths.insert(
+            "127.0.0.1:2345".into(),
+            vec!["/a".into(), "/b".into(), "/c".into(), "/d".into()],
+        );
+        h.frame(Vec::new());
+        let out = h.frame(Vec::new());
+        // Each row is placed by the full path it carries for a name (PRD 9.8).
+        let mut tops: Vec<f32> = ["/a", "/b", "/c", "/d"]
+            .iter()
+            .map(|p| place(&out, p).center().y)
+            .collect();
+        tops.sort_by(f32::total_cmp);
+        let expected = ROW_H + h.ctx.global_style().spacing.item_spacing.y;
+        for pair in tops.windows(2) {
+            let pitch = pair[1] - pair[0];
+            assert!(
+                (pitch - expected).abs() < 0.01,
+                "two pinned rows {pitch} points apart, not {expected}: a rule took height of \
+                 its own"
+            );
+        }
+        // And the hairline is really painted, on the bottom edge of each row.
+        let subtle = style::DARK.subtle;
+        let lines: Vec<f32> = horizontal_rules(&out, subtle);
+        for top in &tops {
+            let bottom = top + ROW_H / 2.0;
+            assert!(
+                lines.iter().any(|y| (y - bottom).abs() <= 1.0),
+                "a hairline on the bottom edge of the row at {top}: {lines:?}"
+            );
+        }
+    }
+
+    /// Where the frame painted a horizontal 1 px rule of `colour`, by y.
+    fn horizontal_rules(out: &egui::FullOutput, colour: Color32) -> Vec<f32> {
+        fn walk(shape: &egui::Shape, colour: Color32, found: &mut Vec<f32>) {
+            match shape {
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, colour, found)),
+                egui::Shape::LineSegment { points, stroke }
+                    if stroke.color == colour
+                        && (points[0].y - points[1].y).abs() < 0.01
+                        && points[0].x != points[1].x =>
+                {
+                    found.push(points[0].y);
+                }
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        out.shapes
+            .iter()
+            .for_each(|c| walk(&c.shape, colour, &mut found));
+        found
+    }
+
+    /// `startup` opens the view a launch asks for, so that the real binary tests and the
+    /// screenshots need no hand to click with. Every word it takes is checked here: a tab name
+    /// opens that tab, `about` opens the about box, and a word it does not know changes
+    /// nothing. None of it reaches the config, which PRD 9.7 fixes the contents of.
+    #[test]
+    fn startup_opens_the_tab_and_the_about_box_it_is_asked_for() {
+        for (word, tab) in [
+            ("tree", Tab::Tree),
+            ("json", Tab::Json),
+            ("traffic", Tab::Traffic),
+            ("map", Tab::Map),
+        ] {
+            let mut h = harness();
+            // Away from the one asked for, so opening it is a real move for each word.
+            h.app.view.tab = if tab == Tab::Tree {
+                Tab::Map
+            } else {
+                Tab::Tree
+            };
+            h.app.startup(&h.ctx.clone(), word);
+            assert_eq!(h.app.view.tab, tab, "startup {word:?}");
+            let saved: Config = serde_json::from_slice(&h.app.config.to_bytes()).unwrap();
+            assert_eq!(saved, Config::default(), "startup {word:?} kept nothing");
+        }
+        let mut h = harness();
+        assert!(!h.app.view.about_open);
+        h.app.startup(&h.ctx.clone(), "about");
+        h.frame(Vec::new());
+        assert!(h.app.view.about_open, "startup about opened the box");
+        let mut h = harness();
+        let before = h.app.view.tab;
+        h.app.startup(&h.ctx.clone(), "nonsense,also-nonsense");
+        assert_eq!(
+            h.app.view.tab, before,
+            "a word it does not know changes nothing"
+        );
+    }
+
     /// A pinned node is unpinned from the pinned panel by the button on its row, as from the
     /// tree by its menu; the context menu of the panel row unpins too.
     #[test]
@@ -5194,7 +5870,14 @@ mod tests {
             .pinned_paths
             .insert(key.clone(), vec!["/a".into()]);
         let out = h.frame(Vec::new());
-        click(&mut h, place(&out, "\u{d7}"), egui::PointerButton::Primary);
+        // The unpin button is an icon since the visual refresh: found by its id, and its
+        // strokes must be painted where it sits.
+        let unpin = icon_place(&h, "unpin /a");
+        assert!(
+            !strokes_inside(&out, unpin).is_empty(),
+            "the unpin icon drawn inside {unpin:?}"
+        );
+        click(&mut h, unpin, egui::PointerButton::Primary);
         assert!(
             !h.app.config.pinned_paths.contains_key(&key),
             "unpinned by its button"
@@ -5216,55 +5899,73 @@ mod tests {
     }
 
     /// Each preset slot names its two actions, and a slot holding values is told from an empty
-    /// one at a glance: tinted ground and plain number against a faint one. Capture stores, Recall
-    /// sends, and an empty slot's Recall does nothing.
+    /// one at a glance, and both actions are reachable without a right click.
+    ///
+    /// Since the human's decision of 2026-11-17 a slot is a square carrying its number alone: a
+    /// slot that holds values has a border in the brightest ink on the control surface, the slot
+    /// last recalled is inverted, an empty slot is dim and says "capture" under the pointer. A
+    /// left click recalls a full slot and captures into an empty one, and a shift click captures
+    /// into any slot. The right click menu names Recall and Capture in words.
     #[test]
-    fn preset_slots_name_their_actions_and_show_what_they_hold() {
+    fn preset_slots_show_what_they_hold_and_both_actions_need_no_right_click() {
         let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
         let mut h = harness();
         controllable(&mut h, "127.0.0.1", 2345, "S", doc);
         h.app.config.presets_open = true;
         let out = h.frame(Vec::new());
-        let texts = drawn_texts(&out);
-        for action in ["Recall", "Capture"] {
-            assert_eq!(
-                texts.iter().filter(|t| *t == action).count(),
-                presets::SLOTS,
-                "{action} on every slot"
-            );
-        }
-        // The Capture of slot 01: on the row of "01", the nearest to its right.
-        let one = place(&out, "01");
-        let capture = drawn_text_rects(&out)
+        // Sixteen slots, four to a row, every one square and numbered.
+        let numbers: Vec<(String, egui::Rect)> = drawn_text_rects(&out)
             .into_iter()
-            .filter(|(t, r, _)| t == "Capture" && (r.center().y - one.center().y).abs() < 2.0)
-            .map(|(_, r, _)| r)
-            .filter(|r| r.left() > one.right())
-            .min_by(|a, b| a.left().total_cmp(&b.left()))
-            .unwrap();
-        click(&mut h, capture, egui::PointerButton::Primary);
+            .filter(|(t, _, _)| {
+                t.len() == 2
+                    && t.parse::<usize>()
+                        .is_ok_and(|n| (1..=presets::SLOTS).contains(&n))
+            })
+            .map(|(t, r, _)| (t, r))
+            .collect();
+        assert_eq!(numbers.len(), presets::SLOTS, "sixteen slots: {numbers:?}");
+        let rows: HashSet<i32> = numbers.iter().map(|(_, r)| r.center().y as i32).collect();
+        assert_eq!(rows.len(), 4, "four rows of four: {rows:?}");
+        let slot = |out: &egui::FullOutput, n: usize| place(out, &format!("{n:02}"));
+
+        // An empty slot captures on a plain left click: no right click needed.
+        click(&mut h, slot(&out, 1), egui::PointerButton::Primary);
         assert!(
             h.app.config.presets.contains_key(&1),
-            "Capture stored slot 01"
+            "a click on an empty slot captured into it"
         );
         let out = h.frame(Vec::new());
-        // Held and empty, told apart: the tint behind the slot and the colour of its number.
-        let fill = h
-            .ctx
-            .global_style()
-            .visuals
-            .selection
-            .bg_fill
-            .gamma_multiply(0.35);
-        let tinted = |r: egui::Rect| {
-            painted_spans(&out, fill, r.center().y)
+        // Held and empty, told apart: the border of a full slot in the brightest ink, against
+        // the dim border of an empty one.
+        let dark = h.ctx.style_of(egui::Theme::Dark).visuals.clone();
+        assert!(dark.dark_mode, "the harness draws the dark theme");
+        let border_of = |out: &egui::FullOutput, at: egui::Rect| -> Vec<Color32> {
+            fn walk(shape: &egui::Shape, at: egui::Rect, found: &mut Vec<Color32>) {
+                match shape {
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, at, found)),
+                    egui::Shape::Rect(r)
+                        if r.stroke.width > 0.0 && r.rect.contains(at.center()) =>
+                    {
+                        found.push(r.stroke.color);
+                    }
+                    _ => {}
+                }
+            }
+            let mut found = Vec::new();
+            out.shapes
                 .iter()
-                .any(|(lo, hi)| *lo <= r.center().x && r.center().x <= *hi)
+                .for_each(|c| walk(&c.shape, at, &mut found));
+            found
         };
-        let (one, two) = (place(&out, "01"), place(&out, "02"));
-        assert!(tinted(one), "the held slot 01 is tinted");
-        assert!(!tinted(two), "the empty slot 02 is not");
-        let colour = |text: &str| {
+        assert!(
+            border_of(&out, slot(&out, 1)).contains(&style::DARK.text),
+            "the full slot 01 is bordered in the brightest ink"
+        );
+        assert!(
+            border_of(&out, slot(&out, 2)).contains(&style::DARK.border),
+            "the empty slot 02 keeps the default border"
+        );
+        let colour = |out: &egui::FullOutput, text: &str| {
             fn walk(shape: &egui::Shape, text: &str, out: &mut Vec<Color32>) {
                 match shape {
                     egui::Shape::Vec(s) => s.iter().for_each(|s| walk(s, text, out)),
@@ -5286,24 +5987,14 @@ mod tests {
             found[0]
         };
         assert_ne!(
-            colour("01"),
-            colour("02"),
+            colour(&out, "01"),
+            colour(&out, "02"),
             "a held number reads apart from an empty one"
         );
-        // Recall: slot 01 sends, the empty slot 02 does nothing.
-        let recall_of = |out: &egui::FullOutput, row: egui::Rect| {
-            drawn_text_rects(out)
-                .into_iter()
-                .filter(|(t, r, _)| t == "Recall" && (r.center().y - row.center().y).abs() < 2.0)
-                .map(|(_, r, _)| r)
-                .filter(|r| r.left() > row.right())
-                .min_by(|a, b| a.left().total_cmp(&b.left()))
-                .unwrap()
-        };
+
+        // Recall: a left click on a full slot sends, and the slot then draws inverted.
         h.app.view.note = None;
-        click(&mut h, recall_of(&out, two), egui::PointerButton::Primary);
-        assert_eq!(h.app.view.note, None, "an empty slot recalls nothing");
-        click(&mut h, recall_of(&out, one), egui::PointerButton::Primary);
+        click(&mut h, slot(&out, 1), egui::PointerButton::Primary);
         assert!(
             h.app
                 .view
@@ -5313,6 +6004,66 @@ mod tests {
             "{:?}",
             h.app.view.note
         );
+        assert_eq!(h.app.view.preset_recalled, Some(1));
+        let out = h.frame(Vec::new());
+        assert_eq!(
+            colour(&out, "01"),
+            style::DARK.bg,
+            "the slot last recalled is inverted, its number in the ground's colour"
+        );
+
+        // A shift click captures into a slot that ALREADY HOLDS values, replacing what it
+        // holds: that is the route to Capture that needs no right click on a full slot, and the
+        // one a plain click cannot take, since a plain click on a full slot recalls.
+        // `egui::InputState::modifiers`, which the slot reads, is moved by
+        // `Event::ModifiersChanged` and by nothing else: `RawInput` carries no modifier field,
+        // so a window system announces the key going down before the click and up after it.
+        let shift_click = |h: &mut Harness, at: egui::Rect| {
+            let p = at.center();
+            h.frame(vec![egui::Event::PointerMoved(p)]);
+            h.frame(vec![egui::Event::ModifiersChanged(Modifiers::SHIFT)]);
+            for pressed in [true, false] {
+                h.frame(vec![egui::Event::PointerButton {
+                    pos: p,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Modifiers::SHIFT,
+                }]);
+            }
+            h.frame(vec![egui::Event::ModifiersChanged(Modifiers::NONE)]);
+            h.frame(vec![egui::Event::PointerGone]);
+        };
+        assert!(h.app.config.presets.contains_key(&1), "slot 01 is full");
+        h.app.view.note = None;
+        let one = slot(&out, 1);
+        shift_click(&mut h, one);
+        assert!(
+            h.app
+                .view
+                .note
+                .as_deref()
+                .is_some_and(|n| n.starts_with("Slot 01:") && n.contains("captured")),
+            "a shift click on the full slot 01 captured into it, not recalled: {:?}",
+            h.app.view.note
+        );
+        // And an empty slot captures on a plain click, the other route to Capture.
+        let out = h.frame(Vec::new());
+        click(&mut h, slot(&out, 2), egui::PointerButton::Primary);
+        assert!(
+            h.app.config.presets.contains_key(&2),
+            "a plain click on the empty slot 02 captured into it"
+        );
+
+        // The right click menu names both actions in words.
+        let out = h.frame(Vec::new());
+        click(&mut h, slot(&out, 1), egui::PointerButton::Secondary);
+        let texts = drawn_texts(&h.frame(Vec::new()));
+        for action in ["Recall", "Capture"] {
+            assert!(
+                texts.iter().any(|t| t == action),
+                "{action} named in the menu: {texts:?}"
+            );
+        }
     }
 
     /// The toolbar of the centre never runs off screen or under a side pane: from the narrowest
@@ -5323,15 +6074,16 @@ mod tests {
     /// window: the theme and About under the server list, the status bar and its message.
     #[test]
     fn every_toolbar_control_stays_on_screen_whatever_the_width() {
-        const CONTROLS: [&str; 8] = [
+        // Since the visual refresh the tabs are capitals in a segmented bar, Writable is
+        // capitals too, and Refresh is an icon checked by its id below.
+        const CONTROLS: [&str; 7] = [
             "filter  /",
             "root at path",
-            "Tree",
+            "TREE",
             "JSON",
-            "Traffic",
-            "Map",
-            "Refresh",
-            "Writable",
+            "TRAFFIC",
+            "MAP",
+            "WRITABLE",
         ];
         let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
         for width in [
@@ -5383,20 +6135,32 @@ mod tests {
                     );
                     whole(control, &found[0].1, &found[0].2);
                 }
+                // Each of the sixteen square slots carries its number and nothing else.
                 let slots: Vec<_> = drawn
                     .iter()
                     .filter(|(t, _, _)| {
-                        t == "Recall"
-                            || t == "Capture"
-                            || t.parse::<usize>().is_ok_and(|n| (1..=16).contains(&n))
+                        t.len() == 2 && t.parse::<usize>().is_ok_and(|n| (1..=16).contains(&n))
                     })
                     .collect();
                 assert_eq!(
                     slots.len(),
-                    3 * presets::SLOTS,
-                    "every slot, its number and its two buttons, at width {width}"
+                    presets::SLOTS,
+                    "every slot drawn with its number at width {width}"
                 );
                 slots.iter().for_each(|(t, r, c)| whole(t, r, c));
+                // Refresh above all, and the unpin button: icons, so each is placed by its id
+                // and its strokes are required to fall inside the window and its clip.
+                for (what, salt) in [("Refresh", "refresh"), ("unpin", "unpin /a")] {
+                    let at = icon_place(&h, salt);
+                    let strokes = strokes_inside(&out, at);
+                    assert!(
+                        !strokes.is_empty(),
+                        "the {what} icon drawn at width {width}, panes dragged {dragged}"
+                    );
+                    for (r, c) in &strokes {
+                        whole(what, r, c);
+                    }
+                }
                 // The access flags close each row on the right, of the tree and of the pinned
                 // panel: seen whole, the widget before them is on screen too.
                 let flags: Vec<_> = drawn.iter().filter(|(t, _, _)| t == "rw").collect();
@@ -5409,9 +6173,6 @@ mod tests {
                 let pinned: Vec<_> = drawn.iter().filter(|(t, _, _)| t == "/a").collect();
                 assert_eq!(pinned.len(), 1, "the pinned row at width {width}");
                 whole("/a", &pinned[0].1, &pinned[0].2);
-                let unpin: Vec<_> = drawn.iter().filter(|(t, _, _)| t == "\u{d7}").collect();
-                assert_eq!(unpin.len(), 1, "the unpin button at width {width}");
-                whole("unpin", &unpin[0].1, &unpin[0].2);
                 let band = size.y - ROW_H - 2.0 * GRID;
                 let status: Vec<_> = drawn.iter().filter(|(_, r, _)| r.min.y >= band).collect();
                 assert!(
@@ -5419,6 +6180,132 @@ mod tests {
                     "the status bar drawn at width {width}: {status:?}"
                 );
                 status.iter().for_each(|(t, r, c)| whole(t, r, c));
+            }
+        }
+    }
+
+    /// A tab draws a toolbar of its own, under the one with the tabs in it, and PRD 9.1 holds
+    /// for it too: whatever the window width, down to its 640 px minimum, and however the side
+    /// panes were dragged, no control of it leaves the screen. The JSON tab's copy and save, and
+    /// the Traffic tab's filter, its direction bar, Pause, Clear, Export and its count.
+    ///
+    /// Seen on screen on 2026-11-17 at 640 by 800: the Traffic tab's row did not wrap and its
+    /// filter asked for a fixed 192 points of the 224 the centre pane keeps there, so the
+    /// direction bar was cut mid word and Pause, Clear and Export were off screen entirely. The
+    /// toolbar test of the tab bar did not reach it.
+    #[test]
+    fn every_control_a_tab_draws_for_itself_stays_on_screen() {
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
+        for width in [640.0, 680.0, 720.0, 800.0, 960.0, 1100.0, 1440.0, 1920.0] {
+            for dragged in [false, true] {
+                let mut h = harness();
+                let id = controllable(&mut h, "127.0.0.1", 2345, "S", doc);
+                if dragged {
+                    // Both side panes as a previous session left them, wider than any window.
+                    for pane in ["servers", "work"] {
+                        h.ctx.data_mut(|d| {
+                            d.insert_persisted(
+                                egui::Id::new(pane),
+                                egui::PanelState {
+                                    outer_rect: egui::Rect::from_min_size(
+                                        egui::Pos2::ZERO,
+                                        egui::vec2(2000.0, 600.0),
+                                    ),
+                                },
+                            )
+                        });
+                    }
+                }
+                // Something in the log, so the Traffic tab draws its rows and its count.
+                h.app.act(
+                    &h.ctx.clone(),
+                    Action::Send(
+                        SendReq {
+                            server_id: id,
+                            path: OscPath::parse("/a").unwrap(),
+                            signature: TypeSignature::parse("f").unwrap(),
+                            args: vec![OscType::Float(0.25)],
+                            readable: true,
+                        },
+                        SendMode::Final,
+                    ),
+                );
+                let size = egui::vec2(width, 700.0);
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+                let whole = |what: &str, rect: &egui::Rect, clip: &egui::Rect, tab: Tab| {
+                    assert!(
+                        // Half a pixel of slack: clip rectangles are rounded to the pixel.
+                        clip.intersect(screen).expand(0.5).contains_rect(*rect),
+                        "{tab:?}: {what:?} at {rect:?} cut by {clip:?} at width {width}, panes \
+                         dragged {dragged}"
+                    );
+                };
+                for (tab, texts, icons) in [
+                    (
+                        Tab::Json,
+                        vec!["Whole document, as received"],
+                        vec!["json_copy", "json_save"],
+                    ),
+                    (
+                        Tab::Traffic,
+                        vec![
+                            "filter path or type tags",
+                            "ALL",
+                            "IN",
+                            "OUT",
+                            "PAUSE",
+                            "CLEAR",
+                            "EXPORT",
+                        ],
+                        vec![],
+                    ),
+                ] {
+                    h.app.view.tab = tab;
+                    h.frame_sized(size, Vec::new());
+                    let out = h.frame_sized(size, Vec::new());
+                    let drawn = drawn_text_rects(&out);
+                    for text in texts {
+                        let found: Vec<_> = drawn.iter().filter(|(t, _, _)| t == text).collect();
+                        assert_eq!(
+                            found.len(),
+                            1,
+                            "{tab:?}: {text:?} drawn once at width {width}, panes dragged \
+                             {dragged}"
+                        );
+                        whole(text, &found[0].1, &found[0].2, tab);
+                    }
+                    for salt in icons {
+                        let at = icon_place(&h, salt);
+                        let strokes = strokes_inside(&out, at);
+                        assert!(
+                            !strokes.is_empty(),
+                            "{tab:?}: the {salt} icon drawn at width {width}, panes dragged \
+                             {dragged}"
+                        );
+                        for (r, c) in &strokes {
+                            whole(salt, r, c, tab);
+                        }
+                    }
+                    // Wrapping keeps a control on screen; it must not be the everyday answer.
+                    // On a window with room to spare the JSON toolbar holds on one line, which
+                    // it does only because the text keeps its two buttons' room back from the
+                    // line before taking what is left.
+                    if tab == Tab::Json && width >= 1100.0 && !dragged {
+                        let said = drawn
+                            .iter()
+                            .find(|(t, _, _)| t == "Whole document, as received")
+                            .map(|(_, r, _)| r.center().y)
+                            .expect("the line that says what is shown");
+                        for salt in ["json_copy", "json_save"] {
+                            let at = icon_place(&h, salt).center().y;
+                            assert!(
+                                (at - said).abs() < ROW_H / 2.0,
+                                "{salt} on another line than the text at width {width}: \
+                                 {at} against {said}"
+                            );
+                        }
+                    }
+                }
             }
         }
     }
@@ -5474,7 +6361,7 @@ mod tests {
             ("the author", "Julien Bayle"),
             ("the studio", "Structure Void"),
             ("the license", &license_line),
-            ("the repository", "github.com/gluon/void-oscq"),
+            ("the repository", "github.com/gluon/oscq-inspector"),
         ];
         for (what, text) in six {
             let found: Vec<_> = drawn.iter().filter(|(t, ..)| t.contains(text)).collect();
@@ -6557,6 +7444,13 @@ mod tests {
         let pane = egui::PanelState::load(&h.ctx, egui::Id::new("work"))
             .unwrap()
             .outer_rect;
+        // Since the visual refresh a control's own ground and the node's are one grey, so the
+        // canvas is told from the side panes by its place and not by its fill alone: it lies
+        // between them. Without this the theme box and About, in the server pane's footer,
+        // count as two more nodes.
+        let servers = egui::PanelState::load(&h.ctx, egui::Id::new("servers"))
+            .unwrap()
+            .outer_rect;
         let mut nodes_clips = Vec::new();
         let mut texts = Vec::new();
         fn walk(
@@ -6576,11 +7470,15 @@ mod tests {
         for c in &out.shapes {
             walk(&c.shape, c.clip_rect, ground, &mut nodes_clips, &mut texts);
         }
-        // The map's layer is clipped to its canvas, left of the right pane.
+        // The map's layer is clipped to its canvas: right of the server pane, left of the work
+        // pane, below the toolbar.
         let mut canvas = None;
         let mut nodes = Vec::new();
         for (r, clip) in nodes_clips {
-            if clip.max.x <= pane.min.x + 1.0 && clip.min.y > ROW_H {
+            if clip.min.x >= servers.max.x - 1.0
+                && clip.max.x <= pane.min.x + 1.0
+                && clip.min.y > ROW_H
+            {
                 canvas = Some(clip);
                 nodes.push(r);
             }
@@ -7031,6 +7929,7 @@ mod tests {
             let around: Vec<egui::Pos2> =
                 HUB.iter().map(|n| node_centre(&nodes, &texts, n)).collect();
             let gap = largest_gap(hub, &around);
+            println!("MAP largest gap around a centre of 3, canvas {size:?}: {gap:.1} degrees");
             assert!(
                 gap <= gap_bound(HUB.len()),
                 "{size:?}: the largest gap around the centre is {gap:.1} degrees, at most {}",
@@ -7626,7 +8525,9 @@ mod tests {
                     "peers not read yet",
                     "Twin",
                     "10.0.0.2",
-                    "name of 2 known servers: not matched",
+                    // Elided in the node's box, whole in the edge's label and on hover: the
+                    // typefaces of 2026-11-17 are about a tenth wider than the ones before.
+                    "name of 2 known servers: not mat\u{2026}",
                     "ambiguous: name of 2 known servers: not matched",
                 ],
             ),
@@ -7742,8 +8643,35 @@ mod tests {
         assert!(dashes.len() > 4, "in dashes: {} segments", dashes.len());
         centre_place(&h, &out, "ambiguous: name of 2 known servers: not matched");
         // It starts from the client's own node, the one that says it is not matched, and from
-        // neither of the two servers of that name.
-        let own = centre_place(&h, &out, "name of 2 known servers: not matched");
+        // neither of the two servers of that name. The node's line does not hold in the box
+        // since the typefaces changed on 2026-11-17: Space Grotesk is about a tenth wider than
+        // the font before it, and the line needs 206 px of the 192 the box gives. It is drawn
+        // elided, with its whole text on hover, proved below.
+        let own = centre_place(&h, &out, "name of 2 known servers: not mat\u{2026}");
+        // The whole line on hover, since the box elided it: the window shows all of it or says
+        // where the rest is, it never drops it (PRD 9.10).
+        {
+            // As `a_node_hover_gives_what_its_box_does_not_show` does it: the pointer moved,
+            // then frames at later times, or the tooltip is not up yet.
+            let at = own.center();
+            h.frame_at(10.1, vec![egui::Event::PointerMoved(at)]);
+            h.frame_at(
+                10.2,
+                vec![egui::Event::PointerMoved(at + egui::vec2(1.0, 0.0))],
+            );
+            h.frame_at(11.5, Vec::new());
+            let hovered = h.frame_at(12.5, Vec::new());
+            assert!(
+                shown_texts(&hovered)
+                    .iter()
+                    .any(|(t, _, _)| t == "name of 2 known servers: not matched"),
+                "the whole line on hover: {:?}",
+                shown_texts(&hovered)
+                    .iter()
+                    .map(|(t, _, _)| t.clone())
+                    .collect::<Vec<_>>()
+            );
+        }
         let titles: Vec<egui::Rect> = centre_texts(&h, &out)
             .into_iter()
             .filter(|(t, _)| t == "Twin")
@@ -7864,7 +8792,7 @@ mod tests {
 
         // The map tab opens: every server at once, aloud.
         let out = h.frame_at(t + 700.0, Vec::new());
-        click(&mut h, place(&out, "Map"), egui::PointerButton::Primary);
+        click(&mut h, place(&out, "MAP"), egui::PointerButton::Primary);
         assert_eq!(h.app.view.tab, Tab::Map);
         let mut asked = peers_asked(&h.sent());
         asked.sort();

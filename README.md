@@ -2,15 +2,15 @@
 
 ![The Map tab of OSCQuery Inspector](docs/images/map.png)
 
-The map: this application in the middle, connected to three synthetic servers and to a real Ableton Live server, LiveOSCQuery, which two UDP sources feed, dotted, with their packet counts; Capteurs, a fourth synthetic server, does not publish its peers and is drawn alone, saying so.
+The map: this application in the middle, connected to the PRISM demo device, which it found over Bonjour, and to two synthetic servers of this repository entered by hand. Each edge is a connection the server itself publishes, with the packets it has counted; nothing on this map is guessed.
 
-OSCQuery Inspector is a desktop application for macOS, Windows and Linux that connects to OSCQuery servers. OSCQuery is a protocol by which an application publishes its OSC address space, the list of everything it can be controlled with, as JSON over HTTP. OSCQuery Inspector finds those servers on the local network, shows their address space as a tree, shows each value, and lets you change them: every change is sent as an OSC message. It keeps the values live when a server pushes them over its WebSocket, but none of the three servers it was tested with pushes its values: only the synthetic server of this repository does, so live updates are proven against it alone.
+OSCQuery Inspector is a desktop application for macOS, Windows and Linux that connects to OSCQuery servers. OSCQuery is a protocol by which an application publishes its OSC address space, the list of everything it can be controlled with, as JSON over HTTP. OSCQuery Inspector finds those servers on the local network, shows their address space as a tree, shows each value, and lets you change them: every change is sent as an OSC message. It keeps the values live when a server pushes them over its WebSocket, which the servers below do or do not, each said in its row.
 
 It is meant for people who build or debug OSC setups: checking what a server really publishes, driving it by hand, and watching the messages that go out and come back.
 
 Formerly void-oscq, shown as Void OSCQ: the versions published under that name, 0.2.3 and earlier, keep it in their downloads, `void-oscq-VERSION-...`, which hold **Void OSCQ.app** on macOS. It is the same application under a new name, and the downloads named below are those of the versions after 0.2.3.
 
-**Download**: the [Releases page](https://github.com/gluon/void-oscq/releases), one file per system, free, unsigned. See [Download and first launch](#download-and-first-launch) for opening an unsigned app the first time. Changes between versions are in [CHANGELOG.md](CHANGELOG.md).
+**Download**: the [Releases page](https://github.com/gluon/oscq-inspector/releases), one file per system, free, unsigned. See [Download and first launch](#download-and-first-launch) for opening an unsigned app the first time. Changes between versions are in [CHANGELOG.md](CHANGELOG.md).
 
 ## Tested with
 
@@ -19,8 +19,11 @@ Formerly void-oscq, shown as Void OSCQ: the versions published under that name, 
 | Vidvox [OSCQuery Helper](https://github.com/Vidvox/VVOSCQueryProtocol) | advertised over Bonjour, gives its OSC port; values sent reach its OSC target | declares every node write only, so no value can be read back; no `LISTEN` over its WebSocket, nothing pushed |
 | Max 9, which serves OSCQuery natively | values read and sent, with the OSC port set by hand | listens on the same machine only, `localhost:30339`; no Bonjour; does not say its OSC port, 30338 by default; ignores the `HOST_INFO` query; accepts the WebSocket and never sends anything on it |
 | The synthetic server of this repository | 5000 methods, values pushed over its WebSocket; with `--peers serve`, the peers of the map, see below | a test server, not a real application; it is never itself a client of another server |
+| prism-oscquery 0.5.0, the Python library, and its demo device | advertised over Bonjour, gives its OSC port in `HOST_INFO`; values read and sent; values pushed over its WebSocket, which the Traffic tab logs as they arrive; publishes its peers, so it is drawn on the map with its edges | its demo device publishes five methods, which says nothing about a large address space |
 
-Not tested: VDMX, ossia and any other server. None of the servers above but the synthetic one publishes its peers: the map and the listener badges are proven against it alone. Reports of how the app behaves with them are welcome, see [CONTRIBUTING.md](CONTRIBUTING.md).
+ossia-prism 2.1.0+prism.14 pushes its values as well. That one is reported by the author and is not exercised in this repository's own runs, so it is named here and not in the table above.
+
+Not tested: VDMX, ossia upstream and any other server. Of the servers above, the synthetic one and the prism-oscquery demo publish their peers: the map and the listener badges are proven against those two. Reports of how the app behaves with the others are welcome, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Systems:
 
@@ -50,7 +53,7 @@ Systems:
 
 ## Download and first launch
 
-Each version is on the [Releases page](https://github.com/gluon/void-oscq/releases), with one file per system. The apps are not signed: your system warns you the first time you open one, and the steps below get past that warning once.
+Each version is on the [Releases page](https://github.com/gluon/oscq-inspector/releases), with one file per system. The apps are not signed: your system warns you the first time you open one, and the steps below get past that warning once.
 
 Every download carries the license texts: the GNU GPL, its additional permission and the licenses of the bundled fonts, in a `licenses` folder, inside `OSCQuery Inspector.app/Contents/Resources` on macOS.
 
@@ -179,6 +182,16 @@ cargo test --workspace --locked
 Protocol answers with their sources are in [docs/protocol-notes.md](docs/protocol-notes.md), including what OSCQuery Helper and Max 9 really do. Decisions are in [docs/decisions.md](docs/decisions.md), traps met in [PITFALLS.md](PITFALLS.md), test fixtures and their provenance in [tests/fixtures/README.md](tests/fixtures/README.md), the release checklist in [docs/acceptance.md](docs/acceptance.md).
 
 ### Tools
+
+The interface is set in Space Grotesk and data in Space Mono, both under the SIL Open Font License, compiled into the binary so that a window looks the same on the three systems. Their license texts are in `licenses/fonts`, every release carries them, and `ci/check-licenses.sh` checks each one against the family and the copyright its font file declares. The icons are drawn in code, `crates/oscq-inspector/src/glyph.rs`, with no icon font and no icon crate.
+
+The screenshots above are taken from a launch and not by hand: `OSCQ_INSPECTOR_STARTUP` opens a view, so each one is one command. With the window size and the theme set in the config file, and a server to look at:
+
+```
+OSCQ_INSPECTOR_STARTUP=connect-all,map ./oscq-inspector
+```
+
+`tree`, `json`, `traffic`, `map` and `about` are the views it takes, and `connect-all` connects every known server rather than the selected one alone. The whole set, every view before and after the refresh of 2026-11-17 in both themes and at both widths, is in [docs/images/screenshots](docs/images/screenshots), with how it was taken.
 
 The application icon is drawn in code, `crates/oscq-inspector/src/icon.rs`: the window icon, the macOS `.icns`, the Windows executable's icon and the Linux `.png` all come from it, and no image file is stored. The release packaging writes the image files with:
 

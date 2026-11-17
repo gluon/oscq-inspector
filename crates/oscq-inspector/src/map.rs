@@ -25,10 +25,17 @@ pub const STALE_AFTER_INTERVALS: u32 = 3;
 
 /// The colours of the edges, each kind its own, so that an edge is told from everything else
 /// the window draws. Each kind has its own line too: colour alone is not what tells them apart.
-pub const EDGE_CLIENT: Color32 = Color32::from_rgb(70, 150, 230);
-pub const EDGE_SENDER: Color32 = Color32::from_rgb(205, 140, 40);
-pub const EDGE_AMBIGUOUS: Color32 = Color32::from_rgb(200, 90, 200);
-pub const EDGE_STALE: Color32 = Color32::from_rgb(128, 128, 132);
+///
+/// Since the human's decision of 2026-11-17 there is one colour and the rest are greys: a
+/// `CLIENTS` edge, a named client holding a WebSocket, is the live fact the map exists to show
+/// and carries the signal colour; a `SENDERS` edge, an ambiguous one and a stale reading are
+/// weaker facts and recede through the greys, each still with its own line and its own words.
+/// The greys are mid tones that read on the black ground of the dark theme and on the white
+/// ground of the light one, since an edge is drawn in both from one constant.
+pub const EDGE_CLIENT: Color32 = crate::style::SIGNAL;
+pub const EDGE_SENDER: Color32 = Color32::from_rgb(0xA6, 0xA6, 0xA6);
+pub const EDGE_AMBIGUOUS: Color32 = Color32::from_rgb(0x8C, 0x8C, 0x8C);
+pub const EDGE_STALE: Color32 = Color32::from_rgb(0x6E, 0x6E, 0x6E);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeKind {
@@ -689,7 +696,7 @@ pub struct Arrangement {
 }
 
 /// Room around a node in the placement: what keeps two nodes visibly apart.
-const SPACING: f32 = 4.0 * GRID;
+const SPACING: f32 = 3.0 * GRID;
 /// How much of the frame the nodes' footprints take at least: a force directed placement
 /// needs room around each node to show who is connected to whom.
 const DENSITY: f32 = 2.5;
@@ -1449,14 +1456,17 @@ pub fn draw(
             visuals.extreme_bg_color,
             visuals.widgets.noninteractive.bg_stroke,
         );
+        // A node is a square box and its state is its border: a subtle hairline by default, the
+        // brightest ink at 2 px for the server the whole window is on, the same ink at a
+        // hairline for this application, and the signal colour when a chip carries a warning it
+        // has no line to say in words (the human's decision of 2026-11-17). The four are told
+        // apart by weight and colour together, never by colour alone.
+        let p = crate::style::palette(&visuals);
         match node.kind {
-            NodeKind::ThisApp => edge = Stroke::new(1.5, visuals.selection.bg_fill),
-            NodeKind::Server(id) if selected == Some(id) => {
-                edge = Stroke::new(1.5, visuals.widgets.inactive.fg_stroke.color)
-            }
-            // A chip says no line: that one of them is a warning shows on its border.
+            NodeKind::ThisApp => edge = Stroke::new(crate::style::HAIRLINE, p.text),
+            NodeKind::Server(id) if selected == Some(id) => edge = Stroke::new(2.0, p.text),
             NodeKind::Server(_) if compact && warns => {
-                edge = Stroke::new(1.5, visuals.warn_fg_color)
+                edge = Stroke::new(1.5, crate::style::SIGNAL)
             }
             _ => {}
         }
@@ -1484,7 +1494,7 @@ pub fn draw(
         if compact {
             let mut zone = *rect;
             if matches!(node.kind, NodeKind::Server(_)) {
-                painter.rect(*rect, 1.5 * GRID, fill, edge, egui::StrokeKind::Inside);
+                painter.rect(*rect, 0.0, fill, edge, egui::StrokeKind::Inside);
                 // Always: the least zoom keeps a name readable.
                 let title = single_line(
                     ui,
@@ -1519,7 +1529,7 @@ pub fn draw(
             ));
             continue;
         }
-        painter.rect(*rect, 1.5 * GRID, fill, edge, egui::StrokeKind::Inside);
+        painter.rect(*rect, 0.0, fill, edge, egui::StrokeKind::Inside);
         let width = rect.width() - 2.0 * PAD;
         let mut at = rect.min + Vec2::splat(PAD);
         if titles {
@@ -1592,7 +1602,7 @@ pub fn draw(
             continue;
         };
         taken.push(rect);
-        painter.rect_filled(rect, GRID, visuals.panel_fill);
+        painter.rect_filled(rect, 0.0, visuals.panel_fill);
         painter.galley(rect.min + Vec2::new(GRID, 0.5 * GRID), galley, colour);
         ui.interact(rect, ui.id().with(("map edge", i)), Sense::hover())
             .on_hover_ui(|ui| {
