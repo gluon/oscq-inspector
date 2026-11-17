@@ -191,7 +191,7 @@ The screenshots above are taken from a launch and not by hand: `OSCQ_INSPECTOR_S
 OSCQ_INSPECTOR_STARTUP=connect-all,map ./oscq-inspector
 ```
 
-`tree`, `json`, `traffic`, `map` and `about` are the views it takes, and `connect-all` connects every known server rather than the selected one alone.
+`tree`, `json`, `traffic`, `map` and `about` are the views it takes, and `connect-all` connects every known server rather than the selected one alone. The whole set, every view before and after the refresh of 2026-11-17 in both themes and at both widths, is in [docs/images/screenshots](docs/images/screenshots), with how it was taken.
 
 The application icon is drawn in code, `crates/oscq-inspector/src/icon.rs`: the window icon, the macOS `.icns`, the Windows executable's icon and the Linux `.png` all come from it, and no image file is stored. The release packaging writes the image files with:
 
