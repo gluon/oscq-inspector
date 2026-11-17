@@ -1276,21 +1276,32 @@ impl InspectorApp {
                             egui::Stroke::new(style::HAIRLINE, edge),
                             egui::StrokeKind::Inside,
                         );
-                        // An empty slot says what a click on it does, in its own box.
-                        let empty_hover = held_count.is_none() && hovered;
-                        let galley = if empty_hover {
-                            style::caps_galley(ui, "capture", ink)
+                        // An empty slot says what a click on it does, in its own box: the
+                        // capture glyph in place of its number. The word would not fit, and
+                        // was drawn cut on 2026-11-17, "CAPTURE" being 56 points of text in a
+                        // 40 point square; a glyph is drawn to the square it is given and
+                        // cannot overflow, whatever the width (the human's decision, same day).
+                        if held_count.is_none() && hovered {
+                            glyph::paint(
+                                ui.painter(),
+                                egui::Rect::from_center_size(
+                                    rect.center(),
+                                    egui::Vec2::splat(glyph::SIZE),
+                                ),
+                                glyph::Icon::Capture,
+                                ink,
+                            );
                         } else {
-                            ui.ctx().fonts_mut(|f| {
+                            let galley = ui.ctx().fonts_mut(|f| {
                                 f.layout_no_wrap(
                                     format!("{slot:02}"),
                                     egui::FontId::new(style::DATA, egui::FontFamily::Monospace),
                                     text,
                                 )
-                            })
-                        };
-                        let at = rect.center() - galley.size() * 0.5;
-                        ui.painter().galley(at, galley, text);
+                            });
+                            let at = rect.center() - galley.size() * 0.5;
+                            ui.painter().galley(at, galley, text);
+                        }
                     }
                     // A shift click captures whatever the slot holds; a plain click recalls a
                     // full slot and captures into an empty one.
@@ -5435,6 +5446,80 @@ mod tests {
             assert!(l >= d, "{what}: light {l:.2} below dark {d:.2}");
         }
         assert!(contrast(light.text_color(), light.panel_fill) >= 4.5);
+    }
+
+    /// Nothing a preset slot draws ever leaves the slot's own square, at any window width down
+    /// to the 640 px minimum, and under the pointer as well as at rest. Seen on screen on
+    /// 2026-11-17: an empty slot hovered drew the word CAPTURE, 44 points of text in a 40 point
+    /// square, and the window showed "CAPTURI".
+    #[test]
+    fn a_preset_slot_draws_nothing_outside_its_own_square() {
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
+        for width in [640.0, 720.0, 900.0, 1100.0, 1440.0, 1920.0] {
+            let mut h = harness();
+            controllable(&mut h, "127.0.0.1", 2345, "S", doc);
+            h.app.config.presets_open = true;
+            let size = egui::vec2(width, 700.0);
+            h.frame_sized(size, Vec::new());
+            let out = h.frame_sized(size, Vec::new());
+            // Slot 01 at rest, and then with the pointer resting on it.
+            let at_rest = place(&out, "01");
+            let slot =
+                egui::Rect::from_center_size(at_rest.center(), egui::Vec2::splat(10.0 * GRID));
+            let hovered = {
+                let p = slot.center();
+                h.frame_sized(size, vec![egui::Event::PointerMoved(p)]);
+                h.frame_sized(
+                    size,
+                    vec![egui::Event::PointerMoved(p + egui::vec2(1.0, 0.0))],
+                )
+            };
+            for (what, frame) in [("at rest", &out), ("hovered", &hovered)] {
+                // Everything drawn whose centre falls in the slot belongs to the slot: its
+                // text, and the strokes of the glyph that replaces the number under the
+                // pointer. The two together, so a fix that swaps one for the other is covered.
+                let texts: Vec<(String, egui::Rect, egui::Rect)> = drawn_text_rects(frame)
+                    .into_iter()
+                    .filter(|(_, r, _)| slot.contains(r.center()))
+                    .collect();
+                let strokes: Vec<(String, egui::Rect, egui::Rect)> =
+                    strokes_inside(frame, slot.expand(2.0 * GRID))
+                        .into_iter()
+                        .filter(|(r, _)| slot.contains(r.center()))
+                        .map(|(r, c)| ("a stroke".to_owned(), r, c))
+                        .collect();
+                let drawn: Vec<(String, egui::Rect, egui::Rect)> =
+                    texts.into_iter().chain(strokes).collect();
+                assert!(
+                    !drawn.is_empty(),
+                    "slot 01 drew nothing {what} at width {width}"
+                );
+                for (t, r, clip) in drawn {
+                    assert!(
+                        slot.expand(0.5).contains_rect(r),
+                        "{t:?} is {:.1} points wide in a {} point slot, {what} at width \
+                         {width}: {r:?} outside {slot:?}",
+                        r.width(),
+                        10.0 * GRID
+                    );
+                    assert!(
+                        clip.expand(0.5).contains_rect(r),
+                        "{t:?} cut by its clip {clip:?}, {what} at width {width}"
+                    );
+                }
+            }
+            // Under the pointer the empty slot really draws the capture glyph, and not just
+            // nothing: its strokes, where its number was.
+            let glyph_strokes = strokes_inside(&hovered, slot)
+                .into_iter()
+                .filter(|(r, _)| slot.contains(r.center()))
+                .count();
+            assert!(
+                glyph_strokes >= 4,
+                "the capture glyph drawn in the hovered empty slot at width {width}: \
+                 {glyph_strokes} strokes"
+            );
+        }
     }
 
     /// The visual system of 2026-11-17, in both themes: square corners everywhere, no shadow,

@@ -30,6 +30,9 @@ pub enum Icon {
     Copy,
     /// Save to a file: a tray with an arrow coming down into it.
     Save,
+    /// Capture into a preset slot: an arrow coming down onto the slot's own floor. The slot is
+    /// the box, so the glyph needs none of its own, which is what tells it from [`Icon::Save`].
+    Capture,
 }
 
 /// Draws `icon` inside `rect`, in `colour`. The strokes are laid out in a unit square and
@@ -89,6 +92,12 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, colour: Color32) {
             line(p(0.20, 0.74), p(0.20, 0.82));
             line(p(0.20, 0.82), p(0.80, 0.82));
             line(p(0.80, 0.82), p(0.80, 0.74));
+        }
+        Icon::Capture => {
+            line(p(0.50, 0.16), p(0.50, 0.60));
+            line(p(0.32, 0.44), p(0.50, 0.62));
+            line(p(0.68, 0.44), p(0.50, 0.62));
+            line(p(0.22, 0.82), p(0.78, 0.82));
         }
     }
 }
