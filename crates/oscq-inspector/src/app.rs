@@ -6081,7 +6081,7 @@ mod tests {
             ("the author", "Julien Bayle"),
             ("the studio", "Structure Void"),
             ("the license", &license_line),
-            ("the repository", "github.com/gluon/void-oscq"),
+            ("the repository", "github.com/gluon/oscq-inspector"),
         ];
         for (what, text) in six {
             let found: Vec<_> = drawn.iter().filter(|(t, ..)| t.contains(text)).collect();

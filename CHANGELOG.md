@@ -104,11 +104,11 @@ The first version whose files are on the Releases page.
 
 - First release: discovery over Bonjour and manual entries, the address space as a tree, values read and sent with widgets fitting their types, values live over the WebSocket where the server pushes them, the JSON and Traffic tabs. Unsigned artifacts for macOS (universal), Windows and Linux.
 
-[Unreleased]: https://github.com/gluon/void-oscq/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/gluon/void-oscq/compare/v0.2.3...v0.3.0
-[0.2.3]: https://github.com/gluon/void-oscq/compare/v0.2.2...v0.2.3
-[0.2.2]: https://github.com/gluon/void-oscq/compare/v0.2.1...v0.2.2
-[0.2.1]: https://github.com/gluon/void-oscq/compare/v0.2.0...v0.2.1
-[0.2.0]: https://github.com/gluon/void-oscq/compare/v0.1.1...v0.2.0
-[0.1.1]: https://github.com/gluon/void-oscq/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/gluon/void-oscq/releases/tag/v0.1.0
+[Unreleased]: https://github.com/gluon/oscq-inspector/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/gluon/oscq-inspector/compare/v0.2.3...v0.3.0
+[0.2.3]: https://github.com/gluon/oscq-inspector/compare/v0.2.2...v0.2.3
+[0.2.2]: https://github.com/gluon/oscq-inspector/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/gluon/oscq-inspector/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/gluon/oscq-inspector/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/gluon/oscq-inspector/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/gluon/oscq-inspector/releases/tag/v0.1.0

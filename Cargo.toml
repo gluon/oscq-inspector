@@ -11,7 +11,7 @@ members = [
 version = "0.3.0"
 authors = ["Julien Bayle"]
 license = "GPL-3.0-or-later"
-repository = "https://github.com/gluon/void-oscq"
+repository = "https://github.com/gluon/oscq-inspector"
 
 [workspace.dependencies]
 flume = { version = "0.12.0", default-features = false, features = ["async", "select"] }

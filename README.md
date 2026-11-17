@@ -10,7 +10,7 @@ It is meant for people who build or debug OSC setups: checking what a server rea
 
 Formerly void-oscq, shown as Void OSCQ: the versions published under that name, 0.2.3 and earlier, keep it in their downloads, `void-oscq-VERSION-...`, which hold **Void OSCQ.app** on macOS. It is the same application under a new name, and the downloads named below are those of the versions after 0.2.3.
 
-**Download**: the [Releases page](https://github.com/gluon/void-oscq/releases), one file per system, free, unsigned. See [Download and first launch](#download-and-first-launch) for opening an unsigned app the first time. Changes between versions are in [CHANGELOG.md](CHANGELOG.md).
+**Download**: the [Releases page](https://github.com/gluon/oscq-inspector/releases), one file per system, free, unsigned. See [Download and first launch](#download-and-first-launch) for opening an unsigned app the first time. Changes between versions are in [CHANGELOG.md](CHANGELOG.md).
 
 ## Tested with
 
@@ -50,7 +50,7 @@ Systems:
 
 ## Download and first launch
 
-Each version is on the [Releases page](https://github.com/gluon/void-oscq/releases), with one file per system. The apps are not signed: your system warns you the first time you open one, and the steps below get past that warning once.
+Each version is on the [Releases page](https://github.com/gluon/oscq-inspector/releases), with one file per system. The apps are not signed: your system warns you the first time you open one, and the steps below get past that warning once.
 
 Every download carries the license texts: the GNU GPL, its additional permission and the licenses of the bundled fonts, in a `licenses` folder, inside `OSCQuery Inspector.app/Contents/Resources` on macOS.
 
