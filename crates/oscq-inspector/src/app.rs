@@ -354,14 +354,20 @@ impl InspectorApp {
         app
     }
 
-    /// What a launch is asked besides its config, as words separated by commas: `map` opens on
-    /// the map tab, `connect-all` connects every known server instead of the selected one
-    /// alone. For the real binary tests, which have no hand to click with; the variable
-    /// `OSCQ_INSPECTOR_STARTUP` carries it, and nothing is kept of it.
+    /// What a launch is asked besides its config, as words separated by commas: `tree`, `json`,
+    /// `traffic` and `map` open on that tab, `about` opens the about box, `connect-all` connects
+    /// every known server instead of the selected one alone. For the real binary tests and for
+    /// the screenshots, neither of which has a hand to click with; the variable
+    /// `OSCQ_INSPECTOR_STARTUP` carries it, and nothing is kept of it. The tab is not in the
+    /// config and must not be: PRD 9.7 fixes what the config file holds.
     pub fn startup(&mut self, ctx: &egui::Context, what: &str) {
         for word in what.split(',').map(str::trim) {
             match word {
+                "tree" => self.view.tab = Tab::Tree,
+                "json" => self.view.tab = Tab::Json,
+                "traffic" => self.view.tab = Tab::Traffic,
                 "map" => self.view.tab = Tab::Map,
+                "about" => request_about(ctx),
                 "connect-all" => {
                     let idle: Vec<ServerId> = self
                         .state
@@ -5701,6 +5707,44 @@ mod tests {
             .iter()
             .for_each(|c| walk(&c.shape, colour, &mut found));
         found
+    }
+
+    /// `startup` opens the view a launch asks for, so that the real binary tests and the
+    /// screenshots need no hand to click with. Every word it takes is checked here: a tab name
+    /// opens that tab, `about` opens the about box, and a word it does not know changes
+    /// nothing. None of it reaches the config, which PRD 9.7 fixes the contents of.
+    #[test]
+    fn startup_opens_the_tab_and_the_about_box_it_is_asked_for() {
+        for (word, tab) in [
+            ("tree", Tab::Tree),
+            ("json", Tab::Json),
+            ("traffic", Tab::Traffic),
+            ("map", Tab::Map),
+        ] {
+            let mut h = harness();
+            // Away from the one asked for, so opening it is a real move for each word.
+            h.app.view.tab = if tab == Tab::Tree {
+                Tab::Map
+            } else {
+                Tab::Tree
+            };
+            h.app.startup(&h.ctx.clone(), word);
+            assert_eq!(h.app.view.tab, tab, "startup {word:?}");
+            let saved: Config = serde_json::from_slice(&h.app.config.to_bytes()).unwrap();
+            assert_eq!(saved, Config::default(), "startup {word:?} kept nothing");
+        }
+        let mut h = harness();
+        assert!(!h.app.view.about_open);
+        h.app.startup(&h.ctx.clone(), "about");
+        h.frame(Vec::new());
+        assert!(h.app.view.about_open, "startup about opened the box");
+        let mut h = harness();
+        let before = h.app.view.tab;
+        h.app.startup(&h.ctx.clone(), "nonsense,also-nonsense");
+        assert_eq!(
+            h.app.view.tab, before,
+            "a word it does not know changes nothing"
+        );
     }
 
     /// A pinned node is unpinned from the pinned panel by the button on its row, as from the
