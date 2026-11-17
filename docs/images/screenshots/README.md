@@ -15,7 +15,7 @@ is this branch. The name of a file says which: `STATE-THEME-WIDTH-VIEW.png`.
 
 Against the PRISM demo device of prism-oscquery 0.5.0, found over Bonjour, and two synthetic
 servers of this repository entered by hand, `--peers serve` so that the map has edges to draw.
-No LiveOSCQuery server, and no server of any other machine: the network was taken down for the
+No server of any other application or machine: the network was taken down for the
 session, so nothing but those three was reachable.
 
 Each view is one launch, not a click: `OSCQ_INSPECTOR_STARTUP` opens a tab or the about box
