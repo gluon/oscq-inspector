@@ -5598,6 +5598,111 @@ mod tests {
         );
     }
 
+    /// The map's four kinds of edge keep four colours, and only one of them is the signal
+    /// colour: a `CLIENTS` edge, a named client holding a WebSocket, is the live fact the map
+    /// exists to show. A `SENDERS` edge, an ambiguous one and a stale reading are weaker facts
+    /// and must not be drawn as that one (PRD 9.10, CLAUDE.md law 1). Each also has its own
+    /// line, which the map's own tests check; this guards the colours.
+    #[test]
+    fn only_the_live_edge_of_the_map_carries_the_signal_colour() {
+        let kinds = [
+            ("CLIENTS", map::EDGE_CLIENT),
+            ("SENDERS", map::EDGE_SENDER),
+            ("ambiguous", map::EDGE_AMBIGUOUS),
+            ("stale", map::EDGE_STALE),
+        ];
+        for (i, (one, a)) in kinds.iter().enumerate() {
+            for (other, b) in kinds.iter().skip(i + 1) {
+                assert_ne!(a, b, "the {one} edge and the {other} edge share a colour");
+            }
+        }
+        assert_eq!(
+            map::EDGE_CLIENT,
+            style::SIGNAL,
+            "the live edge is the signal"
+        );
+        for (what, c) in kinds.iter().skip(1) {
+            assert_ne!(
+                *c,
+                style::SIGNAL,
+                "the {what} edge must not carry the signal colour"
+            );
+            assert!(
+                c.r() == c.g() && c.g() == c.b(),
+                "the {what} edge is a grey: {c:?}"
+            );
+        }
+    }
+
+    /// The hairline that parts two pinned items takes no height of its own: it is painted on
+    /// the row's own bottom edge, so the pitch of the rows is what it was before the visual
+    /// refresh, `ROW_H` and the panel's own item spacing. A rule given height would add a point
+    /// a row and put the virtualised list further out of step with its scroll.
+    ///
+    /// The pitch is `ROW_H + item_spacing.y`, 28 points, while the panel asks `show_rows` for
+    /// rows of `ROW_H`, 24: that mismatch is older than this test, measured at 28 on d3df218
+    /// too, and is recorded in PITFALLS.md rather than changed here. This test holds the pitch
+    /// where it is, so the mismatch cannot grow unnoticed.
+    #[test]
+    fn the_pinned_rows_keep_one_row_height_each_hairline_and_all() {
+        let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]},"b":{"FULL_PATH":"/b","TYPE":"f","ACCESS":3,"VALUE":[0.5]},"c":{"FULL_PATH":"/c","TYPE":"f","ACCESS":3,"VALUE":[0.5]},"d":{"FULL_PATH":"/d","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
+        let mut h = harness();
+        controllable(&mut h, "127.0.0.1", 2345, "S", doc);
+        h.app.config.pinned_paths.insert(
+            "127.0.0.1:2345".into(),
+            vec!["/a".into(), "/b".into(), "/c".into(), "/d".into()],
+        );
+        h.frame(Vec::new());
+        let out = h.frame(Vec::new());
+        // Each row is placed by the full path it carries for a name (PRD 9.8).
+        let mut tops: Vec<f32> = ["/a", "/b", "/c", "/d"]
+            .iter()
+            .map(|p| place(&out, p).center().y)
+            .collect();
+        tops.sort_by(f32::total_cmp);
+        let expected = ROW_H + h.ctx.global_style().spacing.item_spacing.y;
+        for pair in tops.windows(2) {
+            let pitch = pair[1] - pair[0];
+            assert!(
+                (pitch - expected).abs() < 0.01,
+                "two pinned rows {pitch} points apart, not {expected}: a rule took height of \
+                 its own"
+            );
+        }
+        // And the hairline is really painted, on the bottom edge of each row.
+        let subtle = style::DARK.subtle;
+        let lines: Vec<f32> = horizontal_rules(&out, subtle);
+        for top in &tops {
+            let bottom = top + ROW_H / 2.0;
+            assert!(
+                lines.iter().any(|y| (y - bottom).abs() <= 1.0),
+                "a hairline on the bottom edge of the row at {top}: {lines:?}"
+            );
+        }
+    }
+
+    /// Where the frame painted a horizontal 1 px rule of `colour`, by y.
+    fn horizontal_rules(out: &egui::FullOutput, colour: Color32) -> Vec<f32> {
+        fn walk(shape: &egui::Shape, colour: Color32, found: &mut Vec<f32>) {
+            match shape {
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, colour, found)),
+                egui::Shape::LineSegment { points, stroke }
+                    if stroke.color == colour
+                        && (points[0].y - points[1].y).abs() < 0.01
+                        && points[0].x != points[1].x =>
+                {
+                    found.push(points[0].y);
+                }
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        out.shapes
+            .iter()
+            .for_each(|c| walk(&c.shape, colour, &mut found));
+        found
+    }
+
     /// A pinned node is unpinned from the pinned panel by the button on its row, as from the
     /// tree by its menu; the context menu of the panel row unpins too.
     #[test]
@@ -5753,26 +5858,46 @@ mod tests {
             "the slot last recalled is inverted, its number in the ground's colour"
         );
 
-        // A shift click captures into a slot that already holds values: Capture without a
-        // right click, and it replaces what was there.
-        let before = h.app.config.presets.get(&1).cloned().unwrap();
-        h.app.config.presets.remove(&1);
-        h.app.config.presets.insert(1, before);
-        let two = slot(&out, 2);
-        let p = two.center();
-        h.frame(vec![egui::Event::PointerMoved(p)]);
-        for pressed in [true, false] {
-            h.frame(vec![egui::Event::PointerButton {
-                pos: p,
-                button: egui::PointerButton::Primary,
-                pressed,
-                modifiers: Modifiers::SHIFT,
-            }]);
-        }
-        h.frame(vec![egui::Event::PointerGone]);
+        // A shift click captures into a slot that ALREADY HOLDS values, replacing what it
+        // holds: that is the route to Capture that needs no right click on a full slot, and the
+        // one a plain click cannot take, since a plain click on a full slot recalls.
+        // `egui::InputState::modifiers`, which the slot reads, is moved by
+        // `Event::ModifiersChanged` and by nothing else: `RawInput` carries no modifier field,
+        // so a window system announces the key going down before the click and up after it.
+        let shift_click = |h: &mut Harness, at: egui::Rect| {
+            let p = at.center();
+            h.frame(vec![egui::Event::PointerMoved(p)]);
+            h.frame(vec![egui::Event::ModifiersChanged(Modifiers::SHIFT)]);
+            for pressed in [true, false] {
+                h.frame(vec![egui::Event::PointerButton {
+                    pos: p,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Modifiers::SHIFT,
+                }]);
+            }
+            h.frame(vec![egui::Event::ModifiersChanged(Modifiers::NONE)]);
+            h.frame(vec![egui::Event::PointerGone]);
+        };
+        assert!(h.app.config.presets.contains_key(&1), "slot 01 is full");
+        h.app.view.note = None;
+        let one = slot(&out, 1);
+        shift_click(&mut h, one);
+        assert!(
+            h.app
+                .view
+                .note
+                .as_deref()
+                .is_some_and(|n| n.starts_with("Slot 01:") && n.contains("captured")),
+            "a shift click on the full slot 01 captured into it, not recalled: {:?}",
+            h.app.view.note
+        );
+        // And an empty slot captures on a plain click, the other route to Capture.
+        let out = h.frame(Vec::new());
+        click(&mut h, slot(&out, 2), egui::PointerButton::Primary);
         assert!(
             h.app.config.presets.contains_key(&2),
-            "a shift click captured into slot 02"
+            "a plain click on the empty slot 02 captured into it"
         );
 
         // The right click menu names both actions in words.
