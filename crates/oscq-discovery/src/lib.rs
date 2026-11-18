@@ -18,21 +18,16 @@ pub const OSCQUERY_SERVICE: &str = "_oscjson._tcp.local.";
 /// Plain OSC service type, browsed to show devices with no query support.
 pub const OSC_SERVICE: &str = "_osc._udp.local.";
 
-/// Whether a query can leave this machine at all.
+/// What a query for the local network met, and what came back: [`oscq_core::LocalNetwork`],
+/// re-exported here because discovery is what observes it.
 ///
-/// macOS asks the user before an application may reach the local network, and refuses every
-/// multicast send until it has an answer. `mdns-sd` reports nothing of this: its send failures
-/// are traced, not raised, so a browse that has asked the network nothing looks exactly like a
-/// browse that has asked and heard nothing. The difference matters, because only one of the two
-/// may be shown as "none found" (CLAUDE.md law 1).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LocalNetwork {
-    /// A query has left this machine. What is not found after this really is not answering.
-    Open,
-    /// The system refused to send, or has not decided yet. Nothing has been asked of the
-    /// network, so nothing may be concluded about it. `reason` is the system's own words.
-    Refused { reason: String },
-}
+/// macOS asks the user before an application may reach the local network, and until it has an
+/// answer the queries of that build go nowhere: refused outright for the first seconds, then
+/// accepted and silently dropped. `mdns-sd` reports none of it, its send failures being traced
+/// rather than raised, so a browse that has reached nothing looks exactly like a browse that has
+/// reached the network and heard nothing. Only the second may be shown as "none found"
+/// (CLAUDE.md law 1), and only an answer tells them apart.
+pub use oscq_core::LocalNetwork;
 
 /// What discovery reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +38,7 @@ pub enum DiscoveryEvent {
     Changed(DiscoveredServer),
     /// A known server is no longer advertised. It is kept so the user can retry.
     Stale(DiscoveredServer),
-    /// Whether queries can leave this machine: sent as soon as it is known, and on every change.
+    /// What this machine's queries met: sent as soon as it is known, and on every change.
     LocalNetwork(LocalNetwork),
 }
 
@@ -59,9 +54,12 @@ impl DiscoveryEvent {
     }
 }
 
-/// Asks the system whether a query may leave this machine, returning its refusal when it may
-/// not. The default sends a real query for the service type browsed, so the question costs no
-/// packet that a browse would not send anyway; a test gives its own answer instead.
+/// Sends a query for the service type browsed, and returns what the system answered: `Ok` if it
+/// took the packet, the error it gave if it refused. It is a real query, so it costs no packet a
+/// browse would not send anyway, and an answer to it reaches the daemon on the port the daemon
+/// already listens on. `Ok` says only that the system took the query, never that it left: that
+/// is why the state it feeds is [`LocalNetwork::Asked`] and not an opening. A test gives its own
+/// answer instead.
 pub type AccessProbe = std::sync::Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>;
 
 #[derive(Debug, thiserror::Error)]

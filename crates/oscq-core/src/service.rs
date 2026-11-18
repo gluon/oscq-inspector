@@ -166,18 +166,39 @@ pub struct TrafficRecord {
     pub block: Vec<TrafficRecord>,
 }
 
+/// What a query for the local network met, and what came back.
+///
+/// A send the system accepts is not a query the network received. On macOS, a build whose local
+/// network permission has not been granted has its sends refused for the first seconds and
+/// accepted after that, silently, while nothing from any real interface ever reaches it: the
+/// error stops, the filtering does not (PITFALLS.md, 2026-11-18). So these states say what was
+/// observed and no more, and none of them says the network is open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalNetwork {
+    /// The system refused to send. Nothing has been asked of the network, and `reason` is the
+    /// system's own words for why.
+    Refused { reason: String },
+    /// The system took a query. Whether it left this machine is not known.
+    Asked,
+    /// Queries have been taken and nothing has answered from any interface but loopback.
+    /// Either nothing is there, or this application is not allowed to hear it: the window may
+    /// say which only once something has answered.
+    Unanswered,
+    /// Something answered from an interface that is not loopback. The queries of this machine
+    /// are getting out and its answers in, so what is not found now really is not answering.
+    Heard,
+}
+
 /// Network to UI.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     ServerFound(DiscoveredServer),
     ServerChanged(DiscoveredServer),
     ServerStale(DiscoveredServer),
-    /// Whether a query may leave this machine at all, as discovery found it: `None` once one
-    /// has, `Some(reason)` while the system refuses in its own words. Until this says a query
-    /// has left, nothing may be concluded about what is or is not on the network (law 1).
-    LocalNetwork {
-        refused: Option<String>,
-    },
+    /// What the system did with a query for the local network, and whether anything answered.
+    /// Nothing may be concluded about what is or is not on the network until something has
+    /// (law 1).
+    LocalNetwork(LocalNetwork),
     /// `HOST_INFO` arrived. `destination` says where OSC goes, or why nothing can be sent.
     HostInfo {
         server_id: ServerId,

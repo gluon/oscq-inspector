@@ -310,21 +310,27 @@ pub fn host_port(s: &DiscoveredServer) -> String {
     }
 }
 
-/// Whether a query may leave this machine, as discovery found it.
+/// What this machine's queries met, as discovery found it.
 ///
-/// The window may say that nothing is on the network only in [`LocalNetwork::Open`]: in the
-/// other two nothing has been asked of it, and saying "none found" would be a claim about a
-/// network this application never reached (CLAUDE.md law 1).
+/// The window may say that nothing is on the network only in [`LocalNetwork::Heard`]: in the
+/// others nothing has answered, and saying "none found" would be a claim about a network this
+/// application may never have reached (CLAUDE.md law 1). A send the system takes is not such an
+/// answer, which is what [`LocalNetwork::Asked`] and [`LocalNetwork::Unanswered`] exist to say.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum LocalNetwork {
     /// Discovery has not reported yet, in the first moments of a launch.
     #[default]
     Unknown,
     /// The system refused to send, in its own words. On macOS this is what a local network
-    /// permission that is denied, or not yet decided, looks like.
+    /// permission that is denied, or not yet decided, looks like for the first seconds.
     Refused(String),
-    /// A query has left this machine.
-    Open,
+    /// The system took a query. Whether it left this machine is not known.
+    Asked,
+    /// Queries keep going out and nothing has answered from any interface but loopback.
+    Unanswered,
+    /// Something answered from the local network: it is reachable, and what is not found now
+    /// really is not answering.
+    Heard,
 }
 
 #[derive(Debug, Default)]
@@ -373,16 +379,21 @@ impl AppState {
 
     pub fn apply(&mut self, event: Event) {
         match event {
-            Event::LocalNetwork { refused } => {
-                self.local_network = match refused {
-                    None => LocalNetwork::Open,
-                    Some(reason) => LocalNetwork::Refused(reason),
-                };
+            Event::LocalNetwork(state) => {
+                // What was heard wins over what was asked: once the network has answered, a
+                // later report about this machine's own sends cannot take that back.
+                if self.local_network != LocalNetwork::Heard {
+                    self.local_network = match state {
+                        oscq_core::LocalNetwork::Refused { reason } => {
+                            LocalNetwork::Refused(reason)
+                        }
+                        oscq_core::LocalNetwork::Asked => LocalNetwork::Asked,
+                        oscq_core::LocalNetwork::Unanswered => LocalNetwork::Unanswered,
+                        oscq_core::LocalNetwork::Heard => LocalNetwork::Heard,
+                    };
+                }
             }
             Event::ServerFound(s) | Event::ServerChanged(s) | Event::ServerStale(s) => {
-                // Anything heard from the network is proof that a query reached it, whatever
-                // the probe last answered: what is observed wins over what was asked.
-                self.local_network = LocalNetwork::Open;
                 match self.entry_mut(s.id) {
                     Some(e) => e.server = s,
                     None => self.servers.push(ServerEntry::new(s)),

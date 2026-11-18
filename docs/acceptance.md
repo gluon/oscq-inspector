@@ -202,35 +202,69 @@ Proves, 7 to 13: the map handled by hand on the machine that gives the verdict. 
 ## 6b. The local network permission on a first launch, macOS
 
 Why: macOS decides whether an application may reach the local network per build of it, not per
-bundle identifier, so every version asks again. Until it has an answer, every query is refused
-and nothing can be found. The window must say that, and must not say that nothing is there.
+bundle identifier, so every version asks again. Until it has decided, the first seconds of
+queries are refused outright and the ones after that are taken and dropped, with no dialog
+guaranteed to appear. Nothing can be found in that state, and the window must say what it has
+observed rather than that nothing is there. This section is the check 0.4.1 failed.
 
-Setup: a Mac running macOS 15 or later, one OSCQuery server advertised over Bonjour from
-somewhere else on the network or from this Mac, and the version under test never launched on
-this Mac before. `dns-sd -B _oscjson._tcp local.` in a terminal lists the server, which is the
-ground truth this check is read against.
+Setup: a Mac running macOS 15 or later, the version under test never launched on this Mac
+before, and two servers:
+
+- one advertised on the Mac's Wi-Fi or Ethernet address, from this Mac or from another machine:
+  `cargo run -p oscq-core --example synthetic_server --release -- --port 5678` of this
+  repository, or any OSCQuery server on the LAN;
+- one registered with the system's own responder, `dns-sd -R lo-only _oscjson._tcp local. 9999`
+  in a terminal. The responder announces it on every interface, loopback included, and an
+  application the system is keeping off the local network hears the loopback copy of it: that
+  copy carries loopback addresses only, which is what makes the two servers tell the states
+  apart.
+
+`dns-sd -B _oscjson._tcp local.` in a terminal lists both, and is the ground truth each step is
+read against.
 
 1. Open the downloaded application for the first time and look at the **Discovered** panel
-   before answering the dialog macOS shows.
+   before answering any dialog macOS shows.
    Expected: "Waiting for permission to search the network.", in the signal colour, and under
-   it where to allow it. Nowhere does it say "none found": nothing has been asked of the
-   network yet. The server the terminal lists is not shown, which is correct.
-2. Click **Allow**, and do not quit the application.
-   Expected: the server appears in **Discovered** within a few seconds, with no relaunch. The
-   log, with `RUST_LOG=oscq_inspector=info`, has "a query left this machine: the local network
-   is open".
-3. Open **System Settings**, **Privacy & Security**, **Local Network**.
+   it where to allow it. Nowhere does it say "none found", and nowhere does it say that nothing
+   has answered: nothing has been asked of the network yet.
+2. Wait ten seconds, still without answering.
+   Expected: either servers appear, the permission having been granted, or the panel now says
+   "Searching since HH:MM. Nothing has answered.", with where to look and the manual entry
+   line. It must not say "none found" while the terminal lists a server.
+   Why this step: the refusal stops after a few seconds whether or not the permission was
+   granted, and this is the state the window used to call "none found".
+3. Click **Allow** if a dialog is showing, or, if none appeared, turn the entry for this version
+   on in **System Settings**, **Privacy & Security**, **Local Network**. Do not quit the
+   application.
+   Expected: the server advertised on the real address appears in **Discovered** within a
+   minute, with no relaunch, and the panel's lines about waiting or nothing having answered are
+   gone. The log, with `RUST_LOG=oscq_inspector=info`, has "an answer arrived from the local
+   network".
+4. While the permission is on, look at the loopback only server.
+   Expected: it is listed too. Both are listed: the loopback one proves nothing about the
+   network, but it is a server and it is shown.
+5. Open **System Settings**, **Privacy & Security**, **Local Network**.
    Expected: an entry for this version. If an earlier version was installed, its entry is there
    too, under the same name: one entry per build, which is the system's doing and not the
    application's.
-4. Leave the application running with no server advertised, or stop the server, and wait.
-   Expected: once a query has gone out, and only then, the panel says "Searching since HH:MM,
-   none found" with the time of day.
+6. Stop the server on the real address, and wait.
+   Expected: its row stays in the list, drawn dim with a hollow square, and the status bar says
+   "stale" when it is selected: a row no longer advertised never carries the filled square of a
+   server pushing values. The panel then says "Searching since HH:MM, none found" once the list
+   is empty, which is allowed here because something has answered during this session.
+7. If a build the system has never seen is at hand and its permission is off or undecided, open
+   it with the `dns-sd` server running.
+   Expected: that server is listed, with a `127.0.0.1` address on hover, while the panel still
+   says that nothing has answered, and the server on the real address is not listed. That is the
+   state of 2026-11-18, and the two together are correct: a server was found, and the network
+   has not answered.
 
-Proves: that the window says what it has been able to look for and no more (CLAUDE.md law 1),
-and that access granted during a session is acted on without a relaunch. Cannot prove: what
-happens when the permission is refused for a long time, which this Mac would not hold a process
-in; see PITFALLS.md.
+Proves: that the window says what it has observed and no more (CLAUDE.md law 1), including the
+difference between a send the system took and an answer from the network; that access granted
+during a session is acted on without a relaunch; and that a server no longer advertised cannot
+be read as a live one. Cannot prove: what happens when the permission is denied for a long
+time, which no Mac here would hold a process in, and whether a dialog appears at all, which the
+system decides; see PITFALLS.md.
 
 ## 7. Publication
 
