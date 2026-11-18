@@ -310,12 +310,31 @@ pub fn host_port(s: &DiscoveredServer) -> String {
     }
 }
 
+/// Whether a query may leave this machine, as discovery found it.
+///
+/// The window may say that nothing is on the network only in [`LocalNetwork::Open`]: in the
+/// other two nothing has been asked of it, and saying "none found" would be a claim about a
+/// network this application never reached (CLAUDE.md law 1).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum LocalNetwork {
+    /// Discovery has not reported yet, in the first moments of a launch.
+    #[default]
+    Unknown,
+    /// The system refused to send, in its own words. On macOS this is what a local network
+    /// permission that is denied, or not yet decided, looks like.
+    Refused(String),
+    /// A query has left this machine.
+    Open,
+}
+
 #[derive(Debug, Default)]
 pub struct AppState {
     pub servers: Vec<ServerEntry>,
     pub selected: Option<ServerId>,
     /// Errors not tied to a server.
     pub global_error: Option<String>,
+    /// Whether discovery can reach the network at all.
+    pub local_network: LocalNetwork,
 }
 
 impl AppState {
@@ -354,7 +373,16 @@ impl AppState {
 
     pub fn apply(&mut self, event: Event) {
         match event {
+            Event::LocalNetwork { refused } => {
+                self.local_network = match refused {
+                    None => LocalNetwork::Open,
+                    Some(reason) => LocalNetwork::Refused(reason),
+                };
+            }
             Event::ServerFound(s) | Event::ServerChanged(s) | Event::ServerStale(s) => {
+                // Anything heard from the network is proof that a query reached it, whatever
+                // the probe last answered: what is observed wins over what was asked.
+                self.local_network = LocalNetwork::Open;
                 match self.entry_mut(s.id) {
                     Some(e) => e.server = s,
                     None => self.servers.push(ServerEntry::new(s)),

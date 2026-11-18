@@ -43,6 +43,15 @@ const GEOMETRY_SETTLE: Duration = Duration::from_millis(500);
 /// An empty server list shows a hint after this long, not a spinner forever.
 const DISCOVERY_HINT_AFTER: Duration = Duration::from_secs(2);
 
+/// Where the user grants what the system is refusing. macOS asks once, per build of the
+/// application: an update is a new identity to it, and its answer starts again as undecided.
+#[cfg(target_os = "macos")]
+const WHERE_TO_ALLOW: &str = "Allow OSCQuery Inspector in System Settings, Privacy & Security, Local Network. An update \
+     is a new application to macOS, so it asks again.";
+#[cfg(not(target_os = "macos"))]
+const WHERE_TO_ALLOW: &str = "Check that this application may send on the local network, in the system's firewall or \
+     network settings.";
+
 pub struct Backend {
     pub commands: flume::Sender<Command>,
     pub events: flume::Receiver<Event>,
@@ -273,6 +282,14 @@ impl InspectorApp {
                             DiscoveryEvent::Found(s) => Event::ServerFound(s),
                             DiscoveryEvent::Changed(s) => Event::ServerChanged(s),
                             DiscoveryEvent::Stale(s) => Event::ServerStale(s),
+                            DiscoveryEvent::LocalNetwork(n) => Event::LocalNetwork {
+                                refused: match n {
+                                    oscq_discovery::LocalNetwork::Open => None,
+                                    oscq_discovery::LocalNetwork::Refused { reason } => {
+                                        Some(reason)
+                                    }
+                                },
+                            },
                         };
                         if events_tx.send(event).is_err() {
                             break;
@@ -1075,19 +1092,38 @@ impl InspectorApp {
                     .partition(|e| e.server.origin == Origin::Manual);
                 style::section(ui, "Discovered");
                 if discovered.is_empty() {
-                    let elapsed = self.started.elapsed();
-                    if elapsed < DISCOVERY_HINT_AFTER {
-                        ui.weak("Searching the network");
-                        ui.ctx()
-                            .request_repaint_after(DISCOVERY_HINT_AFTER - elapsed);
-                    } else {
-                        // A time, not a running count: a count would repaint the window every
-                        // second while it is at rest.
-                        ui.weak(format!(
-                            "Searching since {}, none found. Use + manual for a host the \
-                             network does not show.",
-                            self.searching_since
-                        ));
+                    match &self.state.local_network {
+                        // The system is refusing, or has not decided: no query has left this
+                        // machine, so nothing may be said about what is on the network
+                        // (CLAUDE.md law 1). What is said instead is where to allow it.
+                        crate::state::LocalNetwork::Refused(reason) => {
+                            ui.colored_label(
+                                style::SIGNAL,
+                                "Waiting for permission to search the network.",
+                            )
+                            .on_hover_text(format!("The system refused to send a query: {reason}"));
+                            ui.weak(WHERE_TO_ALLOW);
+                        }
+                        // Discovery has not answered yet, in the first moments of a launch.
+                        crate::state::LocalNetwork::Unknown => {
+                            ui.weak("Searching the network");
+                        }
+                        crate::state::LocalNetwork::Open => {
+                            let elapsed = self.started.elapsed();
+                            if elapsed < DISCOVERY_HINT_AFTER {
+                                ui.weak("Searching the network");
+                                ui.ctx()
+                                    .request_repaint_after(DISCOVERY_HINT_AFTER - elapsed);
+                            } else {
+                                // A time, not a running count: a count would repaint the window
+                                // every second while it is at rest.
+                                ui.weak(format!(
+                                    "Searching since {}, none found. Use + manual for a host \
+                                     the network does not show.",
+                                    self.searching_since
+                                ));
+                            }
+                        }
                     }
                 }
                 for e in discovered {
@@ -2015,6 +2051,7 @@ fn input_kinds(ctx: &egui::Context) -> Vec<String> {
 /// The variant of an event, for the trace that tells what keeps waking the window.
 fn event_kind(e: &Event) -> &'static str {
     match e {
+        Event::LocalNetwork { .. } => "LocalNetwork",
         Event::ServerFound(_) => "ServerFound",
         Event::ServerChanged(_) => "ServerChanged",
         Event::ServerStale(_) => "ServerStale",
@@ -5547,6 +5584,89 @@ mod tests {
         }
     }
 
+    /// Law 1 on the one claim the window makes about the network itself. While the system has
+    /// refused to send, or has not answered yet, the Discovered panel says so and says where to
+    /// allow it; it says "none found" only once a query has really left this machine.
+    ///
+    /// Seen on the human's Mac on 2026-11-18, on the first launch of 0.4.0 installed over
+    /// 0.3.0: "Searching since 10:28, none found" while `dns-sd` listed a server at that very
+    /// moment. macOS had not decided whether this build, a new identity to it, may reach the
+    /// local network, and every send was refused with "No route to host".
+    #[test]
+    fn none_found_is_said_only_once_a_query_has_left_this_machine() {
+        let refusal = "No route to host (os error 65)";
+        let mut h = harness();
+        // Past the hint delay, so the panel is in the state that made the false claim.
+        h.app.started = Instant::now() - Duration::from_secs(30);
+
+        // Before discovery has answered at all.
+        let texts = drawn_texts(&h.frame(Vec::new()));
+        assert!(
+            !texts.iter().any(|t| t.contains("none found")),
+            "nothing is claimed before discovery has answered: {texts:?}"
+        );
+
+        // The system refuses: said in words, with where to allow it, and never "none found".
+        h.events
+            .send(Event::LocalNetwork {
+                refused: Some(refusal.to_owned()),
+            })
+            .unwrap();
+        h.frame(Vec::new());
+        let texts = drawn_texts(&h.frame(Vec::new()));
+        assert!(
+            texts
+                .iter()
+                .any(|t| t == "Waiting for permission to search the network."),
+            "the refusal is said in words: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t == WHERE_TO_ALLOW),
+            "where to allow it is said: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("none found")),
+            "nothing is claimed while the system refuses: {texts:?}"
+        );
+
+        // A query leaves: now, and only now, the window may say nothing answered.
+        h.events
+            .send(Event::LocalNetwork { refused: None })
+            .unwrap();
+        h.frame(Vec::new());
+        let texts = drawn_texts(&h.frame(Vec::new()));
+        assert!(
+            texts.iter().any(|t| t.contains("none found")),
+            "once a query has left, none found is said: {texts:?}"
+        );
+        assert!(
+            !texts
+                .iter()
+                .any(|t| t == "Waiting for permission to search the network."),
+            "the waiting line goes when the waiting is over: {texts:?}"
+        );
+    }
+
+    /// A server heard from is itself proof that a query reached the network, whatever the
+    /// system last answered: what is observed wins over what was asked.
+    #[test]
+    fn a_server_heard_from_settles_the_local_network_state() {
+        let mut h = harness();
+        h.events
+            .send(Event::LocalNetwork {
+                refused: Some("No route to host (os error 65)".to_owned()),
+            })
+            .unwrap();
+        h.frame(Vec::new());
+        assert_eq!(
+            h.app.state.local_network,
+            crate::state::LocalNetwork::Refused("No route to host (os error 65)".to_owned())
+        );
+        h.events.send(Event::ServerFound(server())).unwrap();
+        h.frame(Vec::new());
+        assert_eq!(h.app.state.local_network, crate::state::LocalNetwork::Open);
+    }
+
     /// The visual system of 2026-11-17, in both themes: square corners everywhere, no shadow,
     /// borders of one hairline, one signal colour and no other colour, and a selection that
     /// inverts. A theme that rounds a corner, casts a shadow, thickens a border or brings in a
@@ -6382,9 +6502,16 @@ mod tests {
 
     /// With no server found, the server pane says since when it has been searching, as a time
     /// of day, so the text holds still: a running count would repaint the window at rest.
+    ///
+    /// Since 2026-11-18 that line waits on a query having really left this machine: without it
+    /// the pane says it is searching and claims nothing, which the test above holds.
     #[test]
     fn with_no_server_found_the_pane_says_since_when_it_searches() {
         let mut h = harness();
+        h.events
+            .send(Event::LocalNetwork { refused: None })
+            .unwrap();
+        h.frame(Vec::new());
         let texts = drawn_texts(&h.frame(Vec::new()));
         let line = texts
             .iter()

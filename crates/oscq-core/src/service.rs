@@ -172,6 +172,12 @@ pub enum Event {
     ServerFound(DiscoveredServer),
     ServerChanged(DiscoveredServer),
     ServerStale(DiscoveredServer),
+    /// Whether a query may leave this machine at all, as discovery found it: `None` once one
+    /// has, `Some(reason)` while the system refuses in its own words. Until this says a query
+    /// has left, nothing may be concluded about what is or is not on the network (law 1).
+    LocalNetwork {
+        refused: Option<String>,
+    },
     /// `HOST_INFO` arrived. `destination` says where OSC goes, or why nothing can be sent.
     HostInfo {
         server_id: ServerId,

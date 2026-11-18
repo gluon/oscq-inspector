@@ -71,6 +71,10 @@ On macOS 12 to 14 there is a shorter way: Control click the app, choose **Open**
 
 The first time the app looks for servers, macOS asks whether OSCQuery Inspector may find devices on your local network. Click **Allow**. If you clicked **Don't Allow**, turn it on later in **System Settings**, **Privacy & Security**, **Local Network**. A server on the same Mac, at `localhost`, works either way.
 
+Until you answer, the **Discovered** panel says it is waiting for permission and where to give it, and it says nothing about what is on the network: no query has left your Mac yet, so there is nothing to report. Once you allow it, servers appear within a few seconds. You do not have to quit and open the app again.
+
+**Updating.** macOS decides this for each build of an application, not for its name: a new version is a new application to it, so it asks again, and **Local Network** lists the version you had and the one you installed. Allow the new one. Turning the old entry off changes nothing for the new one, and you can leave both on or remove the old entry; the settings, the manual entries and the preset slots are kept either way.
+
 ### Windows 10 or later, 64 bit
 
 Download `oscq-inspector-VERSION-windows-x86_64.zip` and unzip it: a folder holding `oscq-inspector-VERSION-windows-x86_64.exe` and a `licenses` folder. The `.exe` is the whole application: no installer, put it where you like.
@@ -117,6 +121,8 @@ What the system needs to run it: X11 or Wayland, `libxkbcommon-x11-0` on X11, an
 Copyright (C) 2026 Julien Bayle, Structure Void. OSCQuery Inspector is free software under the GNU General Public License, version 3 or any later version ([LICENSE](LICENSE)), with an additional permission for the fonts compiled into the application ([LICENSE-EXCEPTION](LICENSE-EXCEPTION)). The fonts keep their own licenses, in [licenses/fonts](licenses/fonts).
 
 ## Status
+
+Version 0.4.1 is prepared: the first launch of a new build on macOS, where the system has not yet been asked whether the application may reach the local network. It said "none found" about a network it had never reached; it now says it is waiting, says where to allow it, and picks up servers as soon as access is given, with no relaunch. The checks for it are section 6b of [docs/acceptance.md](docs/acceptance.md).
 
 Version 0.4.0 is prepared: the visual system of the Structure Void design, its own two themes with one signal colour, its own typefaces and icons, the preset slots as a grid, and the toolbars of the JSON and Traffic tabs held on screen at the narrowest window. It is tagged once merged, and its draft Release is published when [docs/acceptance.md](docs/acceptance.md) has passed; until then it is not published. Every view of it is shown before and after in [docs/images/screenshots](docs/images/screenshots), taken against the prism-oscquery demo device and the synthetic servers of this repository.
 

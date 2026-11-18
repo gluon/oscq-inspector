@@ -4,6 +4,17 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-18
+
+### Fixed
+
+- **"None found" is no longer said about a network the app never reached.** On macOS the system decides whether an application may look for devices on the local network, and until it has, every query is refused. The application could not see that refusal and reported what it had not been able to look for. The **Discovered** panel now says it is waiting for permission and where to give it, and says that nothing was found only once a query has really left your Mac.
+- **Servers appear once you allow it, without quitting the app.** The permission could arrive a minute into a session and the app would not act on it for another minute or more, so quitting and opening it again looked like the only cure. It now asks the system every two seconds while it is refused, and sends a real query the moment it is allowed.
+
+### Changed
+
+- **An update asks for the local network permission again.** macOS treats each build of an application as a new one, so **System Settings**, **Privacy & Security**, **Local Network** lists the version you had and the one you installed. The README says what a first launch and an update look like.
+
 ## [0.4.0] - 2026-11-17
 
 ### Changed
@@ -122,7 +133,8 @@ The first version whose files are on the Releases page.
 
 - First release: discovery over Bonjour and manual entries, the address space as a tree, values read and sent with widgets fitting their types, values live over the WebSocket where the server pushes them, the JSON and Traffic tabs. Unsigned artifacts for macOS (universal), Windows and Linux.
 
-[Unreleased]: https://github.com/gluon/oscq-inspector/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/gluon/oscq-inspector/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/gluon/oscq-inspector/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/gluon/oscq-inspector/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/gluon/oscq-inspector/compare/v0.2.3...v0.3.0
 [0.2.3]: https://github.com/gluon/oscq-inspector/compare/v0.2.2...v0.2.3

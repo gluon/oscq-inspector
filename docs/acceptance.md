@@ -199,6 +199,39 @@ The map handled by hand, since 0.3.0. Same setup; A entered with **+ manual** by
 
 Proves, 7 to 13: the map handled by hand on the machine that gives the verdict. Cannot prove: more than the setup on the table, and a pointer other than the one used.
 
+## 6b. The local network permission on a first launch, macOS
+
+Why: macOS decides whether an application may reach the local network per build of it, not per
+bundle identifier, so every version asks again. Until it has an answer, every query is refused
+and nothing can be found. The window must say that, and must not say that nothing is there.
+
+Setup: a Mac running macOS 15 or later, one OSCQuery server advertised over Bonjour from
+somewhere else on the network or from this Mac, and the version under test never launched on
+this Mac before. `dns-sd -B _oscjson._tcp local.` in a terminal lists the server, which is the
+ground truth this check is read against.
+
+1. Open the downloaded application for the first time and look at the **Discovered** panel
+   before answering the dialog macOS shows.
+   Expected: "Waiting for permission to search the network.", in the signal colour, and under
+   it where to allow it. Nowhere does it say "none found": nothing has been asked of the
+   network yet. The server the terminal lists is not shown, which is correct.
+2. Click **Allow**, and do not quit the application.
+   Expected: the server appears in **Discovered** within a few seconds, with no relaunch. The
+   log, with `RUST_LOG=oscq_inspector=info`, has "a query left this machine: the local network
+   is open".
+3. Open **System Settings**, **Privacy & Security**, **Local Network**.
+   Expected: an entry for this version. If an earlier version was installed, its entry is there
+   too, under the same name: one entry per build, which is the system's doing and not the
+   application's.
+4. Leave the application running with no server advertised, or stop the server, and wait.
+   Expected: once a query has gone out, and only then, the panel says "Searching since HH:MM,
+   none found" with the time of day.
+
+Proves: that the window says what it has been able to look for and no more (CLAUDE.md law 1),
+and that access granted during a session is acted on without a relaunch. Cannot prove: what
+happens when the permission is refused for a long time, which this Mac would not hold a process
+in; see PITFALLS.md.
+
 ## 7. Publication
 
 Last, and only when every section run above gave what was expected.
