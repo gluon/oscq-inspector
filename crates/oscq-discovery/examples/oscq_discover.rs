@@ -70,10 +70,24 @@ fn main() {
             None => rx.recv().ok(),
         };
         if let Some(event) = event {
+            // Whether a query can leave this machine at all, which on macOS depends on the
+            // local network permission: printed as it changes, since everything below is
+            // meaningless until a query has gone out.
             let (label, s) = match &event {
                 DiscoveryEvent::Found(s) => ("FOUND  ", s),
                 DiscoveryEvent::Changed(s) => ("CHANGED", s),
                 DiscoveryEvent::Stale(s) => ("STALE  ", s),
+                DiscoveryEvent::LocalNetwork(n) => {
+                    println!(
+                        "+{:>6.2}s NETWORK {}",
+                        start.elapsed().as_secs_f64(),
+                        match n {
+                            oscq_discovery::LocalNetwork::Open => "a query left this machine",
+                            oscq_discovery::LocalNetwork::Refused { reason } => reason,
+                        }
+                    );
+                    continue;
+                }
             };
             println!(
                 "+{:>6.2}s {label} {}",

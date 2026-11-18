@@ -69,6 +69,7 @@ fn vanish(liveness: Option<Duration>, label: &str) -> bool {
     let mut discovery = MdnsSdDiscovery::new(MdnsSdConfig {
         liveness_interval: liveness,
         verify_timeout: Duration::from_secs(1),
+        ..Default::default()
     });
     let rx = discovery.start().unwrap();
     let mut child = spawn_publisher(&name, port);

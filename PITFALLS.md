@@ -189,6 +189,20 @@ Case: measured at 28 on `void/visual-refresh` and at 28 on d3df218 by the same p
 The Traffic tab's own toolbar does not wrap and its filter field asks for a fixed 192 points, while the centre pane keeps only 224 at the 640 point minimum window. The direction filter is cut mid-word and Pause, Clear and Export are off screen entirely. `every_toolbar_control_stays_on_screen_whatever_the_width` does not cover it: it checks the tab bar's own toolbar, the preset slots, the pinned row and the status bar, not the toolbar a tab draws for itself.
 Case: seen at 640 by 800 on the human's Mac on 2026-11-17, on `void/visual-refresh` and, in the same screenshot taken from the build of d3df218, before it: the same cut at the same place, so it is not that branch's doing. Fixed the same day, on the human's word: both rows wrap, and `every_control_a_tab_draws_for_itself_stays_on_screen` reaches what the toolbar test did not.
 
+## macOS local network
+
+macOS decides whether an application may reach the local network per build, not per bundle identifier. A Rust binary is ad hoc signed by the linker, so every build has its own code identity: `codesign -dvvv` on two builds of the same bundle gives two `CDHash` values and two `Identifier`s. An update is a new application to the system, its answer starts again as undecided, and Privacy & Security, Local Network lists the old entry and the new one under the same name. Keeping the bundle identifier, which this repository does on purpose, does not keep the permission.
+Case: 0.4.0 installed over 0.3.0 on the human's Mac, 2026-11-18, two "OSCQuery Inspector" entries listed. Reproduced here: a byte for byte copy of a binary under a *different* bundle identifier inherited the decision and was never blocked, while a *different* binary under the *same* identifier was blocked, which is the wrong way round for an identity that followed the identifier.
+
+While the decision is pending or denied, a multicast send fails with `EHOSTUNREACH`, "No route to host", errno 65. `mdns-sd` 0.21.5 says nothing of it: `multicast_on_intf` and `unicast_on_intf` trace the failure and return, and no `DaemonEvent::Error` is raised. A browse that has asked the network nothing therefore looks exactly like a browse that asked and heard nothing, and the window said "none found" about a network it had never reached.
+Case: three launches of a probe under fresh identities, 2026-11-18, each refused for the first seconds; the log is in the branch's decision line.
+
+`mdns-sd` doubles the gap between the queries of a browse and caps it at one hour: measured on the human's Mac at 0, 1, 3, 7, 15, 31, 63 and 127 s, and `max_delay = 60 * 60` in its source. Nothing resets it. So an answer from the system that arrives a minute into a session is not acted on for another minute or more, which is why quitting and relaunching looked like the only cure.
+Case: the same probe, left running for several minutes, 2026-11-18.
+
+A permission turned off in System Settings does not reach a process that is already running: the probe kept sending after the human switched its entry off and on again. The decision is read when the process first reaches the network, and a denial met later in a session could not be produced this way.
+Case: tried on 2026-11-18 to produce a denied state for the reproduction, and abandoned.
+
 ## OSC decoding
 
 `rosc` 0.11 decodes nested bundles by recursion, and a deeply nested `OscType::Array` is dropped by recursion. A hostile binary WebSocket frame of 4 MB can nest bundles 200 000 deep and overflow the stack. Check the nesting without recursion before decoding.
