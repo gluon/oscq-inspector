@@ -69,11 +69,11 @@ The app is not signed by an identified developer, so macOS stops it the first ti
 
 On macOS 12 to 14 there is a shorter way: Control click the app, choose **Open**, then **Open** again.
 
-The first time the app looks for servers, macOS asks whether OSCQuery Inspector may find devices on your local network. Click **Allow**. If you clicked **Don't Allow**, turn it on later in **System Settings**, **Privacy & Security**, **Local Network**. A server on the same Mac, at `localhost`, works either way.
+The first time the app looks for servers, macOS asks whether OSCQuery Inspector may find devices on your local network. Click **Allow**. If you clicked **Don't Allow**, or if no dialog appeared, turn it on in **System Settings**, **Privacy & Security**, **Local Network**. A server on the same Mac at `localhost` works either way; one on the same Mac advertised on its Wi-Fi or Ethernet address does not, which is why a window can show one server of your own machine and none of the others.
 
-Until you answer, the **Discovered** panel says it is waiting for permission and where to give it, and it says nothing about what is on the network: no query has left your Mac yet, so there is nothing to report. Once you allow it, servers appear within a few seconds. You do not have to quit and open the app again.
+Until something answers, the **Discovered** panel says what it has been able to do and no more: that it is waiting for permission, with where to give it, while the system is refusing its queries; that it is searching and nothing has answered, with where to look, while they go out unanswered. It says that none was found only once a server has really answered. Once you allow it, servers appear within a few seconds, and you do not have to quit and open the app again: it keeps a query going out every few seconds until one is answered.
 
-**Updating.** macOS decides this for each build of an application, not for its name: a new version is a new application to it, so it asks again, and **Local Network** lists the version you had and the one you installed. Allow the new one. Turning the old entry off changes nothing for the new one, and you can leave both on or remove the old entry; the settings, the manual entries and the preset slots are kept either way.
+**Updating.** macOS decides this for each build of an application, not for its name: a new version is a new application to it, so it asks again, and **Local Network** lists the version you had and the one you installed. Allow the new one. Turning the old entry off changes nothing for the new one, and you can leave both on or remove the old entry; the settings, the manual entries and the preset slots are kept either way. The dialog does not always appear on an update: if the panel says nothing has answered while a server is running, that switch is the first place to look.
 
 ### Windows 10 or later, 64 bit
 

@@ -4,16 +4,19 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 
 ## [Unreleased]
 
-## [0.4.1] - 2026-11-18
+## [0.4.2] - 2026-11-18
+
+0.4.1 was tagged and built on the same day and never published: the acceptance check of a first launch found it saying "none found" again, for the reason below. Its two fixes are here, corrected.
 
 ### Fixed
 
-- **"None found" is no longer said about a network the app never reached.** On macOS the system decides whether an application may look for devices on the local network, and until it has, every query is refused. The application could not see that refusal and reported what it had not been able to look for. The **Discovered** panel now says it is waiting for permission and where to give it, and says that nothing was found only once a query has really left your Mac.
-- **Servers appear once you allow it, without quitting the app.** The permission could arrive a minute into a session and the app would not act on it for another minute or more, so quitting and opening it again looked like the only cure. It now asks the system every two seconds while it is refused, and sends a real query the moment it is allowed.
+- **"None found" is no longer said about a network this application may never have reached.** On macOS the system decides whether an application may look for devices on the local network, and each build of an application is a new one to it. Until it has decided, the first seconds of queries are refused outright and the ones after that are taken and dropped, with no dialog shown: nothing comes back, and nothing in the system says why. The **Discovered** panel now says which of three things it has observed. While the queries are refused it says it is waiting for permission and where to give it. While they go out with nothing answering it says that, and where to look if a server is running. Only once something has really answered does it say that none was found. A server of your own machine advertised at `localhost` is not such an answer: a blocked application still hears those, which is how a window could show one server of this Mac and none of the others.
+- **Servers appear once you allow it, without quitting the app.** The permission can arrive a minute into a session, and the mDNS library the app uses doubles the gap between its own queries up to an hour, so quitting and opening the app again looked like the only cure. The app now sends a query of its own every two seconds while the system is refusing, every five seconds while nothing has answered, and every minute after the first two minutes, until something answers. Nothing is sent once a server has been heard from.
+- **A server that stopped advertising no longer looks like a live one.** It stays in the list, so it can be selected and retried, and its square is now hollow: a filled square in the signal colour means a server pushing values, and the same mark cannot stand for both.
 
 ### Changed
 
-- **An update asks for the local network permission again.** macOS treats each build of an application as a new one, so **System Settings**, **Privacy & Security**, **Local Network** lists the version you had and the one you installed. The README says what a first launch and an update look like.
+- **An update asks for the local network permission again.** macOS treats each build of an application as a new one, so **System Settings**, **Privacy & Security**, **Local Network** lists the version you had and the one you installed. The dialog does not always appear. The README says what a first launch and an update look like, and where to look when nothing answers.
 
 ## [0.4.0] - 2026-11-17
 
@@ -133,8 +136,8 @@ The first version whose files are on the Releases page.
 
 - First release: discovery over Bonjour and manual entries, the address space as a tree, values read and sent with widgets fitting their types, values live over the WebSocket where the server pushes them, the JSON and Traffic tabs. Unsigned artifacts for macOS (universal), Windows and Linux.
 
-[Unreleased]: https://github.com/gluon/oscq-inspector/compare/v0.4.1...HEAD
-[0.4.1]: https://github.com/gluon/oscq-inspector/compare/v0.4.0...v0.4.1
+[Unreleased]: https://github.com/gluon/oscq-inspector/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/gluon/oscq-inspector/compare/v0.4.0...v0.4.2
 [0.4.0]: https://github.com/gluon/oscq-inspector/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/gluon/oscq-inspector/compare/v0.2.3...v0.3.0
 [0.2.3]: https://github.com/gluon/oscq-inspector/compare/v0.2.2...v0.2.3

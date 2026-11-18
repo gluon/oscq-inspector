@@ -82,7 +82,12 @@ fn main() {
                         "+{:>6.2}s NETWORK {}",
                         start.elapsed().as_secs_f64(),
                         match n {
-                            oscq_discovery::LocalNetwork::Open => "a query left this machine",
+                            oscq_discovery::LocalNetwork::Asked =>
+                                "the system took a query; nothing has answered yet",
+                            oscq_discovery::LocalNetwork::Unanswered =>
+                                "queries are going out and nothing has answered",
+                            oscq_discovery::LocalNetwork::Heard =>
+                                "an answer arrived from the local network",
                             oscq_discovery::LocalNetwork::Refused { reason } => reason,
                         }
                     );

@@ -40,9 +40,6 @@ pub const APP_NAME: &str = "OSCQuery Inspector";
 const EVENTS_PER_FRAME: usize = 512;
 /// Window geometry is saved once it has been stable this long.
 const GEOMETRY_SETTLE: Duration = Duration::from_millis(500);
-/// An empty server list shows a hint after this long, not a spinner forever.
-const DISCOVERY_HINT_AFTER: Duration = Duration::from_secs(2);
-
 /// Where the user grants what the system is refusing. macOS asks once, per build of the
 /// application: an update is a new identity to it, and its answer starts again as undecided.
 #[cfg(target_os = "macos")]
@@ -51,6 +48,17 @@ const WHERE_TO_ALLOW: &str = "Allow OSCQuery Inspector in System Settings, Priva
 #[cfg(not(target_os = "macos"))]
 const WHERE_TO_ALLOW: &str = "Check that this application may send on the local network, in the system's firewall or \
      network settings.";
+
+/// The same place, said when queries are going out and nothing is answering. The system is not
+/// refusing anything here, so nothing is asserted: it is where to look if a server is running
+/// and this window cannot hear it.
+#[cfg(target_os = "macos")]
+const WHERE_TO_CHECK: &str = "If a server is running, check that OSCQuery Inspector is allowed in System Settings, \
+     Privacy & Security, Local Network. An update is a new application to macOS, so it is listed \
+     again.";
+#[cfg(not(target_os = "macos"))]
+const WHERE_TO_CHECK: &str = "If a server is running, check that this application may send and receive on the local \
+     network, in the system's firewall or network settings.";
 
 pub struct Backend {
     pub commands: flume::Sender<Command>,
@@ -282,14 +290,7 @@ impl InspectorApp {
                             DiscoveryEvent::Found(s) => Event::ServerFound(s),
                             DiscoveryEvent::Changed(s) => Event::ServerChanged(s),
                             DiscoveryEvent::Stale(s) => Event::ServerStale(s),
-                            DiscoveryEvent::LocalNetwork(n) => Event::LocalNetwork {
-                                refused: match n {
-                                    oscq_discovery::LocalNetwork::Open => None,
-                                    oscq_discovery::LocalNetwork::Refused { reason } => {
-                                        Some(reason)
-                                    }
-                                },
-                            },
+                            DiscoveryEvent::LocalNetwork(n) => Event::LocalNetwork(n),
                         };
                         if events_tx.send(event).is_err() {
                             break;
@@ -1093,9 +1094,9 @@ impl InspectorApp {
                 style::section(ui, "Discovered");
                 if discovered.is_empty() {
                     match &self.state.local_network {
-                        // The system is refusing, or has not decided: no query has left this
-                        // machine, so nothing may be said about what is on the network
-                        // (CLAUDE.md law 1). What is said instead is where to allow it.
+                        // The system is refusing, or has not decided: nothing has been asked of
+                        // the network, so nothing may be said about what is on it (CLAUDE.md
+                        // law 1). What is said instead is where to allow it.
                         crate::state::LocalNetwork::Refused(reason) => {
                             ui.colored_label(
                                 style::SIGNAL,
@@ -1104,25 +1105,32 @@ impl InspectorApp {
                             .on_hover_text(format!("The system refused to send a query: {reason}"));
                             ui.weak(WHERE_TO_ALLOW);
                         }
-                        // Discovery has not answered yet, in the first moments of a launch.
-                        crate::state::LocalNetwork::Unknown => {
+                        // Discovery has not answered yet, or has sent its first query: in both
+                        // nothing has come back, and there is nothing to say but that.
+                        crate::state::LocalNetwork::Unknown | crate::state::LocalNetwork::Asked => {
                             ui.weak("Searching the network");
                         }
-                        crate::state::LocalNetwork::Open => {
-                            let elapsed = self.started.elapsed();
-                            if elapsed < DISCOVERY_HINT_AFTER {
-                                ui.weak("Searching the network");
-                                ui.ctx()
-                                    .request_repaint_after(DISCOVERY_HINT_AFTER - elapsed);
-                            } else {
-                                // A time, not a running count: a count would repaint the window
-                                // every second while it is at rest.
-                                ui.weak(format!(
-                                    "Searching since {}, none found. Use + manual for a host \
-                                     the network does not show.",
-                                    self.searching_since
-                                ));
-                            }
+                        // Queries are going out and nothing has answered. The system taking a
+                        // query is not the network receiving it, so this is not "none found":
+                        // it says what was done and what came back, and where to look if a
+                        // server is running (PITFALLS.md, 2026-11-18).
+                        crate::state::LocalNetwork::Unanswered => {
+                            // A time, not a running count: a count would repaint the window
+                            // every second while it is at rest.
+                            ui.weak(format!(
+                                "Searching since {}. Nothing has answered.",
+                                self.searching_since
+                            ));
+                            ui.weak(WHERE_TO_CHECK);
+                            ui.weak("Use + manual for a host the network does not show.");
+                        }
+                        // The network has answered before, so an empty list is a fact about it.
+                        crate::state::LocalNetwork::Heard => {
+                            ui.weak(format!(
+                                "Searching since {}, none found. Use + manual for a host the \
+                                 network does not show.",
+                                self.searching_since
+                            ));
                         }
                     }
                 }
@@ -1558,7 +1566,7 @@ impl InspectorApp {
             // attention, grey otherwise, and the state in words beside it (PRD 9.6).
             zone(ui, 36.0 * GRID * scale, &mut |ui| {
                 ui.spacing_mut().item_spacing.x = GRID;
-                status_dot(ui, dot_colour(ui.visuals(), e));
+                status_dot(ui, dot_colour(ui.visuals(), e), !e.server.stale);
                 ui.add(egui::Label::new(style::caps(state_text(e))).truncate())
                     .on_hover_ui(|ui| {
                         ui.label(conn_text(e));
@@ -2327,7 +2335,7 @@ fn server_row(
     ui.horizontal(|ui| {
         ui.set_min_height(ROW_H);
         ui.spacing_mut().item_spacing.x = GRID;
-        status_dot(ui, dot_colour(ui.visuals(), e));
+        status_dot(ui, dot_colour(ui.visuals(), e), !e.server.stale);
         // Its declared name, its address second, first on hover (CLAUDE.md law 2).
         let mut text = RichText::new(e.declared_name());
         if e.server.kind == ServiceKind::OscOnly || e.server.stale {
@@ -2381,13 +2389,23 @@ fn server_row(
 
 /// A server's state dot: a square, since the system has no round corners (the human's decision
 /// of 2026-11-17). It keeps the 10 point box the round dot had, so no row moves.
-fn status_dot(ui: &mut egui::Ui, colour: Color32) {
+/// The square beside a server's name. `filled` says whether the state it stands for is a state
+/// of this moment: a server no longer advertised is drawn hollow, in the same colour, because a
+/// filled signal square means a server pushing values and the two must not read alike
+/// (CLAUDE.md law 1).
+fn status_dot(ui: &mut egui::Ui, colour: Color32, filled: bool) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-    ui.painter().rect_filled(
-        egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(2.0 * GRID)),
-        0.0,
-        colour,
-    );
+    let square = egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(2.0 * GRID));
+    if filled {
+        ui.painter().rect_filled(square, 0.0, colour);
+    } else {
+        ui.painter().rect_stroke(
+            square,
+            0.0,
+            egui::Stroke::new(style::HAIRLINE, colour),
+            egui::StrokeKind::Inside,
+        );
+    }
 }
 
 fn conn_text(e: &ServerEntry) -> String {
@@ -5584,20 +5602,21 @@ mod tests {
         }
     }
 
-    /// Law 1 on the one claim the window makes about the network itself. While the system has
-    /// refused to send, or has not answered yet, the Discovered panel says so and says where to
-    /// allow it; it says "none found" only once a query has really left this machine.
+    /// Law 1 on the one claim the window makes about the network itself, in each of the four
+    /// states it can be in. "None found" is a claim about the network, so it waits for something
+    /// to have answered; a refusal and a silence are each said in their own words, with where to
+    /// look.
     ///
-    /// Seen on the human's Mac on 2026-11-18, on the first launch of 0.4.0 installed over
+    /// Seen twice on the human's Mac on 2026-11-18. First on the launch of 0.4.0 installed over
     /// 0.3.0: "Searching since 10:28, none found" while `dns-sd` listed a server at that very
-    /// moment. macOS had not decided whether this build, a new identity to it, may reach the
-    /// local network, and every send was refused with "No route to host".
+    /// moment, macOS having refused every send of a build it had not been told about. Then on
+    /// 0.4.1, which fixed the refusal and claimed the same thing again: the system takes those
+    /// sends after the first seconds and drops the packets, and a send taken was read as a
+    /// network reached.
     #[test]
-    fn none_found_is_said_only_once_a_query_has_left_this_machine() {
+    fn none_found_is_said_only_once_something_has_answered() {
         let refusal = "No route to host (os error 65)";
         let mut h = harness();
-        // Past the hint delay, so the panel is in the state that made the false claim.
-        h.app.started = Instant::now() - Duration::from_secs(30);
 
         // Before discovery has answered at all.
         let texts = drawn_texts(&h.frame(Vec::new()));
@@ -5608,9 +5627,9 @@ mod tests {
 
         // The system refuses: said in words, with where to allow it, and never "none found".
         h.events
-            .send(Event::LocalNetwork {
-                refused: Some(refusal.to_owned()),
-            })
+            .send(Event::LocalNetwork(oscq_core::LocalNetwork::Refused {
+                reason: refusal.to_owned(),
+            }))
             .unwrap();
         h.frame(Vec::new());
         let texts = drawn_texts(&h.frame(Vec::new()));
@@ -5629,15 +5648,48 @@ mod tests {
             "nothing is claimed while the system refuses: {texts:?}"
         );
 
-        // A query leaves: now, and only now, the window may say nothing answered.
+        // The system takes a query. It says nothing about the network, so neither does the
+        // window: this is the state 0.4.1 drew as "none found".
         h.events
-            .send(Event::LocalNetwork { refused: None })
+            .send(Event::LocalNetwork(oscq_core::LocalNetwork::Asked))
+            .unwrap();
+        h.frame(Vec::new());
+        let texts = drawn_texts(&h.frame(Vec::new()));
+        assert!(
+            !texts.iter().any(|t| t.contains("none found")),
+            "a query the system took is not a network reached: {texts:?}"
+        );
+
+        // Queries keep going out with nothing answering: said as that, with where to look.
+        h.events
+            .send(Event::LocalNetwork(oscq_core::LocalNetwork::Unanswered))
+            .unwrap();
+        h.frame(Vec::new());
+        let texts = drawn_texts(&h.frame(Vec::new()));
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.starts_with("Searching since ") && t.ends_with("Nothing has answered.")),
+            "the silence is said as a silence: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t == WHERE_TO_CHECK),
+            "where to look is said, without claiming the permission is the cause: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("none found")),
+            "nothing is claimed while nothing has answered: {texts:?}"
+        );
+
+        // Something answers. Now, and only now, the window may speak of the network.
+        h.events
+            .send(Event::LocalNetwork(oscq_core::LocalNetwork::Heard))
             .unwrap();
         h.frame(Vec::new());
         let texts = drawn_texts(&h.frame(Vec::new()));
         assert!(
             texts.iter().any(|t| t.contains("none found")),
-            "once a query has left, none found is said: {texts:?}"
+            "once something has answered, none found is said: {texts:?}"
         );
         assert!(
             !texts
@@ -5647,24 +5699,121 @@ mod tests {
         );
     }
 
-    /// A server heard from is itself proof that a query reached the network, whatever the
-    /// system last answered: what is observed wins over what was asked.
+    /// Every square of the size of a status dot the frame drew, as (centre, fill, stroke); a
+    /// stroke of no width counts as no stroke.
+    fn drawn_dots(out: &egui::FullOutput) -> Vec<(egui::Pos2, Color32, Color32)> {
+        fn walk(shape: &egui::Shape, dots: &mut Vec<(egui::Pos2, Color32, Color32)>) {
+            match shape {
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, dots)),
+                egui::Shape::Rect(r)
+                    if (r.rect.width() - 2.0 * GRID).abs() < 0.5
+                        && (r.rect.height() - 2.0 * GRID).abs() < 0.5 =>
+                {
+                    let stroke = if r.stroke.width > 0.0 {
+                        r.stroke.color
+                    } else {
+                        Color32::TRANSPARENT
+                    };
+                    dots.push((r.rect.center(), r.fill, stroke));
+                }
+                _ => {}
+            }
+        }
+        let mut dots = Vec::new();
+        for clipped in &out.shapes {
+            walk(&clipped.shape, &mut dots);
+        }
+        dots
+    }
+
+    /// The row of a server no longer advertised, on the human's Mac on 2026-11-18: withdrawn
+    /// with `dns-sd`, still listed. It is listed on purpose, so that it can be selected and
+    /// retried, and the pane says "stale: no longer advertised" on hover. What it must not do is
+    /// read like a server that is pushing values: both were a filled square in the signal
+    /// colour, which is one mark for two states (CLAUDE.md law 1). A row no longer advertised is
+    /// drawn hollow.
     #[test]
-    fn a_server_heard_from_settles_the_local_network_state() {
+    fn a_server_no_longer_advertised_is_not_drawn_as_a_live_one() {
+        let mut h = harness();
+        let s = server();
+        h.events.send(Event::ServerFound(s.clone())).unwrap();
+        h.frame(Vec::new());
+        let out = h.frame(Vec::new());
+        // The dot of its row: the square nearest to the left of its name, on its line.
+        let dot_of = |out: &egui::FullOutput| {
+            let name = drawn_text_rects(out)
+                .into_iter()
+                .find(|(t, _, _)| *t == s.name)
+                .unwrap_or_else(|| panic!("the server is listed: {:?}", drawn_texts(out)))
+                .1;
+            drawn_dots(out)
+                .into_iter()
+                .filter(|(c, _, _)| {
+                    c.x < name.min.x
+                        && (c.y - name.center().y).abs() < ROW_H
+                        && name.min.x - c.x < 6.0 * GRID
+                })
+                .min_by(|a, b| (name.min.x - a.0.x).total_cmp(&(name.min.x - b.0.x)))
+                .unwrap_or_else(|| panic!("no square beside the name, at {name:?}"))
+        };
+        let (_, fill, stroke) = dot_of(&out);
+        assert!(
+            fill.a() > 0 && stroke.a() == 0,
+            "a server still advertised is a filled square: fill {fill:?}, stroke {stroke:?}"
+        );
+
+        let mut gone = s.clone();
+        gone.stale = true;
+        h.events.send(Event::ServerStale(gone)).unwrap();
+        h.frame(Vec::new());
+        let out = h.frame(Vec::new());
+        let (_, fill, stroke) = dot_of(&out);
+        assert!(
+            stroke.a() > 0 && fill.a() == 0,
+            "a server no longer advertised is a hollow square: fill {fill:?}, stroke {stroke:?}"
+        );
+        assert_eq!(
+            stroke,
+            style::SIGNAL,
+            "and it keeps the colour that says it wants the eye"
+        );
+    }
+
+    /// What was heard wins over what was asked: a state about this machine's own sends never
+    /// takes back an answer the network gave.
+    #[test]
+    fn an_answer_from_the_network_is_not_taken_back_by_a_later_refusal() {
         let mut h = harness();
         h.events
-            .send(Event::LocalNetwork {
-                refused: Some("No route to host (os error 65)".to_owned()),
-            })
+            .send(Event::LocalNetwork(oscq_core::LocalNetwork::Refused {
+                reason: "No route to host (os error 65)".to_owned(),
+            }))
             .unwrap();
         h.frame(Vec::new());
         assert_eq!(
             h.app.state.local_network,
             crate::state::LocalNetwork::Refused("No route to host (os error 65)".to_owned())
         );
-        h.events.send(Event::ServerFound(server())).unwrap();
+        h.events
+            .send(Event::LocalNetwork(oscq_core::LocalNetwork::Heard))
+            .unwrap();
         h.frame(Vec::new());
-        assert_eq!(h.app.state.local_network, crate::state::LocalNetwork::Open);
+        assert_eq!(h.app.state.local_network, crate::state::LocalNetwork::Heard);
+        for state in [
+            oscq_core::LocalNetwork::Refused {
+                reason: "No route to host (os error 65)".to_owned(),
+            },
+            oscq_core::LocalNetwork::Unanswered,
+            oscq_core::LocalNetwork::Asked,
+        ] {
+            h.events.send(Event::LocalNetwork(state)).unwrap();
+            h.frame(Vec::new());
+            assert_eq!(
+                h.app.state.local_network,
+                crate::state::LocalNetwork::Heard,
+                "an answer stands, whatever this machine's sends do afterwards"
+            );
+        }
     }
 
     /// The visual system of 2026-11-17, in both themes: square corners everywhere, no shadow,
@@ -6503,13 +6652,13 @@ mod tests {
     /// With no server found, the server pane says since when it has been searching, as a time
     /// of day, so the text holds still: a running count would repaint the window at rest.
     ///
-    /// Since 2026-11-18 that line waits on a query having really left this machine: without it
-    /// the pane says it is searching and claims nothing, which the test above holds.
+    /// Since 2026-11-18 that line waits on something having really answered: without it the pane
+    /// says it is searching and claims nothing, which the test above holds.
     #[test]
     fn with_no_server_found_the_pane_says_since_when_it_searches() {
         let mut h = harness();
         h.events
-            .send(Event::LocalNetwork { refused: None })
+            .send(Event::LocalNetwork(oscq_core::LocalNetwork::Heard))
             .unwrap();
         h.frame(Vec::new());
         let texts = drawn_texts(&h.frame(Vec::new()));
@@ -6535,6 +6684,21 @@ mod tests {
         assert!(
             causes.is_empty(),
             "the line asks for no repaint: {causes:?}"
+        );
+
+        // And the state a window with nothing on its network sits in for as long as it is open,
+        // where a query of its own goes out every few seconds: that asking is a worker thread
+        // sending a packet, it reports nothing while nothing changes, and the window rests
+        // (PRD 10).
+        h.events
+            .send(Event::LocalNetwork(oscq_core::LocalNetwork::Unanswered))
+            .unwrap();
+        let (_, t, _) = h.frames_until_idle(t + 80.0, &[]);
+        let (frames, _, causes) = h.frames_until_idle(t + 60.0, &[]);
+        assert_eq!(
+            (frames, causes.len()),
+            (1, 0),
+            "the unanswered lines ask for no repaint: {causes:?}"
         );
     }
 
