@@ -145,6 +145,8 @@ This README is the manual. The documents below are the project's working files, 
 - [docs/decisions.md](docs/decisions.md): one line per decision taken while building, with its reason.
 - [docs/protocol-notes.md](docs/protocol-notes.md): what the OSCQuery proposal says, checked against its sources, and what real servers do.
 - [PITFALLS.md](PITFALLS.md): traps met while building, each with the case that produced it.
+- [docs/presets-audit.md](docs/presets-audit.md): the preset section read from the window on 2026-11-19, what a capture takes and what a recall sends, what the screen does not make readable, and three designs for the capture.
+- [docs/icon-study.md](docs/icon-study.md): the application icon as it is, and three directions for a new one, at the sizes a Dock draws.
 - [docs/acceptance.md](docs/acceptance.md): the manual checks run before each release, and the record of what they proved.
 - [CLAUDE.md](CLAUDE.md): the laws the application is held to, and the review criterion for every change. Not documentation either: it states what must stay true, not how to use the application.
 - [tests/fixtures/README.md](tests/fixtures/README.md): the test inputs and where each one comes from.
@@ -200,6 +202,14 @@ OSCQ_INSPECTOR_STARTUP=connect-all,map ./oscq-inspector
 ```
 
 `tree`, `json`, `traffic`, `map` and `about` are the views it takes, and `connect-all` connects every known server rather than the selected one alone. The whole set, every view before and after the refresh of 2026-11-17 in both themes and at both widths, is in [docs/images/screenshots](docs/images/screenshots), with how it was taken.
+
+Since 2026-11-19 the window can also write the frame itself, which needs no capture tool, no permission and no desktop of its own, and which the images of [docs/presets-audit.md](docs/presets-audit.md) were taken with. It is behind the `screenshot` feature, so no release build carries it:
+
+```
+OSCQ_INSPECTOR_SHOT=out.png OSCQ_INSPECTOR_SHOT_DO=capture:3 oscq-inspector
+```
+
+`OSCQ_INSPECTOR_SHOT_DO` takes `select:HOST:PORT`, `expand:/PATH`, `pin:/PATH`, `capture:N` and `recall:N`, one per frame, and the window closes once the file is written.
 
 The application icon is drawn in code, `crates/oscq-inspector/src/icon.rs`: the window icon, the macOS `.icns`, the Windows executable's icon and the Linux `.png` all come from it, and no image file is stored. The release packaging writes the image files with:
 

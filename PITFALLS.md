@@ -237,6 +237,19 @@ Case: `tests/fixtures/max-hostinfo.json`, identical to `max-root.json`, 2026-10-
 An accepted WebSocket, and an accepted `LISTEN`, do not mean the server notifies. Max 9 accepts both on its HTTP port and never sends a frame. Showing "live" on open told the user values were pushed when none ever would be. Claim live only after the first frame from the server.
 Case: Max 9 on the human's Mac, `LISTEN /test/param/fader/raw`, fader moved, nothing on the socket, checked with `websocat`, 2026-10-11.
 
+## Config
+
+Two saves of the config in one frame lose the race and one of them is dropped. `write_atomic`
+builds the temporary file's name from the destination's, so both writers open the same
+`.config.json.tmp`; the first rename carries it away and the second fails with ENOENT. The window
+then shows "config not saved to ..." in the status bar, which replaces the note the action had
+just put there, so a capture that worked reads on screen as a failure to save.
+Case: four captures in one frame through the screenshot harness, five launches out of five, three
+warnings each time, on the human's Mac on 2026-11-19. A hand does not click four slots in one
+frame, but `track_geometry` saves from the same frame as the action that follows it once its
+settle has elapsed, so a capture clicked just after a window resize is the human path to it. That
+path was not reproduced here.
+
 ## Typefaces
 
 A bundled typeface is not a drop in replacement at the same nominal size. Space Grotesk is about a tenth wider than Ubuntu-Light at 11 px, 205.9 px against 190.0 for the longest line the map draws, while Space Mono matches Hack within 2 percent. Every fixed width tuned to the pixel against the old font has to be measured again: a node box whose longest line fitted with 2 px to spare no longer fits it, and a force layout given wider boxes flattens in a small canvas. Measure the strings that sit in fixed boxes before changing a font, not after.

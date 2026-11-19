@@ -257,6 +257,9 @@ pub struct InspectorApp {
     owned: Option<Owned>,
     /// When `main` started, until the first frame reports the startup time.
     launched: Option<Instant>,
+    /// The screenshot this launch was asked to write, with the `screenshot` feature only.
+    #[cfg(feature = "screenshot")]
+    shot: Option<crate::shot::Shot>,
 }
 
 impl InspectorApp {
@@ -351,6 +354,8 @@ impl InspectorApp {
             io_rx,
             owned: None,
             launched: None,
+            #[cfg(feature = "screenshot")]
+            shot: crate::shot::Shot::from_env(),
         };
         // Manual entries are known servers from the start.
         let entries: Vec<ManualEntry> = app.history.entries().cloned().collect();
@@ -399,6 +404,51 @@ impl InspectorApp {
                     }
                 }
                 _ => {}
+            }
+        }
+    }
+
+    /// What a screenshot launch does to the window once it has settled, as words separated by
+    /// commas, for the documentation images only (`crate::shot`, the `screenshot` feature).
+    /// `select:HOST:PORT` selects a server, `expand:/PATH` opens a container, `pin:/PATH` pins a
+    /// method, `capture:N` captures into slot N and `recall:N` recalls it. These are the actions
+    /// of a hand that is not there; they go through `act`, so the window reaches exactly the
+    /// state a click would leave it in.
+    #[cfg(feature = "screenshot")]
+    pub fn scripted(&mut self, ctx: &egui::Context, what: &str) {
+        for word in what.split(',').map(str::trim).filter(|w| !w.is_empty()) {
+            let (verb, rest) = word.split_once(':').unwrap_or((word, ""));
+            match verb {
+                "select" => {
+                    if let Some(id) = self
+                        .state
+                        .servers
+                        .iter()
+                        .find(|e| e.key() == rest)
+                        .map(|e| e.server.id)
+                    {
+                        self.act(ctx, Action::SelectServer(id));
+                    }
+                }
+                "expand" => self.act(ctx, Action::Toggle(rest.to_owned())),
+                "pin" => self.act(ctx, Action::TogglePin(rest.to_owned())),
+                "capture" => {
+                    if let Ok(n) = rest.parse() {
+                        self.act(ctx, Action::Capture(n));
+                    }
+                }
+                "recall" => {
+                    if let Ok(n) = rest.parse() {
+                        self.act(ctx, Action::Recall(n));
+                    }
+                }
+                // The words a launch already takes, so a script can open a tab as well.
+                "about" | "connect-all" | "tree" | "json" | "traffic" | "map" => {
+                    self.startup(ctx, word);
+                }
+                _ => {
+                    tracing::warn!(target: "oscq_inspector::shot", "scripted {word:?}: no such word")
+                }
             }
         }
     }
@@ -467,6 +517,11 @@ impl InspectorApp {
         }
         self.sync_listens();
         self.read_peers_when_due(&ctx);
+        #[cfg(feature = "screenshot")]
+        if let Some(mut shot) = self.shot.take() {
+            shot.tick(self, &ctx);
+            self.shot = Some(shot);
+        }
     }
 
     /// Asks the servers in `scope` for their peers: those connected that declare `PEERS`, and
@@ -1204,7 +1259,12 @@ impl InspectorApp {
                 // What the preset section takes below, open or folded to its header.
                 let presets = if self.config.presets_open {
                     // The header, four rows of square slots and the gaps between them.
-                    58.0 * GRID
+                    #[cfg(feature = "screenshot")]
+                    let room = crate::preset_designs::Design::from_env()
+                        .map_or(58.0 * GRID, crate::preset_designs::Design::height);
+                    #[cfg(not(feature = "screenshot"))]
+                    let room = 58.0 * GRID;
+                    room
                 } else {
                     8.0 * GRID
                 };
@@ -1263,6 +1323,40 @@ impl InspectorApp {
         } else {
             "the pinned nodes"
         };
+        #[cfg(feature = "screenshot")]
+        if let Some(design) = crate::preset_designs::Design::from_env() {
+            let would_take = self
+                .state
+                .selected_entry()
+                .and_then(|e| {
+                    let t = e.tree.as_ref()?;
+                    Some(
+                        presets::capture(
+                            &e.key(),
+                            e.declared_name(),
+                            t,
+                            e.value_supported(),
+                            &pins,
+                        )
+                        .preset
+                        .values
+                        .len(),
+                    )
+                })
+                .unwrap_or(0);
+            crate::preset_designs::draw(
+                ui,
+                design,
+                &crate::preset_designs::Shown {
+                    presets: &self.config.presets,
+                    recalled: self.view.preset_recalled,
+                    would_take,
+                    pinned_scope: !pins.is_empty(),
+                    pointed: crate::preset_designs::pointed_from_env(),
+                },
+            );
+            return;
+        }
         self.preset_slots(ui, scope, actions);
     }
 
