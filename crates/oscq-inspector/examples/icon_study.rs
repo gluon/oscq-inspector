@@ -10,7 +10,7 @@
 //! What it writes into OUT_DIR:
 //!
 //! - `NAME-1024.png`, `NAME-256.png`, `NAME-32.png`: the artwork alone, transparent around it,
-//!   for `current`, `tree`, `path` and `signal`.
+//!   for `current`, `bars`, `stem` and `quad`.
 //! - `NAME-1024-dark.png` and `NAME-1024-light.png`: the master on each Dock ground.
 //! - `dock-dark.png` and `dock-light.png`: one sheet per ground, the four icons in rows in the
 //!   order above, at 256, 128, 64 and 32 across, each at its true size. Nothing is scaled: a
@@ -32,14 +32,14 @@ const LIGHT_DOCK: [u8; 3] = [232, 232, 232];
 fn artwork(name: &str, size: u32) -> Vec<u8> {
     match name {
         "current" => icon::rgba(size, Layout::MacOs),
-        "tree" => icon::rgba_of(size, Layout::MacOs, Direction::Tree),
-        "path" => icon::rgba_of(size, Layout::MacOs, Direction::Path),
-        "signal" => icon::rgba_of(size, Layout::MacOs, Direction::Signal),
+        "bars" => icon::rgba_of(size, Layout::MacOs, Direction::Bars),
+        "stem" => icon::rgba_of(size, Layout::MacOs, Direction::Stem),
+        "quad" => icon::rgba_of(size, Layout::MacOs, Direction::Quad),
         other => panic!("no artwork named {other}"),
     }
 }
 
-const NAMES: [&str; 4] = ["current", "tree", "path", "signal"];
+const NAMES: [&str; 4] = ["current", "bars", "stem", "quad"];
 const SIZES: [u32; 4] = [256, 128, 64, 32];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

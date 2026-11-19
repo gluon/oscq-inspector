@@ -1,9 +1,12 @@
-# The preset section, audited from the window, and three designs for its capture
+# The preset section, audited from the window, and what was changed
 
 Written on 2026-11-19 on branch `void/presets-icon`, from `c6bb5b7` (0.4.2). It answers one
-report: the capture part of the preset section is not clear. It is an audit and a proposal. No
-shipped behaviour was changed, and the designs of the last section are drawings, not working
-controls.
+report: the capture part of the preset section is not clear.
+
+The audit below is of the section as 0.4.2 draws it, and every image of it is of that build.
+The section that follows records the three designs drawn from the audit, the human's decision of
+the same day, and which of the twelve points it answered. What the application does now is in
+PRD 9.9 and in the README; this document is how it got there and what is left.
 
 ## How every image here was taken
 
@@ -153,56 +156,56 @@ One defect found while auditing, not a readability point, is recorded in `PITFAL
 Config: two saves of the config in one frame lose the race, and the status bar then shows
 "config not saved to ..." in place of what the capture just did.
 
-## Three designs for the capture
+## Three designs for the capture, and what was chosen
 
-All three keep the sixteen square slots, four to a row, the number alone on each. That is the
-human's decision of 2026-11-17 (PRD 9.9) and it is not what was reported unclear. What they
-change is the capture around the grid.
+Three were drawn, all keeping the sixteen square slots of the human's decision of 2026-11-17:
+**A**, a capture bar above the grid naming the scope; **B**, the grid with a line under it
+describing the slot pointed at, and CAPTURE, RECALL and CLEAR in words; **C**, a slot carrying
+its count and its server, with the bar of A above. They are in
+`docs/images/preset-designs/`, beside `shipped-dark.png` and `shipped-light.png`.
 
-They are drawn by the real window, in the real style, against the same two servers, with slots 1
-and 11 captured on Alpha and slot 4 on Beta. They are drawings: their controls do nothing, and
-nothing they show is kept.
+The human took none of the three as they stand. His decision of 2026-11-19, which is what the
+application now does:
 
-```
-OSCQ_INSPECTOR_PRESET_DESIGN=a|b|c   (needs the screenshot feature)
-```
+- the gestures of Max's `preset` object, click to recall, shift click to capture, shift option
+  click to clear, and no confirmation on any of them,
+- the marked slot of design C, its count and its server under its number,
+- one line under the grid naming the three gestures and the scope, which is design B's line
+  reduced to what it says rather than what it does.
 
-The section as it ships, for comparison: `shipped-dark.png`, `shipped-light.png`.
+The drawings were drawings: nothing was wired to the config and their controls did nothing. With
+the choice made, the module that drew them is deleted; the images above and this section are the
+record.
 
-### A, the capture bar
+The before and the after of the section are in `docs/images/presets-change/`:
+`before-dark.png` and `after-dark.png`, the same in light, `after-dark-pinned-scope.png` for the
+line when nodes are pinned, and `after-dark-cleared.png` for a slot emptied. The same two servers
+and the same three slots in each.
 
-`a-dark.png`, `a-light.png`, and with nodes pinned `a-dark-pinned-scope.png`.
+`after-dark-cleared.png` is the real binary clearing slot 04 of three filled ones, through
+`OSCQ_INSPECTOR_SHOT_DO=capture:1,capture:4,capture:11,clear:4`, and the config it wrote holds
+slots 1 and 11 and nothing else. What no image here can show is the gesture itself: the harness
+has no pointer and holds no key, so the shift and the option come from the headless test and not
+from this window.
 
-One control above the grid, the width of the pane, carrying the glyph, the word CAPTURE and the
-scope it would take right now: "12 WRITABLE", or "3 PINNED" when nodes are pinned. It is meant to
-be armed by a click and to take the next slot clicked, which leaves a plain click on a slot always
-meaning Recall.
+### Which of the twelve points this answered
 
-Answers 1, 2 and 10. Leaves 3, 4, 8 and 9 as they are. The smallest change of the three, and the
-only one that does not touch the grid.
+| Point | Answered | How |
+| --- | --- | --- |
+| 1, the word Capture is nowhere | yes | the line under the grid |
+| 2, the scope is nowhere before the click | yes | the same line |
+| 3, a filled slot does not say what it holds | yes | its count under its number |
+| 4, a slot does not say which server it came from | yes | its server under its count, cut to the square |
+| 5, the provenance is what gets truncated | no | the status bar is unchanged; a long note still cuts |
+| 6, "12 values of methods captured" | yes | "12 writable methods captured" |
+| 7, a capture replaces with no confirmation | by decision | no confirmation, stated in PRD 9.9 as intended |
+| 8, a slot cannot be emptied | yes | shift option click, and **Clear** in the menu |
+| 9, a slot holds no time | no | `Preset` still has no field for one |
+| 10, one gesture means two things | yes | a click recalls, and says so on a slot holding nothing |
+| 11, a value sent and never confirmed is not marked | no | the slot still does not say which of its values were unconfirmed |
+| 12, the skipped count names the wrong reason | yes | it now names both reasons, since it cannot tell them apart |
 
-### B, the slot line
-
-`b-dark.png`, `b-light.png`.
-
-The grid as it is, and under it one line naming what the slot under the pointer holds, "04  4
-VALUES, BETA", with CAPTURE, RECALL and CLEAR beside it in words, acting on that slot.
-
-Answers 1, 2, 3, 4, 8 and 10, and gives slot 9 somewhere to live if a time is added. Costs one
-line and one row of controls, and the facts still need the pointer to move over a slot, so the
-grid at rest is no more readable than it is today.
-
-### C, the marked slot
-
-`c-dark.png`, `c-light.png`.
-
-The capture bar of A, and a slot that carries what it holds: its number, the number of values
-under it, and the server's name under that, in a square grown from 40 to 48 points. Alpha and
-Beta can be told apart across the grid without the pointer moving.
-
-Answers 1, 2, 3, 4 and 10, and is the only one that answers them at rest. Costs the most room,
-puts three lines in a square the human chose for a number alone, and cuts a server name to five
-characters, so two servers whose names begin alike are still not told apart.
+Points 5, 9 and 11 are untouched and stay on the list.
 
 ## What this audit does not establish
 
@@ -216,4 +219,9 @@ characters, so two servers whose names begin alike are still not told apart.
   frame. The path a human would take to it, a capture clicked just after a window resize, was not
   reproduced.
 - Whether any of the three designs is better than the others for the human's own work is not
-  something an audit can answer. That is the choice this document is for.
+  something an audit can answer. That was the choice this document was for, and it was made on
+  2026-11-19.
+- The gestures were proved in the headless harness, which moves the modifiers with
+  `Event::ModifiersChanged` as a window system does, and on screen only through the screenshot
+  harness, which has no pointer and holds no key. No one has yet shift clicked a slot on this
+  Mac with a hand: the acceptance check for it is not written.

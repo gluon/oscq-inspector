@@ -12,8 +12,6 @@ mod json_view;
 #[cfg(target_os = "macos")]
 mod macos_menu;
 mod map;
-#[cfg(feature = "screenshot")]
-mod preset_designs;
 mod presets;
 mod rate;
 #[cfg(feature = "screenshot")]

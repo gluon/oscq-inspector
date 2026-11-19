@@ -118,6 +118,8 @@ enum Action {
     Capture(usize),
     /// Recalls a preset slot against the selected server.
     Recall(usize),
+    /// Empties a preset slot (PRD 9.9).
+    ClearSlot(usize),
     Toggle(String),
     SelectPath(String),
     Send(SendReq, SendMode),
@@ -257,6 +259,8 @@ pub struct InspectorApp {
     owned: Option<Owned>,
     /// When `main` started, until the first frame reports the startup time.
     launched: Option<Instant>,
+    /// The order the config's saves were asked in, so two in one frame land newest last.
+    config_saves: Arc<config::SaveOrder>,
     /// The screenshot this launch was asked to write, with the `screenshot` feature only.
     #[cfg(feature = "screenshot")]
     shot: Option<crate::shot::Shot>,
@@ -354,6 +358,7 @@ impl InspectorApp {
             io_rx,
             owned: None,
             launched: None,
+            config_saves: Arc::default(),
             #[cfg(feature = "screenshot")]
             shot: crate::shot::Shot::from_env(),
         };
@@ -411,7 +416,7 @@ impl InspectorApp {
     /// What a screenshot launch does to the window once it has settled, as words separated by
     /// commas, for the documentation images only (`crate::shot`, the `screenshot` feature).
     /// `select:HOST:PORT` selects a server, `expand:/PATH` opens a container, `pin:/PATH` pins a
-    /// method, `capture:N` captures into slot N and `recall:N` recalls it. These are the actions
+    /// method, `capture:N` captures into slot N, `recall:N` recalls it and `clear:N` empties it. These are the actions
     /// of a hand that is not there; they go through `act`, so the window reaches exactly the
     /// state a click would leave it in.
     #[cfg(feature = "screenshot")]
@@ -440,6 +445,11 @@ impl InspectorApp {
                 "recall" => {
                     if let Ok(n) = rest.parse() {
                         self.act(ctx, Action::Recall(n));
+                    }
+                }
+                "clear" => {
+                    if let Ok(n) = rest.parse() {
+                        self.act(ctx, Action::ClearSlot(n));
                     }
                 }
                 // The words a launch already takes, so a script can open a tab as well.
@@ -864,19 +874,40 @@ impl InspectorApp {
                     .cloned()
                     .unwrap_or_default();
                 let c = presets::capture(&key, e.declared_name(), t, e.value_supported(), &pinned);
-                let scope = if pinned.is_empty() { "" } else { " pinned" };
+                let scope = if pinned.is_empty() {
+                    "writable"
+                } else {
+                    "pinned"
+                };
                 let mut note = format!(
-                    "Slot {slot:02}: {} values of{scope} methods captured",
+                    "Slot {slot:02}: {} {scope} methods captured",
                     c.preset.values.len()
                 );
                 if c.skipped > 0 {
-                    note.push_str(&format!(", {} without a value skipped", c.skipped));
+                    // Both reasons, since the count cannot tell them apart: a method with no
+                    // value, and one whose type a preset cannot hold.
+                    note.push_str(&format!(
+                        ", {} skipped for no value or a type a preset cannot hold",
+                        c.skipped
+                    ));
                 }
                 self.view.note = Some(note);
                 self.config.presets.insert(slot, c.preset);
                 self.save_config(ctx);
             }
             Action::Recall(slot) => self.recall(slot),
+            Action::ClearSlot(slot) => {
+                if self.config.presets.remove(&slot).is_none() {
+                    return;
+                }
+                // The mark of the slot last recalled goes with it: an empty slot drawn
+                // inverted would say it holds what was just thrown away (law 1).
+                if self.view.preset_recalled == Some(slot) {
+                    self.view.preset_recalled = None;
+                }
+                self.view.note = Some(format!("Slot {slot:02} cleared"));
+                self.save_config(ctx);
+            }
             Action::Disconnect(id) => {
                 let _ = self
                     .backend
@@ -1055,9 +1086,13 @@ impl InspectorApp {
         let bytes = self.config.to_bytes();
         let tx = self.io_tx.clone();
         let ctx = ctx.clone();
+        // The number is taken here, on the UI thread, so the saves are numbered in the order the
+        // window asked for them and not in the order their threads happen to run.
+        let saves = Arc::clone(&self.config_saves);
+        let seq = saves.take();
         self.backend.io.spawn_blocking(move || {
             let path = config::config_path(&dir);
-            if let Err(e) = config::write_atomic(&path, &bytes) {
+            if let Err(e) = saves.write(&path, &bytes, seq) {
                 let reason = format!("config not saved to {}: {e}", path.display());
                 tracing::warn!(target: "oscq_inspector::failure", "{reason}");
                 let _ = tx.send(reason);
@@ -1258,13 +1293,9 @@ impl InspectorApp {
             Some(e) => {
                 // What the preset section takes below, open or folded to its header.
                 let presets = if self.config.presets_open {
-                    // The header, four rows of square slots and the gaps between them.
-                    #[cfg(feature = "screenshot")]
-                    let room = crate::preset_designs::Design::from_env()
-                        .map_or(58.0 * GRID, crate::preset_designs::Design::height);
-                    #[cfg(not(feature = "screenshot"))]
-                    let room = 58.0 * GRID;
-                    room
+                    // The header, four rows of square slots, the gaps between them and the line
+                    // of gestures under them, which wraps to two lines in a narrow pane.
+                    76.0 * GRID
                 } else {
                     8.0 * GRID
                 };
@@ -1323,58 +1354,34 @@ impl InspectorApp {
         } else {
             "the pinned nodes"
         };
-        #[cfg(feature = "screenshot")]
-        if let Some(design) = crate::preset_designs::Design::from_env() {
-            let would_take = self
-                .state
-                .selected_entry()
-                .and_then(|e| {
-                    let t = e.tree.as_ref()?;
-                    Some(
-                        presets::capture(
-                            &e.key(),
-                            e.declared_name(),
-                            t,
-                            e.value_supported(),
-                            &pins,
-                        )
-                        .preset
-                        .values
-                        .len(),
-                    )
-                })
-                .unwrap_or(0);
-            crate::preset_designs::draw(
-                ui,
-                design,
-                &crate::preset_designs::Shown {
-                    presets: &self.config.presets,
-                    recalled: self.view.preset_recalled,
-                    would_take,
-                    pinned_scope: !pins.is_empty(),
-                    pointed: crate::preset_designs::pointed_from_env(),
-                },
-            );
-            return;
-        }
         self.preset_slots(ui, scope, actions);
     }
 
-    /// The sixteen preset slots (PRD 9.9), as the human chose them on 2026-11-17: square slots,
-    /// four to a row, the number alone on each. A slot holding values has a 1 px border in the
-    /// palette's brightest ink on the control surface; the slot last recalled is inverted; an
-    /// empty slot is dim and says "capture" under the pointer.
+    /// The sixteen preset slots (PRD 9.9). A slot is a square carrying its number, four to a
+    /// row, as the human chose on 2026-11-17; since his decision of 2026-11-19 a filled one
+    /// carries under its number how many values it holds and the server it was captured on, and
+    /// the gestures are those of Max's `preset` object:
     ///
-    /// Both actions are reachable without a right click: a left click recalls a slot that holds
-    /// values and captures into one that is empty, and a shift click captures into any slot,
-    /// replacing what it holds. The context menu names both in words for either button.
+    /// - a click recalls, and does nothing on a slot that holds nothing,
+    /// - a shift click captures into any slot, replacing what it holds,
+    /// - a shift and option click empties one (option is alt away from macOS).
+    ///
+    /// No gesture asks for a confirmation. The line under the grid names all three and the scope
+    /// a capture would take, so none of them has to be discovered; the right click menu names
+    /// them in words as well, for a pointer that cannot hold a modifier. While a modifier is
+    /// held, the slot under the pointer shows what the click would do in place of its number:
+    /// the capture glyph, or the close glyph on a slot that would be emptied.
     fn preset_slots(&mut self, ui: &mut egui::Ui, scope: &str, actions: &mut Vec<Action>) {
-        const SIDE: f32 = 10.0 * GRID;
+        const SIDE: f32 = 12.0 * GRID;
         let p = style::palette(ui.visuals());
-        let (bg, surface, ink, border, dim) = (p.bg, p.surface, p.text, p.border, p.dim);
+        let (bg, surface, ink, border, dim, label) =
+            (p.bg, p.surface, p.text, p.border, p.dim, p.label);
         let cols = (((ui.available_width() + GRID) / (SIDE + GRID)).floor() as usize).clamp(1, 4);
+        let (shift, alt) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
         let mut capture = None;
         let mut recall = None;
+        let mut clear = None;
+        let mut nothing_to_recall = None;
         for row in 0..presets::SLOTS.div_ceil(cols) {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = GRID;
@@ -1414,45 +1421,70 @@ impl InspectorApp {
                             egui::Stroke::new(style::HAIRLINE, edge),
                             egui::StrokeKind::Inside,
                         );
-                        // An empty slot says what a click on it does, in its own box: the
-                        // capture glyph in place of its number. The word would not fit, and
-                        // was drawn cut on 2026-11-17, "CAPTURE" being 56 points of text in a
-                        // 40 point square; a glyph is drawn to the square it is given and
-                        // cannot overflow, whatever the width (the human's decision, same day).
-                        if held_count.is_none() && hovered {
-                            glyph::paint(
+                        // What the click under this pointer would do, while the modifier is
+                        // held: a glyph is drawn to the square it is given and cannot overflow
+                        // it, whatever the width, which the word CAPTURE did, 56 points of text
+                        // in a 40 point square (the human's decision of 2026-11-17).
+                        let doing = match (hovered && shift, alt, held_count.is_some()) {
+                            (true, true, true) => Some(glyph::Icon::Close),
+                            (true, true, false) => None,
+                            (true, false, _) => Some(glyph::Icon::Capture),
+                            (false, _, _) => None,
+                        };
+                        match (doing, held_count, &held_server) {
+                            (Some(icon), _, _) => glyph::paint(
                                 ui.painter(),
                                 egui::Rect::from_center_size(
                                     rect.center(),
                                     egui::Vec2::splat(glyph::SIZE),
                                 ),
-                                glyph::Icon::Capture,
-                                ink,
-                            );
-                        } else {
-                            let galley = ui.ctx().fonts_mut(|f| {
-                                f.layout_no_wrap(
-                                    format!("{slot:02}"),
-                                    egui::FontId::new(style::DATA, egui::FontFamily::Monospace),
+                                icon,
+                                text,
+                            ),
+                            // A filled slot says how many values it holds and where they came
+                            // from, so one is told from another without the pointer.
+                            (None, Some(n), Some(name)) => {
+                                Self::slot_number(
+                                    ui,
+                                    rect.center() - egui::vec2(0.0, 3.0 * GRID),
+                                    slot,
                                     text,
-                                )
-                            });
-                            let at = rect.center() - galley.size() * 0.5;
-                            ui.painter().galley(at, galley, text);
+                                );
+                                Self::slot_small(
+                                    ui,
+                                    rect.center(),
+                                    &n.to_string(),
+                                    SIDE - GRID,
+                                    egui::FontFamily::Monospace,
+                                    text,
+                                );
+                                Self::slot_small(
+                                    ui,
+                                    rect.center() + egui::vec2(0.0, 3.0 * GRID),
+                                    name,
+                                    SIDE - GRID,
+                                    egui::FontFamily::Proportional,
+                                    if last { bg } else { label },
+                                );
+                            }
+                            (None, _, _) => Self::slot_number(ui, rect.center(), slot, text),
                         }
                     }
-                    // A shift click captures whatever the slot holds; a plain click recalls a
-                    // full slot and captures into an empty one.
-                    let shifted = ui.input(|i| i.modifiers.shift);
                     if response.clicked() {
-                        if shifted || held_count.is_none() {
-                            capture = Some(slot);
-                        } else {
-                            recall = Some(slot);
+                        match (shift, alt, held_count.is_some()) {
+                            (true, true, true) => clear = Some(slot),
+                            (true, true, false) => {}
+                            (true, false, _) => capture = Some(slot),
+                            (false, _, true) => recall = Some(slot),
+                            // A click on a slot holding nothing has nothing to recall. It
+                            // captured here until 2026-11-19, which made one gesture mean two
+                            // things; it now says what to press instead.
+                            (false, _, false) => nothing_to_recall = Some(slot),
                         }
                     }
                     let menu_capture = &mut capture;
                     let menu_recall = &mut recall;
+                    let menu_clear = &mut clear;
                     let hover = response.clone();
                     response.context_menu(|ui| {
                         if ui
@@ -1469,33 +1501,98 @@ impl InspectorApp {
                             *menu_capture = Some(slot);
                             ui.close();
                         }
+                        if ui
+                            .add_enabled(
+                                held_count.is_some(),
+                                egui::Button::new("Clear").frame(false),
+                            )
+                            .clicked()
+                        {
+                            *menu_clear = Some(slot);
+                            ui.close();
+                        }
                     });
                     // Hover texts are built only when shown: a frame builds none.
-                    hover.on_hover_ui(|ui| {
-                        match (held_count, &held_server) {
-                            (Some(n), Some(name)) => {
-                                ui.label(format!("Slot {slot:02}: {n} values, captured on {name}"));
-                                ui.label("Click to send them to this server.");
-                            }
-                            _ => {
-                                ui.label(format!("Slot {slot:02}: empty"));
-                                ui.label(format!("Click to store {scope} of this server."));
-                            }
+                    hover.on_hover_ui(|ui| match (held_count, &held_server) {
+                        (Some(n), Some(name)) => {
+                            ui.label(format!("Slot {slot:02}: {n} values, captured on {name}"));
+                            ui.label("Click to send them to this server.");
                         }
-                        ui.label(
-                            "Shift click, or the right click menu, captures into it; the menu \
-                             names both actions.",
-                        );
+                        _ => {
+                            ui.label(format!("Slot {slot:02}: empty"));
+                            ui.label(format!("Shift click to store {scope} of this server."));
+                        }
                     });
                 }
             });
         }
+        ui.add_space(GRID);
+        // The three gestures and the scope, so that none of them has to be found by trying.
+        let option = if cfg!(target_os = "macos") {
+            "option"
+        } else {
+            "alt"
+        };
+        ui.label(
+            RichText::new(format!(
+                "Click recalls. Shift click captures {scope}. Shift {option} click clears."
+            ))
+            .size(style::SMALL)
+            .color(label),
+        );
         if let Some(slot) = capture {
             actions.push(Action::Capture(slot));
         }
         if let Some(slot) = recall {
             actions.push(Action::Recall(slot));
         }
+        if let Some(slot) = clear {
+            actions.push(Action::ClearSlot(slot));
+        }
+        if let Some(slot) = nothing_to_recall {
+            self.view.note = Some(format!(
+                "Slot {slot:02} is empty: shift click to capture into it"
+            ));
+        }
+    }
+
+    /// A slot's number, centred on `at`.
+    fn slot_number(ui: &egui::Ui, at: egui::Pos2, slot: usize, colour: Color32) {
+        let galley = ui.ctx().fonts_mut(|f| {
+            f.layout_no_wrap(
+                format!("{slot:02}"),
+                egui::FontId::new(style::DATA, egui::FontFamily::Monospace),
+                colour,
+            )
+        });
+        ui.painter()
+            .galley(at - galley.size() * 0.5, galley, colour);
+    }
+
+    /// A line inside a slot, under its number, cut to `width` so that nothing a slot draws ever
+    /// leaves its own square whatever the server is called.
+    fn slot_small(
+        ui: &egui::Ui,
+        at: egui::Pos2,
+        text: &str,
+        width: f32,
+        family: egui::FontFamily,
+        colour: Color32,
+    ) {
+        let galley = ui.ctx().fonts_mut(|f| {
+            let mut job = egui::text::LayoutJob::single_section(
+                text.to_owned(),
+                egui::TextFormat {
+                    font_id: egui::FontId::new(style::SLOT_LINE, family),
+                    color: colour,
+                    ..Default::default()
+                },
+            );
+            job.wrap = egui::text::TextWrapping::truncate_at_width(width);
+            f.layout_job(job)
+        });
+        ui.painter()
+            .galley(at - galley.size() * 0.5, galley, colour);
     }
 
     fn manual_modal(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
@@ -5623,76 +5720,102 @@ mod tests {
     }
 
     /// Nothing a preset slot draws ever leaves the slot's own square, at any window width down
-    /// to the 640 px minimum, and under the pointer as well as at rest. Seen on screen on
-    /// 2026-11-17: an empty slot hovered drew the word CAPTURE, 44 points of text in a 40 point
-    /// square, and the window showed "CAPTURI".
+    /// to the 640 px minimum, at rest and under the pointer, empty and holding values. Seen on
+    /// screen on 2026-11-17: an empty slot hovered drew the word CAPTURE, 44 points of text in a
+    /// 40 point square, and the window showed "CAPTURI".
+    ///
+    /// Since 2026-11-19 a filled slot carries two more lines, its count and the server it was
+    /// captured on, and a server names itself: the name here is longer than any square, so the
+    /// cut that keeps it inside is what is measured and not the luck of a short name.
     #[test]
     fn a_preset_slot_draws_nothing_outside_its_own_square() {
         let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
         for width in [640.0, 720.0, 900.0, 1100.0, 1440.0, 1920.0] {
-            let mut h = harness();
-            controllable(&mut h, "127.0.0.1", 2345, "S", doc);
-            h.app.config.presets_open = true;
-            let size = egui::vec2(width, 700.0);
-            h.frame_sized(size, Vec::new());
-            let out = h.frame_sized(size, Vec::new());
-            // Slot 01 at rest, and then with the pointer resting on it.
-            let at_rest = place(&out, "01");
-            let slot =
-                egui::Rect::from_center_size(at_rest.center(), egui::Vec2::splat(10.0 * GRID));
-            let hovered = {
-                let p = slot.center();
-                h.frame_sized(size, vec![egui::Event::PointerMoved(p)]);
-                h.frame_sized(
-                    size,
-                    vec![egui::Event::PointerMoved(p + egui::vec2(1.0, 0.0))],
-                )
-            };
-            for (what, frame) in [("at rest", &out), ("hovered", &hovered)] {
-                // Everything drawn whose centre falls in the slot belongs to the slot: its
-                // text, and the strokes of the glyph that replaces the number under the
-                // pointer. The two together, so a fix that swaps one for the other is covered.
-                let texts: Vec<(String, egui::Rect, egui::Rect)> = drawn_text_rects(frame)
-                    .into_iter()
-                    .filter(|(_, r, _)| slot.contains(r.center()))
-                    .collect();
-                let strokes: Vec<(String, egui::Rect, egui::Rect)> =
-                    strokes_inside(frame, slot.expand(2.0 * GRID))
-                        .into_iter()
-                        .filter(|(r, _)| slot.contains(r.center()))
-                        .map(|(r, c)| ("a stroke".to_owned(), r, c))
-                        .collect();
-                let drawn: Vec<(String, egui::Rect, egui::Rect)> =
-                    texts.into_iter().chain(strokes).collect();
-                assert!(
-                    !drawn.is_empty(),
-                    "slot 01 drew nothing {what} at width {width}"
+            for filled in [false, true] {
+                let mut h = harness();
+                controllable(
+                    &mut h,
+                    "127.0.0.1",
+                    2345,
+                    "a server whose declared name is far wider than the square",
+                    doc,
                 );
-                for (t, r, clip) in drawn {
-                    assert!(
-                        slot.expand(0.5).contains_rect(r),
-                        "{t:?} is {:.1} points wide in a {} point slot, {what} at width \
-                         {width}: {r:?} outside {slot:?}",
-                        r.width(),
-                        10.0 * GRID
-                    );
-                    assert!(
-                        clip.expand(0.5).contains_rect(r),
-                        "{t:?} cut by its clip {clip:?}, {what} at width {width}"
-                    );
+                h.app.config.presets_open = true;
+                let size = egui::vec2(width, 700.0);
+                h.frame_sized(size, Vec::new());
+                if filled {
+                    h.app.act(&h.ctx.clone(), Action::Capture(1));
                 }
+                let out = h.frame_sized(size, Vec::new());
+                assert_eq!(
+                    h.app.config.presets.contains_key(&1),
+                    filled,
+                    "slot 01 holds values when it should"
+                );
+                // Slot 01 at rest, and then with the pointer resting on it while shift is held,
+                // which is what draws the glyph of the capture a click would make.
+                let at_rest = place(&out, "01");
+                let centre = if filled {
+                    at_rest.center() + egui::vec2(0.0, 3.0 * GRID)
+                } else {
+                    at_rest.center()
+                };
+                let slot = egui::Rect::from_center_size(centre, egui::Vec2::splat(12.0 * GRID));
+                let hovered = {
+                    let p = slot.center();
+                    h.frame_sized(size, vec![egui::Event::PointerMoved(p)]);
+                    h.frame_sized(size, vec![egui::Event::ModifiersChanged(Modifiers::SHIFT)]);
+                    h.frame_sized(
+                        size,
+                        vec![egui::Event::PointerMoved(p + egui::vec2(1.0, 0.0))],
+                    )
+                };
+                for (what, frame) in [("at rest", &out), ("hovered", &hovered)] {
+                    // Everything drawn whose centre falls in the slot belongs to the slot: its
+                    // text, and the strokes of the glyph that replaces the number under the
+                    // pointer. The two together, so a fix that swaps one for the other is covered.
+                    let texts: Vec<(String, egui::Rect, egui::Rect)> = drawn_text_rects(frame)
+                        .into_iter()
+                        .filter(|(_, r, _)| slot.contains(r.center()))
+                        .collect();
+                    let strokes: Vec<(String, egui::Rect, egui::Rect)> =
+                        strokes_inside(frame, slot.expand(2.0 * GRID))
+                            .into_iter()
+                            .filter(|(r, _)| slot.contains(r.center()))
+                            .map(|(r, c)| ("a stroke".to_owned(), r, c))
+                            .collect();
+                    let drawn: Vec<(String, egui::Rect, egui::Rect)> =
+                        texts.into_iter().chain(strokes).collect();
+                    assert!(
+                        !drawn.is_empty(),
+                        "slot 01 drew nothing {what} at width {width}"
+                    );
+                    for (t, r, clip) in drawn {
+                        assert!(
+                            slot.expand(0.5).contains_rect(r),
+                            "{t:?} is {:.1} points wide in a {} point slot, {what} at width \
+                         {width}: {r:?} outside {slot:?}",
+                            r.width(),
+                            12.0 * GRID
+                        );
+                        assert!(
+                            clip.expand(0.5).contains_rect(r),
+                            "{t:?} cut by its clip {clip:?}, {what} at width {width}"
+                        );
+                    }
+                }
+                // Under the pointer with shift held, the slot really draws the glyph of what the
+                // click would do, and not just nothing: its strokes, where its number was.
+                let glyph_strokes = strokes_inside(&hovered, slot)
+                    .into_iter()
+                    .filter(|(r, _)| slot.contains(r.center()))
+                    .count();
+                assert!(
+                    glyph_strokes >= 4,
+                    "the capture glyph drawn in the slot under a shift held pointer at width \
+                 {width}, filled {filled}: {glyph_strokes} strokes"
+                );
             }
-            // Under the pointer the empty slot really draws the capture glyph, and not just
-            // nothing: its strokes, where its number was.
-            let glyph_strokes = strokes_inside(&hovered, slot)
-                .into_iter()
-                .filter(|(r, _)| slot.contains(r.center()))
-                .count();
-            assert!(
-                glyph_strokes >= 4,
-                "the capture glyph drawn in the hovered empty slot at width {width}: \
-                 {glyph_strokes} strokes"
-            );
         }
     }
 
@@ -6261,16 +6384,17 @@ mod tests {
         );
     }
 
-    /// Each preset slot names its two actions, and a slot holding values is told from an empty
-    /// one at a glance, and both actions are reachable without a right click.
+    /// The gestures of a preset slot, and what a slot says without being pointed at.
     ///
-    /// Since the human's decision of 2026-11-17 a slot is a square carrying its number alone: a
-    /// slot that holds values has a border in the brightest ink on the control surface, the slot
-    /// last recalled is inverted, an empty slot is dim and says "capture" under the pointer. A
-    /// left click recalls a full slot and captures into an empty one, and a shift click captures
-    /// into any slot. The right click menu names Recall and Capture in words.
+    /// Since the human's decision of 2026-11-19 they are those of Max's `preset` object: a click
+    /// recalls, a shift click captures into any slot, a shift and option click empties one, and
+    /// none of the three asks for a confirmation. A click on a slot holding nothing recalls
+    /// nothing and says what to press instead: it captured there until that day, which made one
+    /// gesture mean two things. A filled slot carries how many values it holds and the server it
+    /// was captured on, under its number. The line under the grid names the three gestures and
+    /// the scope a capture would take, and the right click menu names them in words.
     #[test]
-    fn preset_slots_show_what_they_hold_and_both_actions_need_no_right_click() {
+    fn preset_slots_take_the_gestures_of_a_preset_object_and_say_what_they_hold() {
         let doc = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
         let mut h = harness();
         controllable(&mut h, "127.0.0.1", 2345, "S", doc);
@@ -6291,13 +6415,56 @@ mod tests {
         assert_eq!(rows.len(), 4, "four rows of four: {rows:?}");
         let slot = |out: &egui::FullOutput, n: usize| place(out, &format!("{n:02}"));
 
-        // An empty slot captures on a plain left click: no right click needed.
+        // `egui::InputState::modifiers`, which the slot reads, is moved by
+        // `Event::ModifiersChanged` and by nothing else: `RawInput` carries no modifier field,
+        // so a window system announces the keys going down before the click and up after it.
+        let mod_click = |h: &mut Harness, at: egui::Rect, modifiers: Modifiers| {
+            let p = at.center();
+            h.frame(vec![egui::Event::PointerMoved(p)]);
+            h.frame(vec![egui::Event::ModifiersChanged(modifiers)]);
+            for pressed in [true, false] {
+                h.frame(vec![egui::Event::PointerButton {
+                    pos: p,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers,
+                }]);
+            }
+            h.frame(vec![egui::Event::ModifiersChanged(Modifiers::NONE)]);
+            h.frame(vec![egui::Event::PointerGone]);
+        };
+        let shift_alt = Modifiers {
+            shift: true,
+            alt: true,
+            ..Modifiers::NONE
+        };
+
+        // A plain click on a slot holding nothing captures nothing, and says what to press.
+        h.app.view.note = None;
         click(&mut h, slot(&out, 1), egui::PointerButton::Primary);
         assert!(
+            !h.app.config.presets.contains_key(&1),
+            "a plain click on an empty slot stored nothing"
+        );
+        assert!(
+            h.app
+                .view
+                .note
+                .as_deref()
+                .is_some_and(|n| n.starts_with("Slot 01 is empty") && n.contains("shift click")),
+            "{:?}",
+            h.app.view.note
+        );
+
+        // A shift click captures into it.
+        let out = h.frame(Vec::new());
+        mod_click(&mut h, slot(&out, 1), Modifiers::SHIFT);
+        assert!(
             h.app.config.presets.contains_key(&1),
-            "a click on an empty slot captured into it"
+            "a shift click captured into the empty slot 01"
         );
         let out = h.frame(Vec::new());
+
         // Held and empty, told apart: the border of a full slot in the brightest ink, against
         // the dim border of an empty one.
         let dark = h.ctx.style_of(egui::Theme::Dark).visuals.clone();
@@ -6328,6 +6495,26 @@ mod tests {
             border_of(&out, slot(&out, 2)).contains(&style::DARK.border),
             "the empty slot 02 keeps the default border"
         );
+
+        // And what it holds is on the square itself: the count of values and the server, under
+        // the number, inside the same square and nowhere else.
+        let number = slot(&out, 1);
+        let in_slot = |out: &egui::FullOutput, text: &str| {
+            drawn_text_rects(out).into_iter().any(|(t, r, _)| {
+                t == text
+                    && (r.center().x - number.center().x).abs() < 2.0
+                    && r.center().y > number.center().y
+                    && r.center().y - number.center().y < 12.0 * GRID
+            })
+        };
+        assert!(in_slot(&out, "1"), "slot 01 says it holds one value");
+        assert!(in_slot(&out, "S"), "slot 01 says it was captured on S");
+        assert!(
+            !in_slot(&out, "0"),
+            "the empty slots carry no count: {:?}",
+            drawn_texts(&out)
+        );
+
         let colour = |out: &egui::FullOutput, text: &str| {
             fn walk(shape: &egui::Shape, text: &str, out: &mut Vec<Color32>) {
                 match shape {
@@ -6355,7 +6542,7 @@ mod tests {
             "a held number reads apart from an empty one"
         );
 
-        // Recall: a left click on a full slot sends, and the slot then draws inverted.
+        // A plain click on a full slot recalls, and the slot then draws inverted.
         h.app.view.note = None;
         click(&mut h, slot(&out, 1), egui::PointerButton::Primary);
         assert!(
@@ -6375,31 +6562,10 @@ mod tests {
             "the slot last recalled is inverted, its number in the ground's colour"
         );
 
-        // A shift click captures into a slot that ALREADY HOLDS values, replacing what it
-        // holds: that is the route to Capture that needs no right click on a full slot, and the
-        // one a plain click cannot take, since a plain click on a full slot recalls.
-        // `egui::InputState::modifiers`, which the slot reads, is moved by
-        // `Event::ModifiersChanged` and by nothing else: `RawInput` carries no modifier field,
-        // so a window system announces the key going down before the click and up after it.
-        let shift_click = |h: &mut Harness, at: egui::Rect| {
-            let p = at.center();
-            h.frame(vec![egui::Event::PointerMoved(p)]);
-            h.frame(vec![egui::Event::ModifiersChanged(Modifiers::SHIFT)]);
-            for pressed in [true, false] {
-                h.frame(vec![egui::Event::PointerButton {
-                    pos: p,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: Modifiers::SHIFT,
-                }]);
-            }
-            h.frame(vec![egui::Event::ModifiersChanged(Modifiers::NONE)]);
-            h.frame(vec![egui::Event::PointerGone]);
-        };
-        assert!(h.app.config.presets.contains_key(&1), "slot 01 is full");
+        // A shift click captures into a slot that already holds values, replacing what it
+        // holds, with nothing to confirm.
         h.app.view.note = None;
-        let one = slot(&out, 1);
-        shift_click(&mut h, one);
+        mod_click(&mut h, slot(&out, 1), Modifiers::SHIFT);
         assert!(
             h.app
                 .view
@@ -6409,19 +6575,54 @@ mod tests {
             "a shift click on the full slot 01 captured into it, not recalled: {:?}",
             h.app.view.note
         );
-        // And an empty slot captures on a plain click, the other route to Capture.
+
+        // A shift and option click empties it, and the mark of the slot last recalled goes with
+        // what it marked.
         let out = h.frame(Vec::new());
-        click(&mut h, slot(&out, 2), egui::PointerButton::Primary);
+        assert_eq!(h.app.view.preset_recalled, Some(1));
+        mod_click(&mut h, slot(&out, 1), shift_alt);
         assert!(
-            h.app.config.presets.contains_key(&2),
-            "a plain click on the empty slot 02 captured into it"
+            !h.app.config.presets.contains_key(&1),
+            "a shift and option click emptied slot 01"
+        );
+        assert_eq!(
+            h.app.view.preset_recalled, None,
+            "an empty slot is not drawn as the one last recalled"
+        );
+        assert_eq!(h.app.view.note.as_deref(), Some("Slot 01 cleared"));
+
+        // The line under the grid names the three gestures and the scope a capture would take.
+        let out = h.frame(Vec::new());
+        let line = drawn_texts(&out)
+            .into_iter()
+            .find(|t| t.starts_with("Click recalls."))
+            .unwrap_or_else(|| panic!("no line of gestures: {:?}", drawn_texts(&out)));
+        for word in ["Click recalls", "Shift click captures", "click clears"] {
+            assert!(line.contains(word), "{word:?} named in {line:?}");
+        }
+        assert!(
+            line.contains("every writable node"),
+            "the scope with nothing pinned: {line:?}"
+        );
+        h.app
+            .config
+            .pinned_paths
+            .insert("127.0.0.1:2345".into(), vec!["/a".into()]);
+        let out = h.frame(Vec::new());
+        let pinned = drawn_texts(&out)
+            .into_iter()
+            .find(|t| t.starts_with("Click recalls."))
+            .unwrap_or_default();
+        assert!(
+            pinned.contains("the pinned nodes"),
+            "the scope with nodes pinned: {pinned:?}"
         );
 
-        // The right click menu names both actions in words.
+        // The right click menu names all three in words, for a pointer that holds no modifier.
         let out = h.frame(Vec::new());
-        click(&mut h, slot(&out, 1), egui::PointerButton::Secondary);
+        click(&mut h, slot(&out, 2), egui::PointerButton::Secondary);
         let texts = drawn_texts(&h.frame(Vec::new()));
-        for action in ["Recall", "Capture"] {
+        for action in ["Recall", "Capture", "Clear"] {
             assert!(
                 texts.iter().any(|t| t == action),
                 "{action} named in the menu: {texts:?}"

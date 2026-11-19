@@ -122,13 +122,11 @@ Copyright (C) 2026 Julien Bayle, Structure Void. OSCQuery Inspector is free soft
 
 ## Status
 
-Version 0.4.1 is prepared: the first launch of a new build on macOS, where the system has not yet been asked whether the application may reach the local network. It said "none found" about a network it had never reached; it now says it is waiting, says where to allow it, and picks up servers as soon as access is given, with no relaunch. The checks for it are section 6b of [docs/acceptance.md](docs/acceptance.md).
+Latest version: **0.4.2**, tagged on 2026-11-18, the version this README describes. It carries everything 0.3.0 and 0.4.0 hold, and its changelog entry folds in the two fixes of 0.4.1, which was tagged and built the same day and never published. What the checks before it proved is recorded in [docs/acceptance.md](docs/acceptance.md), under "Acceptance record".
 
-Version 0.4.0 is prepared: the visual system of the Structure Void design, its own two themes with one signal colour, its own typefaces and icons, the preset slots as a grid, and the toolbars of the JSON and Traffic tabs held on screen at the narrowest window. It is tagged once merged, and its draft Release is published when [docs/acceptance.md](docs/acceptance.md) has passed; until then it is not published. Every view of it is shown before and after in [docs/images/screenshots](docs/images/screenshots), taken against the prism-oscquery demo device and the synthetic servers of this repository.
+Version 0.3.0 is tagged, at `v0.3.0`, and its draft Release was never published: the acceptance it waits on, section 6, asks for two applications implementing the `PEERS` extension, one a client of the other, and that has not been done by a person. Every later version carries what it holds.
 
-Version 0.3.0 is tagged, at `v0.3.0`, and its draft Release was never published: the acceptance it waits on, section 6, asks for two applications implementing the `PEERS` extension, one a client of the other, and that has not been done by a person. 0.4.0 carries everything 0.3.0 holds, so publishing 0.4.0 is what settles it.
-
-Latest published version: 0.2.3, tagged and released on 2026-10-14, the first whose files are on the Releases page, published under the application's former name. Its macOS download was installed and checked by hand on a Mac against Max 9; earlier versions were checked the same way, and against OSCQuery Helper on a local network. What each check proved is recorded in [docs/acceptance.md](docs/acceptance.md), under "Acceptance record".
+Unreleased, and on a branch rather than on `main`: the preset gestures listed under Unreleased in [CHANGELOG.md](CHANGELOG.md), and three directions for a new application icon, drawn but not chosen, in [docs/icon-study.md](docs/icon-study.md). No version number is set for them.
 
 Backlog:
 

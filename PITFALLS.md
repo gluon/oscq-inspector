@@ -248,7 +248,14 @@ Case: four captures in one frame through the screenshot harness, five launches o
 warnings each time, on the human's Mac on 2026-11-19. A hand does not click four slots in one
 frame, but `track_geometry` saves from the same frame as the action that follows it once its
 settle has elapsed, so a capture clicked just after a window resize is the human path to it. That
-path was not reproduced here.
+path was not reproduced.
+
+Fixed the same day: each save writes its own temporary file, and a save overtaken by a newer one
+drops its file rather than put back what the newer one replaced. Unique names alone would not
+have been enough, since every save carries the whole config. Both halves are held by
+`config::tests::saves_at_once_all_land_and_the_newest_is_the_one_kept` and
+`config::tests::a_save_overtaken_by_a_newer_one_does_not_replace_it`, each watched failing on the
+code it was written for.
 
 ## Typefaces
 

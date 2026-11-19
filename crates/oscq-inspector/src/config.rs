@@ -167,21 +167,84 @@ impl Config {
 /// Writes `bytes` to `path` atomically: a temporary file in the same directory, flushed, then
 /// renamed over the target.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = write_temp(path, bytes)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// Writes `bytes` to a temporary file beside `path`, flushed, and gives its name.
+///
+/// The name carries the process and a count, so that two writers of one destination never share
+/// a file. They did: the name was built from the destination's alone, and two saves in one frame
+/// opened the same `.config.json.tmp`, the first rename carrying it away under the second, which
+/// then failed with ENOENT. See `PITFALLS.md` under Config.
+fn write_temp(path: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
     use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNT: AtomicU64 = AtomicU64::new(0);
     let dir = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir)?;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "config".to_owned());
     let tmp = dir.join(format!(
-        ".{}.tmp",
-        path.file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "config".to_owned())
+        ".{name}.{}.{}.tmp",
+        std::process::id(),
+        COUNT.fetch_add(1, Ordering::Relaxed)
     ));
     {
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?;
     }
-    std::fs::rename(&tmp, path)
+    Ok(tmp)
+}
+
+/// The order the config's saves were asked in, so that two started in the same frame land newest
+/// last whatever order their threads reach the rename in.
+///
+/// A save carries the whole config as it stood when it was asked for, so a later save holds
+/// everything an earlier one holds. Letting an earlier save land last would put back the state
+/// the later one replaced: a capture saved, then a window geometry saved from the same frame,
+/// and the slot is gone at the next launch. Each save takes its number on the UI thread, in
+/// order; a save whose number is not above what has already been written drops its file instead
+/// of replacing a newer one.
+#[derive(Debug, Default)]
+pub struct SaveOrder {
+    taken: std::sync::atomic::AtomicU64,
+    written: std::sync::atomic::AtomicU64,
+}
+
+impl SaveOrder {
+    /// The number of the next save. Taken on the UI thread, before the write is handed to the
+    /// runtime, so the numbers follow the order the window asked in.
+    pub fn take(&self) -> u64 {
+        self.taken
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1
+    }
+
+    /// Writes `bytes` to `path` as [`write_atomic`] does, unless a save later than `seq` has
+    /// already been written there, in which case nothing is replaced and the file is dropped.
+    pub fn write(&self, path: &Path, bytes: &[u8], seq: u64) -> std::io::Result<()> {
+        use std::sync::atomic::Ordering;
+        let tmp = write_temp(path, bytes)?;
+        loop {
+            let written = self.written.load(Ordering::Acquire);
+            if written >= seq {
+                let _ = std::fs::remove_file(&tmp);
+                return Ok(());
+            }
+            if self
+                .written
+                .compare_exchange(written, seq, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                break;
+            }
+        }
+        std::fs::rename(&tmp, path)
+    }
 }
 
 /// The OS standard config directory for this application.
@@ -206,6 +269,89 @@ pub fn config_path(dir: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Eight saves of one file at once all land, and the file is left holding the newest.
+    ///
+    /// They shared one temporary file before, its name built from the destination's alone: the
+    /// first rename carried it away under the others, which failed with ENOENT. The window then
+    /// showed "config not saved to ..." in the status bar, in place of the note of the capture
+    /// that had just worked (`PITFALLS.md`, Config).
+    #[test]
+    fn saves_at_once_all_land_and_the_newest_is_the_one_kept() {
+        use std::sync::{Arc, Barrier};
+        const WRITERS: usize = 8;
+        let dir = temp_dir("saves-at-once");
+        let path = config_path(&dir);
+        let order = Arc::new(SaveOrder::default());
+        // The numbers are taken in order first, as the UI thread takes them, then every writer
+        // runs at once.
+        let work: Vec<(u64, Vec<u8>)> = (0..WRITERS)
+            .map(|i| {
+                (
+                    order.take(),
+                    format!(r#"{{"peers_poll_ms":{}}}"#, 1000 + i).into_bytes(),
+                )
+            })
+            .collect();
+        let gate = Arc::new(Barrier::new(WRITERS));
+        let threads: Vec<_> = work
+            .into_iter()
+            .map(|(seq, bytes)| {
+                let (order, gate, path) = (Arc::clone(&order), Arc::clone(&gate), path.clone());
+                std::thread::spawn(move || {
+                    gate.wait();
+                    order.write(&path, &bytes, seq)
+                })
+            })
+            .collect();
+        let failures: Vec<String> = threads
+            .into_iter()
+            .filter_map(|t| t.join().expect("writer panicked").err())
+            .map(|e| e.to_string())
+            .collect();
+        let left = std::fs::read_to_string(&path).unwrap();
+        let strays: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(failures.is_empty(), "every save landed: {failures:?}");
+        assert_eq!(
+            left,
+            format!(r#"{{"peers_poll_ms":{}}}"#, 1000 + WRITERS - 1),
+            "the newest save is the one kept"
+        );
+        assert!(
+            strays.is_empty(),
+            "no temporary file left behind: {strays:?}"
+        );
+    }
+
+    /// A save overtaken by a newer one does not replace it, whatever order the two reach the
+    /// rename in. Both carry the whole config, so letting the older land last would put back the
+    /// state the newer one replaced.
+    #[test]
+    fn a_save_overtaken_by_a_newer_one_does_not_replace_it() {
+        let dir = temp_dir("saves-overtaken");
+        let path = config_path(&dir);
+        let order = SaveOrder::default();
+        let (first, second) = (order.take(), order.take());
+        // The second save lands first, as a thread that ran ahead of the first one would.
+        order
+            .write(&path, br#"{"peers_poll_ms":2000}"#, second)
+            .unwrap();
+        order
+            .write(&path, br#"{"peers_poll_ms":1000}"#, first)
+            .unwrap();
+        let left = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            left, r#"{"peers_poll_ms":2000}"#,
+            "the older save did not put back what the newer one replaced"
+        );
+    }
 
     /// The map's positions set by hand are bounded: at most `MAP_POSITIONS_MAX`, the least
     /// recently moved going first; a node moved again becomes the most recent; a config edited
