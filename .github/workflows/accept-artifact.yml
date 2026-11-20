@@ -124,12 +124,12 @@ jobs:
           echo "altered" >> "$APP/Contents/Resources/licenses/LICENSE"
           ./ci/expect-refusal.sh "licenses/LICENSE differs from LICENSE at" ./ci/accept-artifact.sh --dir "$COPY" "${{ steps.tag.outputs.tag }}"
 
-      - name: Refused, a fifth font license
+      - name: Refused, one font license more than the tag's
         shell: bash
         run: |
           rm -rf "$COPY" && ditto bundle "$COPY"
           cp "$APP/Contents/Resources/licenses/fonts/OFL.txt" "$APP/Contents/Resources/licenses/fonts/extra.txt"
-          ./ci/expect-refusal.sh "5 font licenses in the bundle, not four" ./ci/accept-artifact.sh --dir "$COPY" "${{ steps.tag.outputs.tag }}"
+          ./ci/expect-refusal.sh "font licenses in the bundle, not the" ./ci/accept-artifact.sh --dir "$COPY" "${{ steps.tag.outputs.tag }}"
 
       # The real application, stopped before the quit event: it cannot handle the event, as an
       # application that hangs.
