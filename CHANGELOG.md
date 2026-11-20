@@ -4,6 +4,10 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 
 ## [Unreleased]
 
+### Fixed
+
+- **A setting saved twice in the same moment no longer puts back the older one.** 0.5.0 made a save overtaken by a newer one step aside, but only when the two reached the disk one after the other. When both passed their check at once, the older could still be written last, and the setting or the preset captured just before was lost at the next launch. The check and the write to disk now happen as one step.
+
 ## [0.5.0] - 2026-11-20
 
 ### Changed

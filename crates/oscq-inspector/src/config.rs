@@ -209,10 +209,16 @@ fn write_temp(path: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
 /// and the slot is gone at the next launch. Each save takes its number on the UI thread, in
 /// order; a save whose number is not above what has already been written drops its file instead
 /// of replacing a newer one.
+///
+/// The check of the number and the rename are made under one lock. They were two steps, a
+/// compare and swap and then the rename: an older save could pass the check, a newer one pass it
+/// and rename, and the older rename last. Only the rename is held, never the writing and flushing
+/// of the temporary file, which every save does on its own beforehand. See `PITFALLS.md` under
+/// Config.
 #[derive(Debug, Default)]
 pub struct SaveOrder {
     taken: std::sync::atomic::AtomicU64,
-    written: std::sync::atomic::AtomicU64,
+    written: std::sync::Mutex<u64>,
 }
 
 impl SaveOrder {
@@ -227,23 +233,39 @@ impl SaveOrder {
     /// Writes `bytes` to `path` as [`write_atomic`] does, unless a save later than `seq` has
     /// already been written there, in which case nothing is replaced and the file is dropped.
     pub fn write(&self, path: &Path, bytes: &[u8], seq: u64) -> std::io::Result<()> {
-        use std::sync::atomic::Ordering;
+        self.write_with(path, bytes, seq, |from, to| std::fs::rename(from, to))
+    }
+
+    /// [`SaveOrder::write`], with the rename given, so that a test can hold a save between its
+    /// check and its rename.
+    fn write_with(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        seq: u64,
+        rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
         let tmp = write_temp(path, bytes)?;
-        loop {
-            let written = self.written.load(Ordering::Acquire);
-            if written >= seq {
-                let _ = std::fs::remove_file(&tmp);
-                return Ok(());
+        let mut written = self
+            .written
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *written >= seq {
+            drop(written);
+            let _ = std::fs::remove_file(&tmp);
+            return Ok(());
+        }
+        match rename(&tmp, path) {
+            Ok(()) => {
+                *written = seq;
+                Ok(())
             }
-            if self
-                .written
-                .compare_exchange(written, seq, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                break;
+            Err(e) => {
+                drop(written);
+                let _ = std::fs::remove_file(&tmp);
+                Err(e)
             }
         }
-        std::fs::rename(&tmp, path)
     }
 }
 
@@ -350,6 +372,58 @@ mod tests {
         assert_eq!(
             left, r#"{"peers_poll_ms":2000}"#,
             "the older save did not put back what the newer one replaced"
+        );
+    }
+
+    /// An older save that has passed the check of its number cannot land after a newer one.
+    ///
+    /// The check and the rename were two steps with nothing holding them together: the older
+    /// save passed the check, the newer one passed it and renamed, and the older renamed last,
+    /// putting back what the newer one had replaced. The CI caught it four times on 2026-11-20,
+    /// on Windows and on macOS, as `saves_at_once_all_land_and_the_newest_is_the_one_kept`
+    /// keeping 1006 or 1001 in place of 1007. Here the older save is held between its check and
+    /// its rename until the newer one has landed, or for 500 ms if the newer one cannot land
+    /// meanwhile, which makes the interleaving certain instead of rare.
+    #[test]
+    fn an_older_save_past_its_check_still_cannot_land_after_a_newer_one() {
+        use std::sync::{Arc, mpsc};
+        use std::time::Duration;
+        let dir = temp_dir("saves-interleaved");
+        let path = config_path(&dir);
+        let order = Arc::new(SaveOrder::default());
+        let (older, newer) = (order.take(), order.take());
+        let (held_tx, held_rx) = mpsc::channel();
+        let (landed_tx, landed_rx) = mpsc::channel::<()>();
+        let older_save = {
+            let (order, path) = (Arc::clone(&order), path.clone());
+            std::thread::spawn(move || {
+                order.write_with(&path, br#"{"peers_poll_ms":1000}"#, older, |from, to| {
+                    held_tx.send(()).unwrap();
+                    let _ = landed_rx.recv_timeout(Duration::from_millis(500));
+                    std::fs::rename(from, to)
+                })
+            })
+        };
+        held_rx.recv().unwrap();
+        let newer_save = {
+            let (order, path) = (Arc::clone(&order), path.clone());
+            std::thread::spawn(move || {
+                let landed = order.write(&path, br#"{"peers_poll_ms":2000}"#, newer);
+                let _ = landed_tx.send(());
+                landed
+            })
+        };
+        let newer_result = newer_save.join().expect("newer save panicked");
+        let older_result = older_save.join().expect("older save panicked");
+        let left = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            newer_result.is_ok() && older_result.is_ok(),
+            "both saves landed or stepped aside: {newer_result:?}, {older_result:?}"
+        );
+        assert_eq!(
+            left, r#"{"peers_poll_ms":2000}"#,
+            "the older save, past its check, landed after the newer one"
         );
     }
 

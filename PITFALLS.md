@@ -257,6 +257,18 @@ have been enough, since every save carries the whole config. Both halves are hel
 `config::tests::a_save_overtaken_by_a_newer_one_does_not_replace_it`, each watched failing on the
 code it was written for.
 
+That fix did not hold when two saves passed the check at once. The check of the number was a
+compare and swap and the rename came after it, with nothing holding the two together: an older
+save passed the check, a newer one passed it and renamed, and the older renamed last, putting
+back what the newer one had replaced. A test that runs the saves one after the other cannot see
+it. Case: `saves_at_once_all_land_and_the_newest_is_the_one_kept` failed four times in CI on
+2026-11-20, three on Windows and one on macOS, keeping 1006 or 1001 in place of 1007, and passed
+on the commit tagged v0.5.0, which therefore ships the defect. On Linux the same test failed 12
+times in 300. The check and the rename now sit under one lock, the writing of the temporary file
+staying outside it; `config::tests::an_older_save_past_its_check_still_cannot_land_after_a_newer_one`
+holds the older save between its check and its rename, failed three times out of three on the
+old code, and the stress test then failed 0 times in 300.
+
 ## Typefaces
 
 A bundled typeface is not a drop in replacement at the same nominal size. Space Grotesk is about a tenth wider than Ubuntu-Light at 11 px, 205.9 px against 190.0 for the longest line the map draws, while Space Mono matches Hack within 2 percent. Every fixed width tuned to the pixel against the old font has to be measured again: a node box whose longest line fitted with 2 px to spare no longer fits it, and a force layout given wider boxes flattens in a small canvas. Measure the strings that sit in fixed boxes before changing a font, not after.
