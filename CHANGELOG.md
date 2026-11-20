@@ -4,6 +4,8 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-20
+
 ### Changed
 
 - **A new application icon.** A round magnifier on a black square: a white ring, a black void, an orange core in the signal colour, and a white handle. It replaces the dark blue square and its tree, follows the application's own palette, and is drawn on a 16 unit grid whose strokes and gaps stay readable at 16 pixels. On Windows and Linux it is a plain square with no margin; on macOS it keeps the system's rounded shape, since macOS 26 shrinks an icon that leaves it onto a grey one. The Dock, the Finder, Explorer, the taskbar and the Linux menu show it once rebuilt.
@@ -152,7 +154,8 @@ The first version whose files are on the Releases page.
 
 - First release: discovery over Bonjour and manual entries, the address space as a tree, values read and sent with widgets fitting their types, values live over the WebSocket where the server pushes them, the JSON and Traffic tabs. Unsigned artifacts for macOS (universal), Windows and Linux.
 
-[Unreleased]: https://github.com/gluon/oscq-inspector/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/gluon/oscq-inspector/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/gluon/oscq-inspector/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/gluon/oscq-inspector/compare/v0.4.0...v0.4.2
 [0.4.0]: https://github.com/gluon/oscq-inspector/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/gluon/oscq-inspector/compare/v0.2.3...v0.3.0

@@ -122,11 +122,9 @@ Copyright (C) 2026 Julien Bayle, Structure Void. OSCQuery Inspector is free soft
 
 ## Status
 
-Latest version: **0.4.2**, tagged on 2026-11-18, the version this README describes. It carries everything 0.3.0 and 0.4.0 hold, and its changelog entry folds in the two fixes of 0.4.1, which was tagged and built the same day and never published. What the checks before it proved is recorded in [docs/acceptance.md](docs/acceptance.md), under "Acceptance record".
+Latest version: **0.5.0**, dated 2026-11-20, the version this README describes: the new application icon, the preset gestures of Max's `preset` object and the clearing of a slot, listed in [CHANGELOG.md](CHANGELOG.md). Its tag `v0.5.0` builds the draft Release, published once [docs/acceptance.md](docs/acceptance.md) has passed. Before it, **0.4.2**, tagged on 2026-11-18, carries everything 0.3.0 and 0.4.0 hold, and its changelog entry folds in the two fixes of 0.4.1, which was tagged and built the same day and never published. What the checks before it proved is recorded in [docs/acceptance.md](docs/acceptance.md), under "Acceptance record".
 
 Version 0.3.0 is tagged, at `v0.3.0`, and its draft Release was never published: the acceptance it waits on, section 6, asks for two applications implementing the `PEERS` extension, one a client of the other, and that has not been done by a person. Every later version carries what it holds.
-
-Unreleased, on `main`: the new application icon and the preset gestures listed under Unreleased in [CHANGELOG.md](CHANGELOG.md). No version number is set for them.
 
 Backlog:
 
