@@ -214,8 +214,12 @@ mod tests {
             bmp[dst..dst + 4],
             [rgba[src + 2], rgba[src + 1], rgba[src], rgba[src + 3]]
         );
-        // The top left corner is transparent: its mask bit is set, in the last mask row.
+        // The icon is square, so its top left corner is opaque: its mask bit, in the last mask
+        // row, is clear. Made transparent, the same pixel sets it.
         let last_mask_row = 40 + 16 * 16 * 4 + 4 * 15;
-        assert_eq!(bmp[last_mask_row] & 0x80, 0x80);
+        assert_eq!(bmp[last_mask_row] & 0x80, 0);
+        let mut clear = rgba.clone();
+        clear[3] = 0;
+        assert_eq!(bitmap(size, &clear)[last_mask_row] & 0x80, 0x80);
     }
 }
