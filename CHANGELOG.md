@@ -4,6 +4,10 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 
 ## [Unreleased]
 
+### Changed
+
+- **A new application icon.** A round magnifier on a black square: a white ring, a black void, an orange core in the signal colour, and a white handle. It replaces the dark blue square and its tree, follows the application's own palette, and is drawn on a 16 unit grid whose strokes and gaps stay readable at 16 pixels. The Dock, the Finder, Explorer, the taskbar and the Linux menu show it once rebuilt.
+
 ## [0.4.2] - 2026-11-18
 
 0.4.1 was tagged and built on the same day and never published: the acceptance check of a first launch found it saying "none found" again, for the reason below. Its two fixes are here, corrected.
