@@ -1,6 +1,8 @@
 //! The application icon, drawn in code: the one source of the window icon, of the macOS `.icns`,
-//! of the Windows executable's icon and of the Linux `.png`. An address space tree, a root and two
-//! leaves, one of them lit as a live value, on a plain rounded square.
+//! of the Windows executable's icon and of the Linux `.png`. A round magnifier on a black square:
+//! a white ring, a black void, an orange core, and a white handle. It follows the charter of the
+//! Structure Void application icons: a black ground, one white mass, one element in the signal
+//! colour, drawn on a 16 by 16 grid whose strokes and gaps are 2 units or more.
 
 /// Where the artwork sits on its square canvas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,9 +14,20 @@ pub enum Layout {
     Full,
 }
 
-const BODY: [f32; 3] = [0.122, 0.227, 0.373];
-const INK: [f32; 3] = [0.957, 0.965, 0.973];
-const LIVE: [f32; 3] = [1.0, 0.690, 0.125];
+const BODY: [f32; 3] = [0.0, 0.0, 0.0];
+const INK: [f32; 3] = [1.0, 1.0, 1.0];
+/// `#FF7A1A`, the signal colour of the application, `style::SIGNAL`.
+const LIVE: [f32; 3] = [1.0, 0.478, 0.102];
+
+/// The glyph on the 16 unit grid of the body: the lens, its void and its core share one centre;
+/// the handle runs from inside the ring, so that no gap parts it from the lens, to the corner.
+const LENS: (f32, f32) = (6.5, 6.5);
+const RING_OUTER: f32 = 4.75;
+const RING_INNER: f32 = 2.75;
+const CORE: f32 = 1.6;
+const HANDLE_FROM: (f32, f32) = (9.5, 9.5);
+const HANDLE_TO: (f32, f32) = (14.0, 14.0);
+const HANDLE_HALF_WIDTH: f32 = std::f32::consts::SQRT_2;
 
 /// The icon at `size` by `size` pixels, RGBA, 8 bits per channel, not premultiplied, rows from
 /// the top.
@@ -26,37 +39,24 @@ pub fn rgba(size: u32, layout: Layout) -> Vec<u8> {
     };
     let body = px - 2.0 * margin;
     let corner = body * 0.225;
-    // Glyph coordinates are fractions of the body. Below 32 pixels the strokes and nodes keep a
-    // minimum size in pixels, so the tree stays readable at 16.
-    let at = |u: f32, v: f32| (margin + u * body, margin + v * body);
-    let stroke = (0.045 * body).max(0.7);
-    let root_r = (0.09 * body).max(1.7);
-    let leaf_r = (0.085 * body).max(1.6);
-    let root = at(0.33, 0.28);
-    let fork = at(0.33, 0.50);
-    let foot = at(0.33, 0.72);
-    let leaf_a = at(0.67, 0.50);
-    let leaf_b = at(0.67, 0.72);
-    let branch_end = |l: (f32, f32)| (l.0 - leaf_r, l.1);
+    let unit = body / 16.0;
+    let at = |(u, v): (f32, f32)| (margin + u * unit, margin + v * unit);
+    let lens = at(LENS);
+    let handle_from = at(HANDLE_FROM);
+    let handle_to = at(HANDLE_TO);
 
     let mut out = Vec::with_capacity((size * size * 4) as usize);
     for y in 0..size {
         for x in 0..size {
             let p = (x as f32 + 0.5, y as f32 + 0.5);
             let body_d = rounded_square(p, px / 2.0, body / 2.0, corner);
-            let ink_d = [
-                segment(p, root, foot) - stroke,
-                segment(p, fork, branch_end(leaf_a)) - stroke,
-                segment(p, foot, branch_end(leaf_b)) - stroke,
-                circle(p, root, root_r),
-                circle(p, leaf_a, leaf_r),
-            ]
-            .into_iter()
-            .fold(f32::MAX, f32::min);
-            let live_d = circle(p, leaf_b, leaf_r);
+            let ring_d =
+                circle(p, lens, RING_OUTER * unit).max(-circle(p, lens, RING_INNER * unit));
+            let handle_d = bar(p, handle_from, handle_to, HANDLE_HALF_WIDTH * unit);
+            let core_d = circle(p, lens, CORE * unit);
             let mut rgb = BODY;
-            mix(&mut rgb, INK, coverage(ink_d));
-            mix(&mut rgb, LIVE, coverage(live_d));
+            mix(&mut rgb, INK, coverage(ring_d.min(handle_d)));
+            mix(&mut rgb, LIVE, coverage(core_d));
             for c in rgb {
                 out.push(channel(c));
             }
@@ -95,11 +95,15 @@ fn circle(p: (f32, f32), c: (f32, f32), r: f32) -> f32 {
     length(p.0 - c.0, p.1 - c.1) - r
 }
 
-fn segment(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
-    let (bx, by) = (b.0 - a.0, b.1 - a.1);
-    let (px, py) = (p.0 - a.0, p.1 - a.1);
-    let t = ((px * bx + py * by) / (bx * bx + by * by)).clamp(0.0, 1.0);
-    length(px - bx * t, py - by * t)
+/// A bar of half width `half` from `a` to `b`, its ends cut square.
+fn bar(p: (f32, f32), a: (f32, f32), b: (f32, f32), half: f32) -> f32 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len = length(dx, dy);
+    let (ux, uy) = (dx / len, dy / len);
+    let (mx, my) = ((a.0 + b.0) / 2.0 - p.0, (a.1 + b.1) / 2.0 - p.1);
+    let along = (mx * ux + my * uy).abs() - len / 2.0;
+    let across = (mx * uy - my * ux).abs() - half;
+    length(along.max(0.0), across.max(0.0)) + along.max(across).min(0.0)
 }
 
 #[cfg(test)]
@@ -112,7 +116,7 @@ mod tests {
     }
 
     #[test]
-    fn every_size_is_drawn_with_its_body_glyph_and_live_node() {
+    fn every_size_is_drawn_with_its_body_mass_and_core() {
         for layout in [Layout::MacOs, Layout::Full] {
             for size in [16, 32, 48, 256, 1024] {
                 let img = rgba(size, layout);
@@ -124,10 +128,55 @@ mod tests {
                 };
                 let rgb = |c: [f32; 3]| c.map(channel);
                 assert!(count(rgb(BODY)) > 0, "{layout:?} {size}: body");
-                assert!(count(rgb(INK)) > 0, "{layout:?} {size}: tree");
-                assert!(count(rgb(LIVE)) > 0, "{layout:?} {size}: live node");
+                assert!(count(rgb(INK)) > 0, "{layout:?} {size}: ring and handle");
+                assert!(count(rgb(LIVE)) > 0, "{layout:?} {size}: core");
                 assert_eq!(pixel(&img, size, 0, 0)[3], 0, "corners are transparent");
             }
+        }
+    }
+
+    /// The pixel under a point of the 16 unit grid, at 1024 on the full layout.
+    fn grid_pixel(img: &[u8], (u, v): (f32, f32)) -> [u8; 3] {
+        let margin = 1024.0 / 32.0;
+        let unit = (1024.0 - 2.0 * margin) / 16.0;
+        let x = (margin + u * unit) as u32;
+        let y = (margin + v * unit) as u32;
+        let p = pixel(img, 1024, x, y);
+        [p[0], p[1], p[2]]
+    }
+
+    #[test]
+    fn the_lens_reads_ring_void_core_from_its_centre_out() {
+        let img = rgba(1024, Layout::Full);
+        let rgb = |c: [f32; 3]| c.map(channel);
+        let (cx, cy) = LENS;
+        assert_eq!(grid_pixel(&img, (cx, cy)), rgb(LIVE), "core");
+        assert_eq!(grid_pixel(&img, (cx + 2.2, cy)), rgb(BODY), "void");
+        assert_eq!(grid_pixel(&img, (cx + 3.75, cy)), rgb(INK), "ring");
+        assert_eq!(
+            grid_pixel(&img, (cx + 5.5, cy)),
+            rgb(BODY),
+            "outside the ring"
+        );
+        assert_eq!(grid_pixel(&img, (13.0, 13.0)), rgb(INK), "handle");
+    }
+
+    #[test]
+    fn no_gap_parts_the_handle_from_the_ring() {
+        let img = rgba(1024, Layout::Full);
+        let ink = INK.map(channel);
+        // Along the handle's axis, from the inside of the ring to the handle's end.
+        let (cx, cy) = LENS;
+        let step = std::f32::consts::FRAC_1_SQRT_2;
+        let mut r = RING_INNER + 0.25;
+        while r < (HANDLE_TO.0 - cx) / step - 0.25 {
+            let at = (cx + r * step, cy + r * step);
+            assert_eq!(
+                grid_pixel(&img, at),
+                ink,
+                "gap at {r:.2} units from the centre"
+            );
+            r += 0.05;
         }
     }
 

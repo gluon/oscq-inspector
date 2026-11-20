@@ -16,7 +16,7 @@ What no script here can judge is left to a person, on the Mac that gives the ver
    Expected: macOS reports an app it cannot verify, never an app that is damaged; after **Open Anyway** the window opens; the second time it opens with no warning.
    Why by hand: Gatekeeper judges a file by the quarantine its browser download leaves on it, and answers with dialogs that wait for a person. The script downloads with `gh`, which leaves no quarantine, and the CI machine's security settings are not those of a Mac downloading from a browser.
 2. Look at the app in the Finder, and at the Dock while it runs.
-   Expected: in both, its own icon: a dark blue rounded square holding a white tree, a root and two leaves, one leaf amber. Not the generic application icon, not another application's.
+   Expected: in both, its own icon: a black rounded square holding a white round magnifier, its lens a white ring around an orange core. Not the generic application icon, not another application's.
    Why by hand: whether the icon drawn is the right one is a judgment of a picture, made where the Finder and the Dock draw it; no command reads back what they show, and their icon caches can show an icon the bundle no longer holds.
 3. Choose **About OSCQuery Inspector** in the application menu, at the left of the menu bar.
    Expected: the application's own box, not the system's panel with a folder icon: OSCQuery Inspector, the version equal to the tag without the `v`, "Julien Bayle, Structure Void", "License GPL-3.0-or-later", and a link to github.com/gluon/oscq-inspector that opens the repository. A plain box, like no system window.
