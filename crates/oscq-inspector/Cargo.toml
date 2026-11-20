@@ -31,12 +31,6 @@ png = { version = "0.18.1", optional = true }
 # (`src/shot.rs`). No release build takes it, so the binary size budget of PRD 10 is unchanged.
 screenshot = ["dep:png"]
 
-# The icon study of 2026-11-19 draws the three directions of `src/icon.rs`, which the feature
-# carries: without it the example is not built, so `--all-targets` passes as CI runs it.
-[[example]]
-name = "icon_study"
-required-features = ["screenshot"]
-
 # The application menu's About item, pointed at the application's own about box. The same
 # versions and features eframe takes.
 [target.'cfg(target_os = "macos")'.dependencies]

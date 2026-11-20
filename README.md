@@ -126,7 +126,7 @@ Latest version: **0.4.2**, tagged on 2026-11-18, the version this README describ
 
 Version 0.3.0 is tagged, at `v0.3.0`, and its draft Release was never published: the acceptance it waits on, section 6, asks for two applications implementing the `PEERS` extension, one a client of the other, and that has not been done by a person. Every later version carries what it holds.
 
-Unreleased, and on a branch rather than on `main`: the preset gestures listed under Unreleased in [CHANGELOG.md](CHANGELOG.md), and three directions for a new application icon, drawn but not chosen, in [docs/icon-study.md](docs/icon-study.md). No version number is set for them.
+Unreleased, on `main`: the new application icon and the preset gestures listed under Unreleased in [CHANGELOG.md](CHANGELOG.md). No version number is set for them.
 
 Backlog:
 
@@ -144,7 +144,6 @@ This README is the manual. The documents below are the project's working files, 
 - [docs/protocol-notes.md](docs/protocol-notes.md): what the OSCQuery proposal says, checked against its sources, and what real servers do.
 - [PITFALLS.md](PITFALLS.md): traps met while building, each with the case that produced it.
 - [docs/presets-audit.md](docs/presets-audit.md): the preset section read from the window on 2026-11-19, what a capture takes and what a recall sends, what the screen does not make readable, and three designs for the capture.
-- [docs/icon-study.md](docs/icon-study.md): the application icon as it is, and three directions for a new one, at the sizes a Dock draws.
 - [docs/acceptance.md](docs/acceptance.md): the manual checks run before each release, and the record of what they proved.
 - [CLAUDE.md](CLAUDE.md): the laws the application is held to, and the review criterion for every change. Not documentation either: it states what must stay true, not how to use the application.
 - [tests/fixtures/README.md](tests/fixtures/README.md): the test inputs and where each one comes from.
