@@ -261,3 +261,8 @@ code it was written for.
 
 A bundled typeface is not a drop in replacement at the same nominal size. Space Grotesk is about a tenth wider than Ubuntu-Light at 11 px, 205.9 px against 190.0 for the longest line the map draws, while Space Mono matches Hack within 2 percent. Every fixed width tuned to the pixel against the old font has to be measured again: a node box whose longest line fitted with 2 px to spare no longer fits it, and a force layout given wider boxes flattens in a small canvas. Measure the strings that sit in fixed boxes before changing a font, not after.
 Case: the map's node line elided and the largest gap around a centre going from 134.2 to 170.6 degrees at 1100 by 700, 2026-11-17.
+
+## Release acceptance
+
+A count written into a check goes stale when what it counts changes elsewhere. `ci/accept-artifact.sh` required four font licenses in the bundle, the four of `epaint_default_fonts`, written on 2026-11-14; Space Grotesk and Space Mono were bundled on 2026-11-17 with their own two, and nothing ran the script against a release in between. The count now comes from the tag's `licenses/fonts`.
+Case: the run of Accept artifact on v0.5.0 stopping at "6 font licenses in the bundle, not four", the bundle and its six texts being right, 2026-11-20.

@@ -119,8 +119,8 @@ bundle() {
         fail "the binary holds $archs, not arm64 and x86_64"
     ok "lipo -archs: $archs"
 
-    proves "The bundle carries the license texts of the tag: the GPL, its additional permission, the four font licenses"
-    local licenses="$app/Contents/Resources/licenses" n=0 f packed fonts
+    proves "The bundle carries the license texts of the tag: the GPL, its additional permission, the font licenses"
+    local licenses="$app/Contents/Resources/licenses" n=0 f packed fonts expected
     for f in LICENSE LICENSE-EXCEPTION $(git ls-tree --name-only "$tag" licenses/fonts/ | grep '\.txt$'); do
         packed="$licenses/${f#licenses/}"
         [ -f "$packed" ] || fail "${packed#"$app/"} is missing"
@@ -128,10 +128,13 @@ bundle() {
         echo "  ${packed#"$app/"}"
         n=$((n + 1))
     done
+    # The count comes from the tag, not from this script: a typeface added or removed changes it.
+    expected=$(git ls-tree --name-only "$tag" licenses/fonts/ | grep -c '\.txt$' || true)
+    [ "$expected" -gt 0 ] || fail "no font license text at $tag: the check cannot evaluate"
     fonts=$(find "$licenses/fonts" -name '*.txt' | wc -l | tr -d ' ')
-    [ "$fonts" -eq 4 ] || fail "$fonts font licenses in the bundle, not four"
-    [ "$n" -eq 6 ] || fail "$n license texts at $tag, not six: the check cannot evaluate"
-    ok "six texts, identical to those of $tag"
+    [ "$fonts" -eq "$expected" ] || fail "$fonts font licenses in the bundle, not the $expected of $tag"
+    [ "$n" -eq $((expected + 2)) ] || fail "$n license texts at $tag, not $((expected + 2)): the check cannot evaluate"
+    ok "$n texts, identical to those of $tag"
 
     proves "The application starts, draws its first frame, and quits cleanly when asked to"
     local bundle_id home log started status
