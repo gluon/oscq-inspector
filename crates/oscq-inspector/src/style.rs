@@ -40,6 +40,9 @@ pub const FLAGS_W: f32 = 6.0 * GRID;
 
 /// The type scale: 11, 13 and 15 px for the interface, 12 px monospace for data.
 pub const SMALL: f32 = 11.0;
+/// The two lines a filled preset slot carries under its number, its count and its server
+/// (PRD 9.9): below the type scale on purpose, so three lines fit a square meant for one.
+pub const SLOT_LINE: f32 = 9.0;
 pub const BODY: f32 = 13.0;
 pub const HEADING: f32 = 15.0;
 pub const DATA: f32 = 12.0;

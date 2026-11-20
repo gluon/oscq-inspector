@@ -7,6 +7,18 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 ### Changed
 
 - **A new application icon.** A round magnifier on a black square: a white ring, a black void, an orange core in the signal colour, and a white handle. It replaces the dark blue square and its tree, follows the application's own palette, and is drawn on a 16 unit grid whose strokes and gaps stay readable at 16 pixels. On Windows and Linux it is a plain square with no margin; on macOS it keeps the system's rounded shape, since macOS 26 shrinks an icon that leaves it onto a grey one. The Dock, the Finder, Explorer, the taskbar and the Linux menu show it once rebuilt.
+- **The preset slots take the gestures of Max's `preset` object.** A **click** recalls, a **shift click** captures into any slot, and a **shift option click** empties one (option is alt on Windows and Linux). A click on a slot holding nothing now recalls nothing and says what to press instead: it used to capture there, so one gesture meant two different things depending on a state the slot showed only as a change of border. Nothing asks for a confirmation, as before.
+- **A filled slot says what it holds.** Under its number it carries how many values it holds and the name of the server it was captured on, cut to the square whatever the server calls itself. Sixteen identical numbered squares could not be told apart, so a slot captured on one server and recalled onto another looked the same as any other until after it had been sent.
+- **The three gestures and the scope of a capture are written under the grid.** "Click recalls. Shift click captures every writable node. Shift option click clears.", with "the pinned nodes" in place of the scope when nodes are pinned. The word Capture used to appear nowhere on screen, and what a capture would take was in the hover text of an empty slot alone.
+- **The note after a capture reads properly and says why a method was skipped.** It said "12 values of methods captured" when nothing was pinned, and called a method whose type a preset cannot hold one "without a value".
+
+### Added
+
+- **A preset slot can be emptied.** There was no way to empty one: a slot that had ever been captured into stayed filled for the life of the config, and could only be replaced. **Clear** is in the right click menu beside **Recall** and **Capture**, as well as on the shift option click.
+
+### Fixed
+
+- **A setting saved twice in the same moment is no longer lost, and no longer reports a failure.** Both saves built the name of their temporary file from the config's own, so they opened the same one: the first to finish carried it away under the second, which failed and put "config not saved to ..." in the status bar in place of what the action had just done. Each save now writes its own file, and a save overtaken by a newer one steps aside instead of putting back what the newer one replaced.
 
 ## [0.4.2] - 2026-11-18
 

@@ -23,6 +23,13 @@ tokio = { version = "1.53.2", features = ["rt-multi-thread", "fs"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 url = "2.5.8"
+# Only with the `screenshot` feature below; absent from every release build.
+png = { version = "0.18.1", optional = true }
+
+[features]
+# Lets a launch write a PNG of its own window, for the documentation images only
+# (`src/shot.rs`). No release build takes it, so the binary size budget of PRD 10 is unchanged.
+screenshot = ["dep:png"]
 
 # The application menu's About item, pointed at the application's own about box. The same
 # versions and features eframe takes.

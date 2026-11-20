@@ -14,6 +14,8 @@ mod macos_menu;
 mod map;
 mod presets;
 mod rate;
+#[cfg(feature = "screenshot")]
+mod shot;
 mod state;
 mod style;
 mod traffic;
