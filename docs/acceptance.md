@@ -121,14 +121,17 @@ Setup: the synthetic server of section 3 running, Max 9 with its patch as in sec
 4. Right click `/g0/p0`, **Pin**; the same for `/g0/p1` and `/g0/p2`. Collapse `/g0`, open the **JSON** tab.
    Expected: the three nodes in **Pinned** on the right, with their widgets, whatever the tree or the tab shows. Moving a pinned widget sends, as in the tree.
 5. Set the three pinned values to 0.1, 0.2, 0.3. The preset section is folded: click **PRESETS** to open it.
-   Expected: sixteen square slots, four to a row, each carrying its number and nothing else; all of them dim, since none holds anything. Rest the pointer on slot 02: it shows a mark of an arrow coming down onto a floor, which is what a click there would do.
+   Expected: sixteen square slots, four to a row, each carrying its number and nothing else, all of them dim since none holds anything. Under the grid: "Click recalls. Shift click captures the pinned nodes. Shift option click clears." (alt in place of option on Windows and Linux). Rest the pointer on slot 01: "Slot 01: empty" and "Shift click to store the pinned nodes of this server."
    Then click slot 01, which is empty.
-   Expected: a note "Slot 01: 3 values of pinned methods captured". Slot 01 is now bordered in the brightest ink on the control surface, told apart from the fifteen dim ones at a glance.
+   Expected: nothing sent, and the note "Slot 01 is empty: shift click to capture into it".
+   Then shift click slot 01.
+   Expected: the note "Slot 01: 3 pinned methods captured". Slot 01 is bordered in the brightest ink on the control surface, and under its number it carries 3 and the synthetic server's name, told apart from the fifteen dim ones at a glance.
 6. Move the three values elsewhere, then click slot 01, which now holds values.
    Expected: the three widgets back to 0.1, 0.2, 0.3 at once, with no confirmation, and slot 01 drawn inverted, ink and ground swapped, as the slot last recalled. The **Traffic** tab shows one line, its time then `out preset 01  (3 messages)`; clicking it lists the three messages.
-   Then shift click slot 01, which holds values.
-   Expected: it captures again rather than recalling, the note saying so: capture needs no right click. Right click any slot.
-   Expected: a menu naming **Recall** and **Capture** in words.
+   Then shift click slot 01 again.
+   Expected: it captures again rather than recalling, the note saying so. Shift click slot 02, then shift option click it.
+   Expected: slot 02 filled, then empty and dim again, the note "Slot 02 cleared". Right click any slot.
+   Expected: a menu naming **Recall**, **Capture** and **Clear** in words, **Recall** and **Clear** greyed on an empty slot.
 7. In **Traffic**, click **IN**, then **OUT**, then **ALL**, in the segmented bar beside the filter.
    Expected: **IN** shows only values received, **OUT** only what was sent, **ALL** both; the chosen one is drawn inverted. Narrow the window to its smallest, 640 points.
    Expected: the tab's own row of controls wraps onto further lines and every one of them stays on screen, the filter, the bar, **PAUSE**, **CLEAR**, **EXPORT** and the count; each record of the log stays on one line, the rest of it reached by scrolling sideways.
@@ -152,7 +155,7 @@ Setup: the synthetic server of section 3 running, Max 9 with its patch as in sec
 11. Click the cross of Max 9's manual entry, then **+ MANUAL** `localhost:30339` again.
    Expected: the entry leaves the list at once; added again, its OSC port is inferred from the HTTP port, 30339: the port set earlier was forgotten with the entry.
 
-Proves: the interface rework seen by a person, the server list removal, the pinned panel across tabs and restarts, a capture and recall cycle on the same server and on another one, the traffic direction filter. Cannot prove: anything beyond this Mac and these two servers.
+Proves: the interface rework seen by a person, the server list removal, the pinned panel across tabs and restarts, a capture, recall and clear cycle on the same server and a recall on another one, with the gestures written under the grid, the traffic direction filter. Cannot prove: anything beyond this Mac and these two servers.
 
 ## 6. Peers and the map
 
