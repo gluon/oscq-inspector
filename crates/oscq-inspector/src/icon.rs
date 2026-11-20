@@ -10,7 +10,8 @@ pub enum Layout {
     /// The macOS icon grid: the body takes 824 of 1024, centred, as every application icon does in
     /// the Finder and the Dock.
     MacOs,
-    /// The body fills the canvas but for a pixel: Windows and Linux icons have no margin.
+    /// The body is the whole canvas, a square with no margin and no rounding: Windows and Linux
+    /// draw an icon as it is given, and the charter wants it square wherever the system allows.
     Full,
 }
 
@@ -35,10 +36,15 @@ pub fn rgba(size: u32, layout: Layout) -> Vec<u8> {
     let px = size as f32;
     let margin = match layout {
         Layout::MacOs => px * 100.0 / 1024.0,
-        Layout::Full => px / 32.0,
+        Layout::Full => 0.0,
     };
     let body = px - 2.0 * margin;
-    let corner = body * 0.225;
+    // macOS 26 shrinks an icon that leaves its rounded shape onto a grey one, so there it keeps
+    // the rounding; everywhere else the square is the icon.
+    let corner = match layout {
+        Layout::MacOs => body * 0.225,
+        Layout::Full => 0.0,
+    };
     let unit = body / 16.0;
     let at = |(u, v): (f32, f32)| (margin + u * unit, margin + v * unit);
     let lens = at(LENS);
@@ -130,17 +136,20 @@ mod tests {
                 assert!(count(rgb(BODY)) > 0, "{layout:?} {size}: body");
                 assert!(count(rgb(INK)) > 0, "{layout:?} {size}: ring and handle");
                 assert!(count(rgb(LIVE)) > 0, "{layout:?} {size}: core");
-                assert_eq!(pixel(&img, size, 0, 0)[3], 0, "corners are transparent");
+                let corner = pixel(&img, size, 0, 0);
+                match layout {
+                    Layout::MacOs => assert_eq!(corner[3], 0, "macOS corners are transparent"),
+                    Layout::Full => assert_eq!(corner, [0, 0, 0, 255], "the full icon is square"),
+                }
             }
         }
     }
 
     /// The pixel under a point of the 16 unit grid, at 1024 on the full layout.
     fn grid_pixel(img: &[u8], (u, v): (f32, f32)) -> [u8; 3] {
-        let margin = 1024.0 / 32.0;
-        let unit = (1024.0 - 2.0 * margin) / 16.0;
-        let x = (margin + u * unit) as u32;
-        let y = (margin + v * unit) as u32;
+        let unit = 1024.0 / 16.0;
+        let x = (u * unit) as u32;
+        let y = (v * unit) as u32;
         let p = pixel(img, 1024, x, y);
         [p[0], p[1], p[2]]
     }
@@ -186,6 +195,6 @@ mod tests {
         let full = rgba(1024, Layout::Full);
         assert_eq!(pixel(&mac, 1024, 512, 90)[3], 0);
         assert_eq!(pixel(&mac, 1024, 512, 110)[3], 255);
-        assert_eq!(pixel(&full, 1024, 512, 40)[3], 255);
+        assert_eq!(pixel(&full, 1024, 512, 0)[3], 255);
     }
 }

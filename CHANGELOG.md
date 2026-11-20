@@ -6,7 +6,7 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 
 ### Changed
 
-- **A new application icon.** A round magnifier on a black square: a white ring, a black void, an orange core in the signal colour, and a white handle. It replaces the dark blue square and its tree, follows the application's own palette, and is drawn on a 16 unit grid whose strokes and gaps stay readable at 16 pixels. The Dock, the Finder, Explorer, the taskbar and the Linux menu show it once rebuilt.
+- **A new application icon.** A round magnifier on a black square: a white ring, a black void, an orange core in the signal colour, and a white handle. It replaces the dark blue square and its tree, follows the application's own palette, and is drawn on a 16 unit grid whose strokes and gaps stay readable at 16 pixels. On Windows and Linux it is a plain square with no margin; on macOS it keeps the system's rounded shape, since macOS 26 shrinks an icon that leaves it onto a grey one. The Dock, the Finder, Explorer, the taskbar and the Linux menu show it once rebuilt.
 
 ## [0.4.2] - 2026-11-18
 
