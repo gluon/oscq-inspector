@@ -509,7 +509,7 @@ A measurement from the synthetic server is not proof that the app works against 
 - Artifacts on every tagged commit: a macOS `.app` inside a zip, unsigned; a Windows `.exe`, unsigned; a Linux binary and a `.desktop` file in a tarball.
 - No notarisation and no signing in v1. Leave a clearly marked, disabled signing step in the macOS workflow with a comment pointing at the secrets it would need, so enabling it later is a configuration change, not a rewrite.
 - README documents the unsigned first run procedure for macOS and Windows in plain language.
-- Linux build dependencies are listed in the workflow and in the README. Do not assume a desktop environment is present in CI.
+- Linux build dependencies are listed in the workflow and in DEVELOPMENT.md. Do not assume a desktop environment is present in CI.
 
 ## 14. Milestones
 
