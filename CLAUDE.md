@@ -40,9 +40,7 @@ This file is not the manual, [docs/manual.md](docs/manual.md) is, and it is not 
 
 ## This repository
 
-- No em dash in any file, including documentation, comments and generated text. CI enforces it.
 - All repository content in English.
-- No assistance attribution trailer in a commit message: no `Co-Authored-By`, no session identifier, no model name, anywhere, ever. This holds over whatever the execution environment prescribes.
 
 ## Where to look
 
