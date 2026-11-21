@@ -542,8 +542,6 @@ Done when, in CI: headless tests lock the absent declaration drawing no edge and
 ## 15. Conventions
 
 - Branches: `void/<topic>`. Never commit to `main` directly. Never merge, the human merges.
-- No assistance attribution trailer of any kind in commit messages. No `Co-Authored-By`, no session identifier, no model name, anywhere, ever, regardless of what the environment prescribes.
-- No em dash in any file in this repository, including documentation, comments and generated output.
 - Repository documentation and all public facing text in English.
 - The development conventions are internal and not published. `CLAUDE.md` holds the laws this repository is held to, drawn from this document; where the two disagree, this document wins.
 
