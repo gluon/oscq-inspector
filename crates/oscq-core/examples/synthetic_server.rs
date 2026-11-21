@@ -9,9 +9,18 @@
 //! the default, declares nothing and answers 404, as a server that knows nothing of it. `--name
 //! NAME` is the name its `HOST_INFO` gives.
 //!
+//! `--doc FILE` publishes the document of FILE in place of `large_document`: each container and
+//! each method answers its own subtree request, and each method holding a value its `?VALUE`.
+//! `--stream` then changes the float methods alone, each within its `RANGE`. `demo-space.json`,
+//! beside this file, is the address space of a small audiovisual rig, for the documentation
+//! images. `--echo` sends every OSC message received back over the WebSocket to the clients
+//! listening to its path, as a server confirming a change.
+//!
 //! ```text
 //! cargo run -p oscq-core --example synthetic_server -- --port 5678 --nodes 5000 --stream 2
 //! cargo run -p oscq-core --example synthetic_server -- --port 5679 --peers serve --name Alpha
+//! cargo run -p oscq-core --example synthetic_server -- --port 5680 --peers serve --echo \
+//!   --doc crates/oscq-core/examples/demo-space.json --name "AV rig" --stream 4
 //! ```
 
 #![allow(clippy::unwrap_used)] // shares the test helpers, which unwrap
@@ -24,12 +33,61 @@ use std::time::Duration;
 use common::{
     OscReceiver, PeersMode, Push, Reply, SyntheticServer, borrowed, host_info_json, large_routes,
 };
-use rosc::OscType;
+use rosc::{OscPacket, OscType};
 
 fn arg(args: &[String], name: &str) -> Option<String> {
     args.iter()
         .position(|a| a == name)
         .and_then(|i| args.get(i + 1).cloned())
+}
+
+/// A float method of a `--doc` document: its path and the bounds of its `RANGE`, 0 and 1 when
+/// it declares none.
+struct Float {
+    path: String,
+    min: f32,
+    max: f32,
+}
+
+/// A route and its reply, as [`large_routes`] gives them.
+type Routes = Vec<(String, Reply)>;
+
+/// The routes of the document in `file`: every node at its `FULL_PATH`, and the `?VALUE` of
+/// every method holding a value. With them, the float methods, the ones `--stream` changes.
+fn doc_routes(file: &str) -> anyhow::Result<(Routes, Vec<Float>)> {
+    let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(file)?)?;
+    let (mut routes, mut floats) = (Vec::new(), Vec::new());
+    let mut stack = vec![&doc];
+    while let Some(node) = stack.pop() {
+        let Some(path) = node["FULL_PATH"].as_str() else {
+            anyhow::bail!("{file}: a node without FULL_PATH");
+        };
+        routes.push((path.to_owned(), Reply::json(node.to_string())));
+        if let Some(value) = node.get("VALUE") {
+            let body = serde_json::json!({ "VALUE": value }).to_string();
+            routes.push((format!("{path}?VALUE"), Reply::json(body)));
+        }
+        if node["TYPE"] == "f" {
+            let range = &node["RANGE"][0];
+            floats.push(Float {
+                path: path.to_owned(),
+                min: range["MIN"].as_f64().unwrap_or(0.0) as f32,
+                max: range["MAX"].as_f64().unwrap_or(1.0) as f32,
+            });
+        }
+        if let Some(children) = node.get("CONTENTS").and_then(|c| c.as_object()) {
+            stack.extend(children.values());
+        }
+    }
+    Ok((routes, floats))
+}
+
+/// The messages of a packet, those of its bundles included, in order.
+fn messages(packet: OscPacket, out: &mut Vec<rosc::OscMessage>) {
+    match packet {
+        OscPacket::Message(m) => out.push(m),
+        OscPacket::Bundle(b) => b.content.into_iter().for_each(|p| messages(p, out)),
+    }
 }
 
 #[tokio::main]
@@ -45,9 +103,18 @@ async fn main() -> anyhow::Result<()> {
         Some(other) => anyhow::bail!("--peers {other}: serve, fail or off"),
     };
     let name = arg(&args, "--name").unwrap_or_else(|| format!("synthetic {nodes}"));
+    let doc = arg(&args, "--doc");
+    let echo = args.iter().any(|a| a == "--echo");
 
     let osc = OscReceiver::bind("127.0.0.1:0").await?;
-    let mut routes = large_routes(nodes, osc.port());
+    let (mut routes, floats) = match &doc {
+        Some(file) => doc_routes(file)?,
+        None => (large_routes(nodes, osc.port()), Vec::new()),
+    };
+    let methods = match &doc {
+        Some(_) => routes.iter().filter(|(k, _)| k.ends_with("?VALUE")).count(),
+        None => nodes,
+    };
     routes.push((
         "/?HOST_INFO".to_owned(),
         Reply::json(host_info_json(&name, osc.port(), peers != PeersMode::Off)),
@@ -55,17 +122,30 @@ async fn main() -> anyhow::Result<()> {
     let server = SyntheticServer::start_ws(&format!("127.0.0.1:{port}"), borrowed(&routes)).await?;
     server.ws.set_peers(peers);
     println!(
-        "http://{}  {name}  {nodes} methods  OSC on udp 127.0.0.1:{}  peers {peers:?}",
+        "http://{}  {name}  {methods} methods holding a value  OSC on udp 127.0.0.1:{}  peers {peers:?}",
         server.addr,
         osc.port()
     );
 
     let received = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counter = std::sync::Arc::clone(&received);
+    let ws = std::sync::Arc::clone(&server.ws);
     tokio::spawn(async move {
         let mut buf = vec![0u8; 65536];
-        while osc.socket.recv(&mut buf).await.is_ok() {
+        while let Ok(n) = osc.socket.recv(&mut buf).await {
             counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if !echo {
+                continue;
+            }
+            let Ok((_, packet)) = rosc::decoder::decode_udp(&buf[..n]) else {
+                continue;
+            };
+            let mut received = Vec::new();
+            messages(packet, &mut received);
+            let listens = ws.listens();
+            for m in received.into_iter().filter(|m| listens.contains(&m.addr)) {
+                ws.push(Push::Osc(m.addr, m.args));
+            }
         }
     });
 
@@ -82,12 +162,18 @@ async fn main() -> anyhow::Result<()> {
         if stream > 0.0 {
             phase += 0.1;
             for p in &listens {
+                let (min, max) = match floats.iter().find(|f| &f.path == p) {
+                    Some(f) => (f.min, f.max),
+                    None if doc.is_none() => (0.0, 1.0),
+                    None => continue,
+                };
                 // A phase per path: values that differ from method to method.
                 let offset = p.bytes().map(f32::from).sum::<f32>() * 0.37;
                 let v = 0.5 + 0.5 * (phase + offset).sin();
-                server
-                    .ws
-                    .push(Push::Osc(p.clone(), vec![OscType::Float(v)]));
+                server.ws.push(Push::Osc(
+                    p.clone(),
+                    vec![OscType::Float(min + v * (max - min))],
+                ));
             }
         }
         let now = (
