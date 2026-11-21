@@ -198,7 +198,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # Build dependencies as in README; the rest runs the binary under Xvfb and checks the
+      # Build dependencies as in DEVELOPMENT.md; the rest runs the binary under Xvfb and checks the
       # .desktop file. No desktop environment is assumed.
       - name: Install Linux build, check and display dependencies
         run: |

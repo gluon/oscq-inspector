@@ -4,6 +4,14 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 
 ## [Unreleased]
 
+### Changed
+
+- **The README is the front page, the manual is its own file.** The README keeps what the application is, its features, the OSCQuery it implements and the links. Installation and first launch are in `docs/install.md`, the manual in `docs/manual.md`, the tested servers and systems in `docs/compatibility.md`, building, the tools, the budgets, the release, the status and the backlog in `DEVELOPMENT.md`.
+
+### Fixed
+
+- **The manual describes the preset gestures of 0.5.0.** It still said one click captured into an empty slot and that each slot carried **Capture** and **Recall**.
+
 ## [0.5.1] - 2026-11-21
 
 ### Fixed

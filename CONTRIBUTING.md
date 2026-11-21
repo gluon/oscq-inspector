@@ -1,6 +1,6 @@
 # Contributing
 
-OSCQuery Inspector is developed by Julien Bayle for his own use, building and debugging OSC setups, and published in case it serves others. There is no team behind it and no roadmap beyond the backlog in the [README](README.md#status).
+OSCQuery Inspector is developed by Julien Bayle for his own use, building and debugging OSC setups, and published in case it serves others. There is no team behind it and no roadmap beyond the backlog in [DEVELOPMENT.md](DEVELOPMENT.md#status-and-backlog).
 
 ## Issues
 
@@ -10,7 +10,7 @@ Issues are read. The most useful ones say:
 - the server: its name and version, and whether it is advertised over Bonjour or added by hand;
 - what you did, what you expected, what you saw; the status bar's message, and the Traffic tab exported as text when messages are involved.
 
-A report of how the app behaves with a server it was not tested with, VDMX, ossia or any other, is welcome even when nothing fails: the [tested servers](README.md#tested-with) are three. A capture of that server's documents is better still, `curl -s http://HOST:PORT/` and `curl -s "http://HOST:PORT/?HOST_INFO"`; check that it holds nothing you would rather keep private before attaching it.
+A report of how the app behaves with a server it was not tested with, VDMX, ossia or any other, is welcome even when nothing fails: the [tested servers](docs/compatibility.md) are three. A capture of that server's documents is better still, `curl -s http://HOST:PORT/` and `curl -s "http://HOST:PORT/?HOST_INFO"`; check that it holds nothing you would rather keep private before attaching it.
 
 ## Pull requests
 
@@ -24,7 +24,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
 
-Repository text and code are in English. The [documents in this repository](README.md#documents-in-this-repository) explain why the code is as it is.
+Repository text and code are in English. The [documents in this repository](DEVELOPMENT.md#documents-in-this-repository) explain why the code is as it is.
 
 ## License
 

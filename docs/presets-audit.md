@@ -6,7 +6,7 @@ report: the capture part of the preset section is not clear.
 The audit below is of the section as 0.4.2 draws it, and every image of it is of that build.
 The section that follows records the three designs drawn from the audit, the human's decision of
 the same day, and which of the twelve points it answered. What the application does now is in
-PRD 9.9 and in the README; this document is how it got there and what is left.
+PRD 9.9 and in [the manual](manual.md); this document is how it got there and what is left.
 
 ## How every image here was taken
 

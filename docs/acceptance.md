@@ -12,7 +12,7 @@ First, with no one at the machine: `./ci/accept-artifact.sh vVERSION`, run on ma
 
 What no script here can judge is left to a person, on the Mac that gives the verdict.
 
-1. In GitHub, **Releases**, open the draft of the tag; a draft is visible to the repository's writers only. Download `oscq-inspector-VERSION-macos-universal.zip` with the browser, unzip it, move **OSCQuery Inspector.app** to Applications. Double click it, and follow the README's macOS first launch procedure: **Privacy & Security**, **Open Anyway**. Quit, and open it again by a double click.
+1. In GitHub, **Releases**, open the draft of the tag; a draft is visible to the repository's writers only. Download `oscq-inspector-VERSION-macos-universal.zip` with the browser, unzip it, move **OSCQuery Inspector.app** to Applications. Double click it, and follow the macOS first launch procedure of [install.md](install.md): **Privacy & Security**, **Open Anyway**. Quit, and open it again by a double click.
    Expected: macOS reports an app it cannot verify, never an app that is damaged; after **Open Anyway** the window opens; the second time it opens with no warning.
    Why by hand: Gatekeeper judges a file by the quarantine its browser download leaves on it, and answers with dialogs that wait for a person. The script downloads with `gh`, which leaves no quarantine, and the CI machine's security settings are not those of a Mac downloading from a browser.
 2. Look at the app in the Finder, and at the Dock while it runs.
@@ -101,8 +101,8 @@ Proves: the nominal WebSocket path end to end, listen and ignore following the r
 
 Not required for the macOS release. On each system available:
 
-1. Download its file from the draft, follow the README's first launch procedure for that system.
-   Expected: the window opens; on Windows, no console window. The executable in Explorer, the window and the taskbar show the application's icon; on Linux, the icon in the application menu once installed as the README says.
+1. Download its file from the draft, follow the first launch procedure of [install.md](install.md) for that system.
+   Expected: the window opens; on Windows, no console window. The executable in Explorer, the window and the taskbar show the application's icon; on Linux, the icon in the application menu once installed as [install.md](install.md) says.
 2. Run section 3 with the synthetic server on that machine, or section 1 if a Helper runs on the LAN.
    Expected: the same results.
 

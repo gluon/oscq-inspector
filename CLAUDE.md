@@ -2,7 +2,7 @@
 
 The laws this repository is held to. Every change is reviewed against them.
 
-This file is not the manual, [README.md](README.md) is, and it is not the specification, [PRD.md](PRD.md) is. Where this file and the PRD disagree, the PRD wins and this file is stale. Every `§` below points into the PRD, which is where the full statement lives.
+This file is not the manual, [docs/manual.md](docs/manual.md) is, and it is not the specification, [PRD.md](PRD.md) is. Where this file and the PRD disagree, the PRD wins and this file is stale. Every `§` below points into the PRD, which is where the full statement lives.
 
 ## The application
 
@@ -46,8 +46,10 @@ This file is not the manual, [README.md](README.md) is, and it is not the specif
 
 ## Where to look
 
-- **[README.md](README.md)**: what the application is and how it is used, the servers it was tested with and what they do not do.
-- **[PRD.md](PRD.md)**: the specification, and the source of every `§` above. It describes intent; where it and the application differ, the application and the README are right.
+- **[README.md](README.md)**: what the application is, its features, the OSCQuery it implements, and the links to everything else.
+- **[docs/manual.md](docs/manual.md)**, **[docs/install.md](docs/install.md)** and **[docs/compatibility.md](docs/compatibility.md)**: how it is used, how it is installed, the servers it was tested with and what they do not do.
+- **[DEVELOPMENT.md](DEVELOPMENT.md)**: building, the workspace, the tools, the budgets, the release, the status and the backlog.
+- **[PRD.md](PRD.md)**: the specification, and the source of every `§` above. It describes intent; where it and the application differ, the application and its manual are right.
 - **[docs/protocol-notes.md](docs/protocol-notes.md)**: what the OSCQuery proposal says, checked against its sources, and what real servers do where they deviate from it.
 - **[CHANGELOG.md](CHANGELOG.md)**: what changed in every published version, and the source of a release's notes.
 - **[docs/decisions.md](docs/decisions.md)**: one line per decision taken while building, with its reason.
