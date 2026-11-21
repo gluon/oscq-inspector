@@ -6,7 +6,7 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 
 ### Changed
 
-- **The README is the front page, the manual is its own file.** The README keeps what the application is, its features, the OSCQuery it implements and the links. Installation and first launch are in `docs/install.md`, the manual in `docs/manual.md`, the tested servers and systems in `docs/compatibility.md`, building, the tools, the budgets, the release, the status and the backlog in `DEVELOPMENT.md`.
+- **The README is the front page, the manual is its own file.** The README keeps what the application is, its features, the OSCQuery it implements and the links. Installation and first launch are in `docs/install.md`, the manual in `docs/manual.md`, the tested servers and systems in `docs/compatibility.md`, building, the tools, the budgets, the release, the status and the backlog in `DEVELOPMENT.md`. Its images show the window of 0.5.1, one large and three thumbnails beside the map.
 
 ### Fixed
 

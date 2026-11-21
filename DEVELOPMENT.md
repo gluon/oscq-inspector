@@ -42,7 +42,7 @@ Protocol answers with their sources are in [docs/protocol-notes.md](docs/protoco
 
 The interface is set in Space Grotesk and data in Space Mono, both under the SIL Open Font License, compiled into the binary so that a window looks the same on the three systems. Their license texts are in `licenses/fonts`, every release carries them, and `ci/check-licenses.sh` checks each one against the family and the copyright its font file declares. The icons are drawn in code, `crates/oscq-inspector/src/glyph.rs`, with no icon font and no icon crate.
 
-The screenshots above are taken from a launch and not by hand: `OSCQ_INSPECTOR_STARTUP` opens a view, so each one is one command. With the window size and the theme set in the config file, and a server to look at:
+The screenshots of the documentation are taken from a launch and not by hand: `OSCQ_INSPECTOR_STARTUP` opens a view, so each one is one command. With the window size and the theme set in the config file, and a server to look at:
 
 ```
 OSCQ_INSPECTOR_STARTUP=connect-all,map ./oscq-inspector
@@ -56,7 +56,7 @@ Since 2026-11-19 the window can also write the frame itself, which needs no capt
 OSCQ_INSPECTOR_SHOT=out.png OSCQ_INSPECTOR_SHOT_DO=capture:3 oscq-inspector
 ```
 
-`OSCQ_INSPECTOR_SHOT_DO` takes `select:HOST:PORT`, `expand:/PATH`, `pin:/PATH`, `capture:N` and `recall:N`, one per frame, and the window closes once the file is written.
+`OSCQ_INSPECTOR_SHOT_DO` takes `select:HOST:PORT`, `expand:/PATH`, `pin:/PATH`, `capture:N`, `recall:N`, `clear:N` and the views of `OSCQ_INSPECTOR_STARTUP`, one per frame, and the window closes once the file is written. The images of the README were taken that way, on Linux, with the commands in [docs/images/readme](docs/images/readme/README.md).
 
 The application icon is drawn in code, `crates/oscq-inspector/src/icon.rs`: the window icon, the macOS `.icns`, the Windows executable's icon and the Linux `.png` all come from it, and no image file is stored. The release packaging writes the image files with:
 
@@ -87,6 +87,12 @@ With `--peers serve` it declares the `PEERS` and `CLIENT_NAME` extension and ans
 
 ```
 cargo run -p oscq-core --example synthetic_server -- --port 5679 --nodes 200 --peers serve --name Alpha
+```
+
+`--doc FILE` publishes the document of FILE instead, and `--stream` then changes its float methods alone, each within its `RANGE`; `crates/oscq-core/examples/demo-space.json` is the address space of a small audiovisual rig, written for the documentation images. With `--echo`, every OSC message the server receives goes back over the WebSocket to the clients listening to its path, as a server confirming a change:
+
+```
+cargo run -p oscq-core --example synthetic_server -- --port 5680 --peers serve --echo --doc crates/oscq-core/examples/demo-space.json --name "AV rig" --stream 4
 ```
 
 ### Performance budgets
@@ -123,6 +129,7 @@ Backlog:
 - Acceptance against a real server that notifies over its WebSocket (VDMX, ossia): a value changed inside it updates in the app without user action. Neither OSCQuery Helper nor Max 9 notifies; the synthetic server is the only proof so far. The known limit and what lifts it are in [docs/acceptance.md](docs/acceptance.md).
 - Real captured documents from VDMX and ossia, as test fixtures. OSCQuery Helper and Max 9 are captured.
 - OSC sent over the WebSocket, opt in per server, for servers that accept it; OSC goes over UDP only.
+- The Traffic tab once listed the values a server sent back above the row of the preset recall that sent them, at the same millisecond: one launch out of three, recorded in [docs/images/readme](docs/images/readme/README.md). Not reproduced on demand; the cause is not established.
 
 ## Documents in this repository
 

@@ -1,12 +1,21 @@
 # OSCQuery Inspector
 
-![The Map tab of OSCQuery Inspector](docs/images/map.png)
-
-The map: this application in the middle, connected to the PRISM demo device, which it found over Bonjour, and to two synthetic servers of this repository entered by hand. Each edge is a connection the server itself publishes, with the packets it has counted; nothing on this map is guessed.
+![OSCQuery Inspector connected to a server found over Bonjour: its address space as a tree with a widget for each value, pinned nodes on the right, three preset slots filled and the first one recalled](docs/images/readme/tree-dark.png)
 
 OSCQuery Inspector is a desktop application for macOS, Windows and Linux that connects to OSCQuery servers. OSCQuery is a protocol by which an application publishes its OSC address space, the list of everything it can be controlled with, as JSON over HTTP. OSCQuery Inspector finds those servers on the local network, shows their address space as a tree, shows each value and lets you change it, every change sent as an OSC message. It is meant for people who build or debug OSC setups: checking what a server really publishes, driving it by hand, and watching the messages that go out and come back.
 
 **Download**: the [Releases page](https://github.com/gluon/oscq-inspector/releases), one file per system, free and unsigned; [how to open it the first time](docs/install.md). What changed between versions: [CHANGELOG.md](CHANGELOG.md).
+
+<table>
+  <tr>
+    <td width="25%" valign="top"><a href="docs/images/map.png"><img src="docs/images/map.png" alt="The Map tab: this application in the middle, connected to three servers"></a><br><sub><b>Map</b>: who is connected to whom, as each server publishes it, with the packets it counted.</sub></td>
+    <td width="25%" valign="top"><a href="docs/images/readme/traffic-dark.png"><img src="docs/images/readme/traffic-dark.png" alt="The Traffic tab: three preset recalls, each a block of messages out, and each value coming back in"></a><br><sub><b>Traffic</b>: three presets recalled, each a block out, and each value coming back over the WebSocket.</sub></td>
+    <td width="25%" valign="top"><a href="docs/images/readme/json-dark.png"><img src="docs/images/readme/json-dark.png" alt="The JSON tab: the document as the server sent it"></a><br><sub><b>JSON</b>: the document as the server sent it, copied or saved in one click.</sub></td>
+    <td width="25%" valign="top"><a href="docs/images/readme/tree-light.png"><img src="docs/images/readme/tree-light.png" alt="The tree in the light theme"></a><br><sub><b>Light theme</b>, dark, or the system's.</sub></td>
+  </tr>
+</table>
+
+The window of 0.5.1. The map was taken against the PRISM demo device, found over Bonjour, and two synthetic servers entered by hand; the other images against a demo address space served by the synthetic server of this repository: [how they were taken](docs/images/readme/README.md).
 
 ## Features
 

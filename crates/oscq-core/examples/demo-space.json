@@ -1,0 +1,389 @@
+{
+ "FULL_PATH": "/",
+ "CONTENTS": {
+  "synth": {
+   "FULL_PATH": "/synth",
+   "CONTENTS": {
+    "osc1": {
+     "FULL_PATH": "/synth/osc1",
+     "CONTENTS": {
+      "wave": {
+       "FULL_PATH": "/synth/osc1/wave",
+       "TYPE": "s",
+       "ACCESS": 3,
+       "VALUE": [
+        "saw"
+       ],
+       "RANGE": [
+        {
+         "VALS": [
+          "sine",
+          "saw",
+          "square",
+          "noise"
+         ]
+        }
+       ]
+      },
+      "pitch": {
+       "FULL_PATH": "/synth/osc1/pitch",
+       "TYPE": "f",
+       "ACCESS": 3,
+       "VALUE": [
+        220.0
+       ],
+       "RANGE": [
+        {
+         "MIN": 20,
+         "MAX": 2000
+        }
+       ],
+       "UNIT": [
+        "frequency.Hz"
+       ]
+      },
+      "detune": {
+       "FULL_PATH": "/synth/osc1/detune",
+       "TYPE": "f",
+       "ACCESS": 3,
+       "VALUE": [
+        0.12
+       ],
+       "RANGE": [
+        {
+         "MIN": -1,
+         "MAX": 1
+        }
+       ]
+      }
+     }
+    },
+    "osc2": {
+     "FULL_PATH": "/synth/osc2",
+     "CONTENTS": {
+      "wave": {
+       "FULL_PATH": "/synth/osc2/wave",
+       "TYPE": "s",
+       "ACCESS": 3,
+       "VALUE": [
+        "square"
+       ],
+       "RANGE": [
+        {
+         "VALS": [
+          "sine",
+          "saw",
+          "square",
+          "noise"
+         ]
+        }
+       ]
+      },
+      "pitch": {
+       "FULL_PATH": "/synth/osc2/pitch",
+       "TYPE": "f",
+       "ACCESS": 3,
+       "VALUE": [
+        330.0
+       ],
+       "RANGE": [
+        {
+         "MIN": 20,
+         "MAX": 2000
+        }
+       ],
+       "UNIT": [
+        "frequency.Hz"
+       ]
+      },
+      "detune": {
+       "FULL_PATH": "/synth/osc2/detune",
+       "TYPE": "f",
+       "ACCESS": 3,
+       "VALUE": [
+        -0.08
+       ],
+       "RANGE": [
+        {
+         "MIN": -1,
+         "MAX": 1
+        }
+       ]
+      }
+     }
+    },
+    "filter": {
+     "FULL_PATH": "/synth/filter",
+     "CONTENTS": {
+      "cutoff": {
+       "FULL_PATH": "/synth/filter/cutoff",
+       "TYPE": "f",
+       "ACCESS": 3,
+       "VALUE": [
+        1800.0
+       ],
+       "RANGE": [
+        {
+         "MIN": 20,
+         "MAX": 20000
+        }
+       ],
+       "UNIT": [
+        "frequency.Hz"
+       ]
+      },
+      "resonance": {
+       "FULL_PATH": "/synth/filter/resonance",
+       "TYPE": "f",
+       "ACCESS": 3,
+       "VALUE": [
+        0.35
+       ],
+       "RANGE": [
+        {
+         "MIN": 0,
+         "MAX": 1
+        }
+       ]
+      },
+      "mode": {
+       "FULL_PATH": "/synth/filter/mode",
+       "TYPE": "s",
+       "ACCESS": 3,
+       "VALUE": [
+        "lowpass"
+       ],
+       "RANGE": [
+        {
+         "VALS": [
+          "lowpass",
+          "highpass",
+          "bandpass"
+         ]
+        }
+       ]
+      }
+     }
+    },
+    "amp": {
+     "FULL_PATH": "/synth/amp",
+     "CONTENTS": {
+      "gain": {
+       "FULL_PATH": "/synth/amp/gain",
+       "TYPE": "f",
+       "ACCESS": 3,
+       "VALUE": [
+        0.7
+       ],
+       "RANGE": [
+        {
+         "MIN": 0,
+         "MAX": 1
+        }
+       ]
+      },
+      "mute": {
+       "FULL_PATH": "/synth/amp/mute",
+       "TYPE": "F",
+       "ACCESS": 3,
+       "VALUE": [
+        false
+       ]
+      }
+     }
+    },
+    "trigger": {
+     "FULL_PATH": "/synth/trigger",
+     "TYPE": "I",
+     "ACCESS": 2
+    }
+   }
+  },
+  "lights": {
+   "FULL_PATH": "/lights",
+   "CONTENTS": {
+    "wash": {
+     "FULL_PATH": "/lights/wash",
+     "CONTENTS": {
+      "color": {
+       "FULL_PATH": "/lights/wash/color",
+       "TYPE": "r",
+       "ACCESS": 3,
+       "VALUE": [
+        "#FF5A1FFF"
+       ]
+      },
+      "intensity": {
+       "FULL_PATH": "/lights/wash/intensity",
+       "TYPE": "f",
+       "ACCESS": 3,
+       "VALUE": [
+        0.8
+       ],
+       "RANGE": [
+        {
+         "MIN": 0,
+         "MAX": 1
+        }
+       ]
+      }
+     }
+    },
+    "strobe": {
+     "FULL_PATH": "/lights/strobe",
+     "CONTENTS": {
+      "rate": {
+       "FULL_PATH": "/lights/strobe/rate",
+       "TYPE": "f",
+       "ACCESS": 3,
+       "VALUE": [
+        4.0
+       ],
+       "RANGE": [
+        {
+         "MIN": 0,
+         "MAX": 25
+        }
+       ],
+       "UNIT": [
+        "frequency.Hz"
+       ]
+      },
+      "on": {
+       "FULL_PATH": "/lights/strobe/on",
+       "TYPE": "F",
+       "ACCESS": 3,
+       "VALUE": [
+        false
+       ]
+      }
+     }
+    }
+   }
+  },
+  "video": {
+   "FULL_PATH": "/video",
+   "CONTENTS": {
+    "layer1": {
+     "FULL_PATH": "/video/layer1",
+     "CONTENTS": {
+      "clip": {
+       "FULL_PATH": "/video/layer1/clip",
+       "TYPE": "i",
+       "ACCESS": 3,
+       "VALUE": [
+        3
+       ],
+       "RANGE": [
+        {
+         "MIN": 0,
+         "MAX": 32
+        }
+       ]
+      },
+      "opacity": {
+       "FULL_PATH": "/video/layer1/opacity",
+       "TYPE": "f",
+       "ACCESS": 3,
+       "VALUE": [
+        1.0
+       ],
+       "RANGE": [
+        {
+         "MIN": 0,
+         "MAX": 1
+        }
+       ]
+      },
+      "caption": {
+       "FULL_PATH": "/video/layer1/caption",
+       "TYPE": "s",
+       "ACCESS": 3,
+       "VALUE": [
+        "intro"
+       ]
+      }
+     }
+    },
+    "fx": {
+     "FULL_PATH": "/video/fx",
+     "CONTENTS": {
+      "blur": {
+       "FULL_PATH": "/video/fx/blur",
+       "TYPE": "f",
+       "ACCESS": 3,
+       "VALUE": [
+        0.2
+       ],
+       "RANGE": [
+        {
+         "MIN": 0,
+         "MAX": 1
+        }
+       ]
+      },
+      "invert": {
+       "FULL_PATH": "/video/fx/invert",
+       "TYPE": "F",
+       "ACCESS": 3,
+       "VALUE": [
+        false
+       ]
+      }
+     }
+    }
+   }
+  },
+  "scene": {
+   "FULL_PATH": "/scene",
+   "CONTENTS": {
+    "next": {
+     "FULL_PATH": "/scene/next",
+     "TYPE": "I",
+     "ACCESS": 2
+    },
+    "name": {
+     "FULL_PATH": "/scene/name",
+     "TYPE": "s",
+     "ACCESS": 1,
+     "VALUE": [
+      "opening"
+     ]
+    }
+   }
+  },
+  "meters": {
+   "FULL_PATH": "/meters",
+   "CONTENTS": {
+    "rms": {
+     "FULL_PATH": "/meters/rms",
+     "TYPE": "f",
+     "ACCESS": 1,
+     "VALUE": [
+      0.31
+     ],
+     "RANGE": [
+      {
+       "MIN": 0,
+       "MAX": 1
+      }
+     ]
+    },
+    "peak": {
+     "FULL_PATH": "/meters/peak",
+     "TYPE": "f",
+     "ACCESS": 1,
+     "VALUE": [
+      0.62
+     ],
+     "RANGE": [
+      {
+       "MIN": 0,
+       "MAX": 1
+      }
+     ]
+    }
+   }
+  }
+ }
+}
