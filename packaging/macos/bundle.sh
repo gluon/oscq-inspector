@@ -39,7 +39,8 @@ fi
 
 # Ad hoc signature, no identity: Apple Silicon runs no unsigned code, and a bundle whose seal does
 # not match its content is reported as damaged. With it, macOS reports an unidentified developer,
-# which the user can allow. A Developer ID signature replaces it in the disabled signing step.
+# which the user can allow. On a tag, the job macos-sign of the release workflow replaces it with
+# the Developer ID signature.
 codesign --force --deep --sign - "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
 echo "$app"

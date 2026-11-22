@@ -1,11 +1,12 @@
 name: Release
 
-# On a tag v*, builds the three release artifacts (PRD 13): a macOS universal .app in a zip, a
-# Windows .exe in a zip, a Linux binary with its .desktop file and icon in a tarball, all unsigned,
-# each with the license texts, and starts each one. Then it creates a draft GitHub Release of the
-# tag holding the three files, with the tag's CHANGELOG.md section as notes; the draft is published
-# by hand once docs/acceptance.md has passed. A push that changes the packaging or the icon runs
-# the same jobs without a tag and without the Release, so they are tested before tagging.
+# On a tag v*, builds the three release artifacts (PRD 13): a macOS universal .app in a zip, signed
+# with a Developer ID and notarised, a Windows .exe in a zip, unsigned, a Linux binary with its
+# .desktop file and icon in a tarball, each with the license texts, and starts each one. Then it
+# creates a draft GitHub Release of the tag holding the three files, with the tag's CHANGELOG.md
+# section as notes; the draft is published by hand once docs/acceptance.md has passed. A push that
+# changes the packaging or the icon runs the same jobs without a tag, without the signature and
+# without the Release, so they are tested before tagging; its macOS zip is named unsigned.
 # Path filters are not evaluated for tag pushes: every tag runs.
 on:
   push:
@@ -71,39 +72,108 @@ jobs:
           plist="dist/OSCQuery Inspector.app/Contents/Info.plist"
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then ./ci/release-version.sh "$GITHUB_REF_NAME" --plist "$plist"; else ./ci/release-version.sh --plist "$plist"; fi
 
-      # Signing and notarisation, disabled in v1 (PRD 13: no signing, no notarisation). Enabling it
-      # is configuration: change `if: false` to `if: true` and add these repository secrets:
-      #   MACOS_CERTIFICATE           Developer ID Application certificate and key, .p12, base64
-      #   MACOS_CERTIFICATE_PASSWORD  password of that .p12
-      #   MACOS_SIGNING_IDENTITY      "Developer ID Application: Name (TEAMID)"
-      #   MACOS_KEYCHAIN_PASSWORD     any value, protects the temporary keychain on the runner
-      #   APPLE_ID                    Apple ID of the developer account, for notarytool
-      #   APPLE_TEAM_ID               the 10 character team ID
-      #   APPLE_APP_PASSWORD          an app specific password of that Apple ID
-      - name: Sign with Developer ID and notarise (disabled)
-        if: false
+      - name: The bundled binary starts
+        run: ./ci/smoke-start.sh "dist/OSCQuery Inspector.app/Contents/MacOS/oscq-inspector"
+
+      - name: Zip
+        id: zip
+        run: |
+          zip="dist/oscq-inspector-${{ steps.version.outputs.version }}-macos-universal-unsigned.zip"
+          ditto -c -k --keepParent "dist/OSCQuery Inspector.app" "$zip"
+          echo "path=$zip" >> "$GITHUB_OUTPUT"
+
+      - name: The zip carries the license texts
+        run: |
+          ditto -x -k "${{ steps.zip.outputs.path }}" "$RUNNER_TEMP/unzipped"
+          ./ci/check-licenses.sh "$RUNNER_TEMP/unzipped/OSCQuery Inspector.app/Contents/Resources/licenses"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: oscq-inspector-${{ steps.version.outputs.version }}-macos-universal-unsigned
+          path: ${{ steps.zip.outputs.path }}
+          if-no-files-found: error
+
+  # Only on a tag, and in the environment apple-signing: its secrets reach no job of a branch push,
+  # the environment accepting tags v* alone. Signs the bundle of the macos job with the Developer
+  # ID, notarises it, staples the ticket, and checks the three before zipping. The environment's
+  # secrets:
+  #   MACOS_CERTIFICATE           Developer ID Application certificate and key, .p12, base64
+  #   MACOS_CERTIFICATE_PASSWORD  password of that .p12
+  #   MACOS_SIGNING_IDENTITY      "Developer ID Application: Name (TEAMID)"
+  #   MACOS_KEYCHAIN_PASSWORD     any value, protects the temporary keychain on the runner
+  #   APPLE_ID                    Apple ID of a member of the team, for notarytool
+  #   APPLE_TEAM_ID               the 10 character team ID
+  #   APPLE_APP_PASSWORD          an app specific password of that Apple ID
+  macos-sign:
+    name: macOS Developer ID signature and notarisation
+    if: github.ref_type == 'tag'
+    needs: macos
+    runs-on: macos-latest
+    environment: apple-signing
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Version
+        id: version
+        run: echo "version=$(./ci/release-version.sh "$GITHUB_REF_NAME")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: oscq-inspector-${{ steps.version.outputs.version }}-macos-universal-unsigned
+          path: unsigned
+
+      - name: The bundle of the macos job
+        run: ditto -x -k "unsigned/oscq-inspector-${{ steps.version.outputs.version }}-macos-universal-unsigned.zip" dist
+
+      - name: Sign with the Developer ID
         env:
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
           MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
           keychain="$RUNNER_TEMP/signing.keychain-db"
-          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          printf '%s' "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
           security create-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$keychain"
           security import "$RUNNER_TEMP/certificate.p12" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
-          security list-keychain -d user -s "$keychain"
-          codesign --force --deep --options runtime --timestamp --sign "$MACOS_SIGNING_IDENTITY" "dist/OSCQuery Inspector.app"
+          rm "$RUNNER_TEMP/certificate.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_KEYCHAIN_PASSWORD" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          codesign --force --options runtime --timestamp --sign "$MACOS_SIGNING_IDENTITY" "dist/OSCQuery Inspector.app"
+
+      # notarytool waits for Apple's verdict; its status, not its exit code, says whether the
+      # bundle was accepted, and the log of a refusal names what Apple refused.
+      - name: Notarise and staple the ticket
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
           ditto -c -k --keepParent "dist/OSCQuery Inspector.app" "$RUNNER_TEMP/notarise.zip"
-          xcrun notarytool submit "$RUNNER_TEMP/notarise.zip" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          xcrun notarytool submit "$RUNNER_TEMP/notarise.zip" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait --output-format json > "$RUNNER_TEMP/notary.json"
+          cat "$RUNNER_TEMP/notary.json"
+          status=$(jq -r .status "$RUNNER_TEMP/notary.json")
+          if [ "$status" != "Accepted" ]; then
+            xcrun notarytool log "$(jq -r .id "$RUNNER_TEMP/notary.json")" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
+            echo "FAIL: notarisation status $status"
+            exit 1
+          fi
           xcrun stapler staple "dist/OSCQuery Inspector.app"
 
-      - name: The bundled binary starts
+      - name: The signature is the Developer ID's, Gatekeeper accepts it as notarised, the ticket is stapled
+        run: |
+          app="dist/OSCQuery Inspector.app"
+          codesign --verify --strict --verbose=2 "$app"
+          codesign --display --verbose=2 "$app" 2>&1 | tee "$RUNNER_TEMP/codesign.txt"
+          grep -q "^Authority=Developer ID Application" "$RUNNER_TEMP/codesign.txt"
+          grep -q "flags=.*runtime" "$RUNNER_TEMP/codesign.txt"
+          spctl --assess --type execute --verbose=4 "$app" 2>&1 | tee "$RUNNER_TEMP/spctl.txt"
+          grep -q "source=Notarized Developer ID" "$RUNNER_TEMP/spctl.txt"
+          xcrun stapler validate "$app"
+
+      - name: The signed binary starts
         run: ./ci/smoke-start.sh "dist/OSCQuery Inspector.app/Contents/MacOS/oscq-inspector"
 
       - name: Zip
@@ -123,6 +193,10 @@ jobs:
           name: oscq-inspector-${{ steps.version.outputs.version }}-macos-universal
           path: ${{ steps.zip.outputs.path }}
           if-no-files-found: error
+
+      - name: Remove the temporary keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
 
   windows:
     name: Windows .exe
@@ -261,7 +335,7 @@ jobs:
   publish:
     name: Draft GitHub Release
     if: github.ref_type == 'tag'
-    needs: [macos, windows, linux, notes]
+    needs: [macos-sign, windows, linux, notes]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
