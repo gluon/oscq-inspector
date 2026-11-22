@@ -12,8 +12,8 @@ First, with no one at the machine: `./ci/accept-artifact.sh vVERSION`, run on ma
 
 What no script here can judge is left to a person, on the Mac that gives the verdict.
 
-1. In GitHub, **Releases**, open the draft of the tag; a draft is visible to the repository's writers only. Download `oscq-inspector-VERSION-macos-universal.zip` with the browser, unzip it, move **OSCQuery Inspector.app** to Applications. Double click it, and follow the macOS first launch procedure of [install.md](install.md): **Privacy & Security**, **Open Anyway**. Quit, and open it again by a double click.
-   Expected: macOS reports an app it cannot verify, never an app that is damaged; after **Open Anyway** the window opens; the second time it opens with no warning.
+1. In GitHub, **Releases**, open the draft of the tag; a draft is visible to the repository's writers only. Download `oscq-inspector-VERSION-macos-universal.zip` with the browser, unzip it, move **OSCQuery Inspector.app** to Applications. Double click it, as [install.md](install.md) says for a signed version. Quit, and open it again by a double click.
+   Expected: macOS asks once whether to open an app downloaded from the internet and says Apple checked it for malicious software, never that it cannot verify the app, never that it is damaged; after **Open** the window opens; the second time it opens with no warning.
    Why by hand: Gatekeeper judges a file by the quarantine its browser download leaves on it, and answers with dialogs that wait for a person. The script downloads with `gh`, which leaves no quarantine, and the CI machine's security settings are not those of a Mac downloading from a browser.
 2. Look at the app in the Finder, and at the Dock while it runs.
    Expected: in both, its own icon: a black rounded square holding a white round magnifier, its lens a white ring around an orange core. Not the generic application icon, not another application's.
@@ -22,7 +22,7 @@ What no script here can judge is left to a person, on the Mac that gives the ver
    Expected: the application's own box, not the system's panel with a folder icon: OSCQuery Inspector, the version equal to the tag without the `v`, "Julien Bayle, Structure Void", "License GPL-3.0-or-later", and a link to github.com/gluon/oscq-inspector that opens the repository. A plain box, like no system window.
    Why by hand: the menu belongs to macOS's menu bar, which a script reaches only through accessibility permissions the CI machine does not grant, and that the menu item opens this box and not the system's panel is seen, not read from the bundle. The box's content is locked in CI by `the_about_box_draws_its_six_pieces_of_information`, on the code; this check is on the downloaded app.
 
-Proves: the tagged CI run gives a macOS app that opens on this Mac, unsigned, through the documented procedure, with its icon and its own About box; with the script, its files, version, architectures, licenses and a clean start and quit. Cannot prove: the first launch on other macOS versions, or on Intel if this Mac is Apple Silicon; the Windows and Linux artifacts, which need their own systems (section 4).
+Proves: the tagged CI run gives a macOS app that opens on this Mac with its Developer ID signature and its notarisation, as documented, with its icon and its own About box; with the script, its files, version, architectures, licenses and a clean start and quit. Cannot prove: the first launch on other macOS versions, or on Intel if this Mac is Apple Silicon; the Windows and Linux artifacts, which need their own systems (section 4).
 
 ## 1. Vidvox OSCQuery Helper, on the local network
 

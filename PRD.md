@@ -37,7 +37,7 @@ Do not build these. They are listed so that the temptation is answered once.
 - No session persistence beyond the small set described in section 9.7. Pinned nodes (9.8) and the sixteen preset slots (9.9) are in scope since M6; nothing beyond them.
 - No widget layout editor, no mapping or controller building. Hiding read only nodes, kept in reserve at M6, is in scope since v0.2.2 (9.2). The peers map of 9.10 reads what servers publish about their own connections; it never creates, alters or removes a connection between two servers, and there is no routing editor. Its drawing, not its content, is handled since the human's decision of 2026-11-14: a node can be moved by hand and keeps its place (9.7, 9.10); that arranges what is drawn, and edits nothing a server published.
 - No plugin system, no embedded scripting language, no automation or sequencing.
-- No code signing or notarisation in v1. The CI produces unsigned artifacts.
+- No code signing or notarisation in v1. The CI produced unsigned artifacts up to 0.5.1. Since the human's decision of 2026-11-22, the macOS `.app` of a tag is signed with a Developer ID and notarised (13); the Windows `.exe` stays unsigned.
 - No OSC sending to a server whose `HOST_INFO` declares `OSC_TRANSPORT` `TCP`. The proposal defines no OSC over TCP framing. Its nodes keep the access the server declares; the writable ones say "cannot send", with the reason displayed. They are never shown as read only.
 
 Anything that smells like "while we are here, we could also" is out of scope until v1 ships and is used in anger.
@@ -506,9 +506,9 @@ A measurement from the synthetic server is not proof that the app works against 
 
 - `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test` on every push, on all three platforms.
 - GitHub Actions matrix: `macos-latest` building both aarch64 and x86_64 then joining them with `lipo` into a universal binary, `windows-latest` for x86_64 MSVC, `ubuntu-22.04` for x86_64 glibc.
-- Artifacts on every tagged commit: a macOS `.app` inside a zip, unsigned; a Windows `.exe`, unsigned; a Linux binary and a `.desktop` file in a tarball.
-- No notarisation and no signing in v1. Leave a clearly marked, disabled signing step in the macOS workflow with a comment pointing at the secrets it would need, so enabling it later is a configuration change, not a rewrite.
-- README documents the unsigned first run procedure for macOS and Windows in plain language.
+- Artifacts on every tagged commit: a macOS `.app` inside a zip; a Windows `.exe`, unsigned; a Linux binary and a `.desktop` file in a tarball.
+- No notarisation and no signing in v1, which left a disabled signing step in the macOS workflow. Since the human's decision of 2026-11-22, the versions after 0.5.1: on a tag, a job of its own signs the macOS `.app` with a Developer ID, notarises it and staples the ticket, with secrets kept in a GitHub environment that accepts tags `v*` only, so no branch push can reach them. The Windows `.exe` stays unsigned.
+- The documentation describes the first run procedure in plain language: the unsigned one for Windows and for macOS up to 0.5.1, the signed one for macOS after.
 - Linux build dependencies are listed in the workflow and in DEVELOPMENT.md. Do not assume a desktop environment is present in CI.
 
 ## 14. Milestones

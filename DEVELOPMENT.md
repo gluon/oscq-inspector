@@ -111,7 +111,7 @@ cargo test --release -p oscq-inspector --test budgets_binary -- --ignored --noca
 
 ### Release
 
-The workflow `.github/workflows/release.yml` builds and starts the three artifacts on a tag `v*`, and on any push that changes the packaging. On a tag it then creates a draft GitHub Release holding the three files, with the version's section of [CHANGELOG.md](CHANGELOG.md) as its notes; the draft is published by hand once [docs/acceptance.md](docs/acceptance.md) has passed. The scripts are in `packaging/`. A tag must equal the workspace version, and CHANGELOG.md must have a section for it:
+The workflow `.github/workflows/release.yml` builds and starts the three artifacts on a tag `v*`, and on any push that changes the packaging. On a tag, the job `macos-sign` then signs the macOS bundle with a Developer ID, notarises it, staples the ticket and checks the three with `codesign`, `spctl` and `stapler`; its seven secrets, named in the workflow, are in the GitHub environment `apple-signing`, which accepts tags `v*` only, so no job of a branch push can read them. A push without a tag zips the macOS bundle as `...-macos-universal-unsigned.zip`. On a tag the workflow then creates a draft GitHub Release holding the three files, with the version's section of [CHANGELOG.md](CHANGELOG.md) as its notes; the draft is published by hand once [docs/acceptance.md](docs/acceptance.md) has passed. The scripts are in `packaging/`. A tag must equal the workspace version, and CHANGELOG.md must have a section for it:
 
 ```
 git tag v0.4.0
@@ -129,6 +129,7 @@ Backlog:
 - Acceptance against a real server that notifies over its WebSocket (VDMX, ossia): a value changed inside it updates in the app without user action. Neither OSCQuery Helper nor Max 9 notifies; the synthetic server is the only proof so far. The known limit and what lifts it are in [docs/acceptance.md](docs/acceptance.md).
 - Real captured documents from VDMX and ossia, as test fixtures. OSCQuery Helper and Max 9 are captured.
 - OSC sent over the WebSocket, opt in per server, for servers that accept it; OSC goes over UDP only.
+- `ci/accept-artifact.sh` checks the Developer ID signature, the notarisation and the stapled ticket of the downloaded bundle, with a refusal on a bundle altered after signing. It waits for the first signed tag: the workflow checks the tag of the workspace version, 0.5.1, which is unsigned.
 - The Traffic tab once listed the values a server sent back above the row of the preset recall that sent them, at the same millisecond: one launch out of three, recorded in [docs/images/readme](docs/images/readme/README.md). Not reproduced on demand; the cause is not established.
 
 ## Documents in this repository

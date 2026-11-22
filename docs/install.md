@@ -2,7 +2,7 @@
 
 Formerly void-oscq, shown as Void OSCQ: the versions published under that name, 0.2.3 and earlier, keep it in their downloads, `void-oscq-VERSION-...`, which hold **Void OSCQ.app** on macOS. It is the same application under a new name, and the downloads named below are those of the versions after 0.2.3.
 
-Each version is on the [Releases page](https://github.com/gluon/oscq-inspector/releases), with one file per system. The apps are not signed: your system warns you the first time you open one, and the steps below get past that warning once.
+Each version is on the [Releases page](https://github.com/gluon/oscq-inspector/releases), with one file per system. The macOS app is signed with a Developer ID and notarised by Apple from the version after 0.5.1. The Windows program is not signed, nor are the macOS apps up to 0.5.1: your system warns you the first time you open one, and the steps below get past that warning once.
 
 Every download carries the license texts: the GNU GPL, its additional permission and the licenses of the bundled fonts, in a `licenses` folder, inside `OSCQuery Inspector.app/Contents/Resources` on macOS.
 
@@ -10,7 +10,9 @@ Every download carries the license texts: the GNU GPL, its additional permission
 
 Download `oscq-inspector-VERSION-macos-universal.zip`. Unzip it to get **OSCQuery Inspector.app**, and move it to your Applications folder.
 
-The app is not signed by an identified developer, so macOS stops it the first time:
+From the version after 0.5.1, the app is signed and notarised: double click it, and macOS asks once whether to open an app downloaded from the internet, saying Apple checked it for malicious software. Click **Open**.
+
+Versions up to 0.5.1 are not signed by an identified developer, so macOS stops them the first time:
 
 1. Double click **OSCQuery Inspector**. macOS says it cannot verify the app. Close that dialog: **Done**, **OK** or **Cancel** depending on the macOS version, never **Move to Trash**.
 2. Open **System Settings**, then **Privacy & Security**. Scroll down to **Security**: a line says OSCQuery Inspector was blocked. Click **Open Anyway**, then confirm with your password or Touch ID.
