@@ -26,7 +26,7 @@ How OSCQuery Inspector is used: what it does, what it does not do, and everythin
 
 - Select a server on the left: the app connects, reads its `HOST_INFO` and its whole tree.
 - **Max 9** serves OSCQuery on its own machine only and does not advertise it: use `+ manual` with `localhost:30339`. It receives OSC on another port, 30338 by default, which it does not tell: set it in the OSC port field of the server pane, see below.
-- Keyboard: arrows to move, right and left to expand and collapse, Enter to focus the widget of the selected row, Escape to leave it, `/` for the filter, F5 to refresh the selection, Cmd or Ctrl and C to copy the selected path.
+- Keyboard: arrows to move, right and left to expand and collapse, Enter to focus the widget of the selected row, Escape to leave it, `/` for the filter, F5 to refresh the selection, Cmd or Ctrl and C to copy the selected path, Cmd or Ctrl and S to save the project, Cmd or Ctrl and O to open one.
 - The window: servers on the left, the tree in the centre, pinned nodes and presets on the right, the status bar below. Each tree row has three columns: the name, the widget holding the value, and on the right the type tags and access flags (`r`, `w`, `rw`).
 - The status bar is one line for the selected server: its state (live, connected but silent when the WebSocket is open and the server has sent nothing yet, connected on refresh only, error), its name, the OSC destination, the node count, and the last error with the path it concerns. Hover a zone for its details.
 - The theme follows the system unless you force light or dark, at the bottom of the server pane; the choice is kept.
