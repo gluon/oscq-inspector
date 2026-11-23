@@ -4,6 +4,10 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 
 ## [Unreleased]
 
+### Added
+
+- **Every warning the status bar counts, it now names.** The node count said `3 warnings` and nothing more: not which attribute a server had sent unusably, not what it held. Hovering the count now gives one line per warning, an unusable attribute as the attribute, the value received and that it counts as absent, so a `WS_IP` of `""` is read on screen instead of being dropped in silence. The diagnostics of `HOST_INFO` reach the window for this, having been discarded before it; they come first, being the server's own rather than a node's.
+
 ### Fixed
 
 - **A server that declares an empty `WS_IP` is followed live again.** A `HOST_INFO` carrying `WS_IP` as an empty string, or as spaces only, named no host: the WebSocket address became `ws://:<port>/`, nothing could connect to it, no `LISTEN` was ever sent, and the server stayed on values on refresh only. An empty or blank `WS_IP` or `OSC_IP` now counts as absent, so the address falls back to the HTTP host as the proposal's default intends, and the field is counted among the server's warnings. Seen on a REAPER server.

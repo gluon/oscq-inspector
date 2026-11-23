@@ -93,6 +93,12 @@ Case: `a_server_moved_by_hand_is_drawn_once`, 8 nodes found for 6, 2026-11-17.
 
 ## Status display
 
+A count is not a name. The status bar said `N warnings` and no hover gave them, so nothing on screen said which attribute a server had sent unusably, or what it held: a `WS_IP` of `""` was dropped with no trace in the window. The diagnostics of `HOST_INFO` did not even reach the window, `connect` taking them as `Ok((info, _))` and dropping them, so that count only ever covered the address space document. Carry the diagnostics to the window and give one line per warning.
+Case: the REAPER server of 2026-11-23, and `a_counted_warning_is_named_on_hover_with_its_attribute_and_its_value`.
+
+`HostInfo::extra` and `Node::extra` hold two different things under one name: the server's unknown keys, and its known keys whose value had the wrong JSON type. A window reading `extra` to tell which attributes were dropped marks an extension the server legitimately published as a fault. Only the parser's diagnostics say which key was dropped; `extra` says what it held.
+Case: the same change, whose first design was to name the keys of `extra`.
+
 An `egui::Label` with `truncate()` shows its whole text in a tooltip of its own when it is cut, `show_tooltip_when_elided` being true by default. A cut label given `on_hover_text` as well shows two tooltips, one over the other. Turn one off.
 Case: the status bar's message, the reason of a failed `?PEERS` drawn twice on hover, found by `the_whole_reason_of_a_failed_peers_reading_reaches_the_status_line`, 2026-11-14. The other zones of the status bar cut their labels and add a hover of their own; not checked.
 
