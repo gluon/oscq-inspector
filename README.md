@@ -25,7 +25,8 @@ The window of 0.5.1. The map was taken against the PRISM demo device, found over
 - **A widget fitting each type**: sliders, toggles, buttons, menus, text fields, colour pickers; the OSC goes to the port the server declares, coerced to the types it declares.
 - **Pinned nodes**, per server, kept across restarts.
 - **Presets**: sixteen slots with the gestures of Max's `preset` object, recalled on the same server or on another.
-- **JSON and Traffic tabs**: each node's document as the server sent it, and every OSC message out and in, filtered and exported.
+- **JSON and Traffic tabs**: each node's document as the server sent it, and every OSC message out and in, filtered.
+- **Projects**: the manual servers, ports, pins, presets and map in one file, saved and opened from the File menu, with the server list, a document, the traffic and the presets exported or imported on their own.
 - **The map**: who is connected to whom, drawn from what each server publishes of its own connections, nothing guessed.
 
 Each of them in detail, and the keyboard: [docs/manual.md](docs/manual.md).

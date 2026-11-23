@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime};
 
 use egui::text::LayoutJob;
 use egui::{Color32, FontId, Key, Modifiers, RichText, TextFormat};
@@ -19,10 +19,12 @@ use oscq_discovery::{ManualEntry, ManualHistory};
 use rosc::{OscColor, OscType};
 
 use crate::config::{self, Config, Theme, WindowGeometry};
+use crate::file_dialog::{Ask, Picker};
 use crate::glyph;
 use crate::json_view::{self, Line, Token};
 use crate::map;
 use crate::presets;
+use crate::project::{self, Project};
 use crate::rate::{INTERVAL, RateLimiter};
 use crate::state::{
     AppState, ConnState, PeersSnapshot, PeersView, ServerEntry, WsState, client_label,
@@ -117,8 +119,6 @@ enum Action {
     ForgetStale(ServerId),
     /// Drops every discovered server that is no longer advertised (PRD 9.1).
     ForgetAllStale,
-    /// Saves the server list, discovered and manual, to a JSON file (PRD 9.1).
-    ExportServers,
     /// Pins or unpins a path of the selected server (PRD 9.8).
     TogglePin(String),
     /// Captures the selected server into a preset slot, 1 to 16 (PRD 9.9).
@@ -135,10 +135,104 @@ enum Action {
     /// Reads `?PEERS` again, at the user's request (PRD 7.6).
     ReadPeers(PeersScope),
     Copy(String),
-    Save {
-        stem: &'static str,
-        ext: &'static str,
-        contents: String,
+    /// An item of the File menu (PRD 9.11).
+    File(FileJob),
+}
+
+/// The items of the File menu (PRD 9.11), the one place where anything is saved to a file or
+/// read from one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileJob {
+    SaveProject,
+    OpenProject,
+    ExportServers,
+    ExportDocument,
+    ExportTraffic,
+    ExportPresets,
+    ImportServers,
+    ImportPresets,
+}
+
+impl FileJob {
+    /// In the order of the menu, which the macOS application menu numbers its items by.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub const ALL: [FileJob; 8] = [
+        FileJob::SaveProject,
+        FileJob::OpenProject,
+        FileJob::ExportServers,
+        FileJob::ExportDocument,
+        FileJob::ExportTraffic,
+        FileJob::ExportPresets,
+        FileJob::ImportServers,
+        FileJob::ImportPresets,
+    ];
+
+    /// The item's label in its menu.
+    pub fn label(self) -> &'static str {
+        match self {
+            FileJob::SaveProject => "Save Project…",
+            FileJob::OpenProject => "Open Project…",
+            FileJob::ExportServers | FileJob::ImportServers => "Server List…",
+            FileJob::ExportDocument => "Document…",
+            FileJob::ExportTraffic => "Traffic…",
+            FileJob::ExportPresets | FileJob::ImportPresets => "Presets…",
+        }
+    }
+
+    fn saves(self) -> bool {
+        matches!(
+            self,
+            FileJob::SaveProject
+                | FileJob::ExportServers
+                | FileJob::ExportDocument
+                | FileJob::ExportTraffic
+                | FileJob::ExportPresets
+        )
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            FileJob::SaveProject => "Save Project",
+            FileJob::OpenProject => "Open Project",
+            FileJob::ExportServers => "Export Server List",
+            FileJob::ExportDocument => "Export Document",
+            FileJob::ExportTraffic => "Export Traffic",
+            FileJob::ExportPresets => "Export Presets",
+            FileJob::ImportServers => "Import Server List",
+            FileJob::ImportPresets => "Import Presets",
+        }
+    }
+
+    fn filter(self) -> (&'static str, &'static [&'static str]) {
+        match self {
+            FileJob::SaveProject | FileJob::OpenProject => {
+                ("OSCQuery Inspector project", &[project::PROJECT_EXT])
+            }
+            FileJob::ExportTraffic => ("Text", &["txt"]),
+            _ => ("JSON", &["json"]),
+        }
+    }
+}
+
+/// What a file job came back with, from the runtime to the UI thread.
+enum FileDone {
+    Cancelled,
+    Saved(PathBuf),
+    Failed(String),
+    /// A project read and checked, and where the one it replaces was kept.
+    Project {
+        project: Box<Project>,
+        path: PathBuf,
+        kept: Option<PathBuf>,
+    },
+    Servers {
+        entries: Vec<ManualEntry>,
+        skipped: usize,
+        path: PathBuf,
+    },
+    Presets {
+        presets: std::collections::BTreeMap<usize, presets::Preset>,
+        path: PathBuf,
     },
 }
 
@@ -201,9 +295,13 @@ struct View {
     osc_port_text: String,
     osc_port_shown: Option<(ServerId, u16)>,
     about_open: bool,
-    /// The macOS application menu's About item opens the about box.
+    /// A file dialog is open, or its file is being read or written: another waits for it.
+    file_busy: bool,
+    /// The folder of the file last chosen, where the next dialog opens. Of the session only.
+    file_dir: Option<PathBuf>,
+    /// The macOS application menu's About item opens the about box, and its File menu is there.
     #[cfg(target_os = "macos")]
-    about_menu_installed: bool,
+    menu_installed: bool,
     note: Option<String>,
     geometry_dirty_since: Option<Instant>,
     /// When the map's next reading of every server is due, in the window's own time, while the
@@ -263,6 +361,10 @@ pub struct InspectorApp {
     searching_since: String,
     io_tx: flume::Sender<String>,
     io_rx: flume::Receiver<String>,
+    /// The open and save dialogs: the system's own, a fixed answer in the tests.
+    picker: Picker,
+    files_tx: flume::Sender<FileDone>,
+    files_rx: flume::Receiver<FileDone>,
     owned: Option<Owned>,
     /// When `main` started, until the first frame reports the startup time.
     launched: Option<Instant>,
@@ -329,6 +431,7 @@ impl InspectorApp {
             io: runtime.handle().clone(),
         };
         let mut app = Self::with_backend(&ctx, backend, config, config_dir);
+        app.picker = Picker::native();
         app.state.global_error = startup_error;
         app.owned = Some(Owned { runtime, discovery });
         app.launched = Some(launched);
@@ -351,6 +454,7 @@ impl InspectorApp {
                 .filter_map(|s| ManualEntry::parse(s).ok()),
         );
         let (io_tx, io_rx) = flume::unbounded();
+        let (files_tx, files_rx) = flume::unbounded();
         let mut app = Self {
             state: AppState::default(),
             backend,
@@ -363,6 +467,9 @@ impl InspectorApp {
             searching_since: clock_time(std::time::SystemTime::now()),
             io_tx,
             io_rx,
+            picker: Picker::none(),
+            files_tx,
+            files_rx,
             owned: None,
             launched: None,
             config_saves: Arc::default(),
@@ -488,11 +595,29 @@ impl InspectorApp {
             );
         }
         #[cfg(target_os = "macos")]
-        if !self.view.about_menu_installed {
-            self.view.about_menu_installed = crate::macos_menu::install(&ctx);
+        if !self.view.menu_installed {
+            self.view.menu_installed = crate::macos_menu::install(&ctx);
         }
         if ctx.data_mut(|d| d.remove_temp::<bool>(about_request_id())) == Some(true) {
             self.view.about_open = true;
+        }
+        let mut file_jobs: Vec<FileJob> = ctx
+            .data_mut(|d| d.remove_temp::<Option<FileJob>>(file_request_id()))
+            .flatten()
+            .into_iter()
+            .collect();
+        ctx.input_mut(|i| {
+            if i.consume_shortcut(&egui::KeyboardShortcut::new(Modifiers::COMMAND, Key::S)) {
+                file_jobs.push(FileJob::SaveProject);
+            }
+            if i.consume_shortcut(&egui::KeyboardShortcut::new(Modifiers::COMMAND, Key::O)) {
+                file_jobs.push(FileJob::OpenProject);
+            }
+        });
+        // The menu bar's item and its key may both arrive in one frame: one dialog.
+        file_jobs.dedup();
+        while let Ok(done) = self.files_rx.try_recv() {
+            self.file_done(&ctx, done);
         }
         self.drain(&ctx);
         self.flush_limiter(&ctx);
@@ -501,7 +626,7 @@ impl InspectorApp {
             self.view.note = Some(note);
         }
 
-        let mut actions = Vec::new();
+        let mut actions: Vec<Action> = file_jobs.into_iter().map(Action::File).collect();
         self.view.visible_methods.clear();
         // The side panes take what the centre leaves, so the centre keeps CENTRE_MIN whatever
         // the window width and however the panes were dragged: the server pane first, leaving
@@ -860,10 +985,6 @@ impl InspectorApp {
                     .collect();
                 self.forget_stale(&ids);
             }
-            Action::ExportServers => {
-                let contents = servers_json(&self.state.servers);
-                self.write_export(ctx, "servers", "json", contents);
-            }
             Action::TogglePin(path) => {
                 let Some(key) = self.state.selected_entry().map(|e| e.key()) else {
                     return;
@@ -1003,11 +1124,7 @@ impl InspectorApp {
                 }
             }
             Action::Copy(text) => ctx.copy_text(text),
-            Action::Save {
-                stem,
-                ext,
-                contents,
-            } => self.write_export(ctx, stem, ext, contents),
+            Action::File(job) => self.start_file(ctx, job),
         }
     }
 
@@ -1143,34 +1260,305 @@ impl InspectorApp {
         }
     }
 
-    fn write_export(&self, ctx: &egui::Context, stem: &str, ext: &str, contents: String) {
-        let Some(dir) = self.config_dir.clone() else {
-            let reason = "no config directory to export to";
-            // On the runtime: the UI thread does no I/O, logging included.
-            self.backend.io.spawn(async move {
-                tracing::warn!(target: "oscq_inspector::failure", "{reason}");
-            });
-            let _ = self.io_tx.send(reason.to_owned());
-            return;
+    /// What a save job writes and the name its dialog proposes, taken now, on the UI thread,
+    /// as the window holds them; or why there is nothing to write.
+    fn file_contents(&self, job: FileJob) -> Result<(String, Vec<u8>), String> {
+        let stamp = file_stamp(SystemTime::now(), false);
+        let selected = || {
+            self.state
+                .selected_entry()
+                .ok_or_else(|| "No server selected".to_owned())
         };
-        let secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let path = dir.join("exports").join(format!("{stem}-{secs}.{ext}"));
-        let tx = self.io_tx.clone();
+        match job {
+            FileJob::SaveProject => Ok((
+                format!("project-{stamp}.{}", project::PROJECT_EXT),
+                Project::of(&self.config).to_bytes(),
+            )),
+            FileJob::ExportServers if self.state.servers.is_empty() => {
+                Err("No server in the list to export".to_owned())
+            }
+            FileJob::ExportServers => Ok((
+                format!("servers-{stamp}.json"),
+                servers_json(&self.state.servers).into_bytes(),
+            )),
+            FileJob::ExportDocument => {
+                let e = selected()?;
+                let t = e
+                    .tree
+                    .as_ref()
+                    .ok_or_else(|| format!("{}: no document read yet", e.declared_name()))?;
+                Ok((
+                    format!("{}-{stamp}.json", file_stem(e.declared_name())),
+                    t.raw.to_string().into_bytes(),
+                ))
+            }
+            FileJob::ExportTraffic => {
+                let e = selected()?;
+                if e.traffic.is_empty() {
+                    return Err(format!("{}: no traffic logged", e.declared_name()));
+                }
+                // The whole log, whatever the Traffic tab filters: the menu does not show the
+                // filter, so it does not apply it.
+                let all = e.traffic.view("", traffic::DirFilter::All);
+                Ok((
+                    format!("{}-traffic-{stamp}.txt", file_stem(e.declared_name())),
+                    traffic::export(self.started, &all).into_bytes(),
+                ))
+            }
+            FileJob::ExportPresets if self.config.presets.is_empty() => {
+                Err("No preset to export".to_owned())
+            }
+            FileJob::ExportPresets => Ok((
+                format!("presets-{stamp}.json"),
+                project::presets_bytes(&self.config.presets),
+            )),
+            FileJob::OpenProject | FileJob::ImportServers | FileJob::ImportPresets => {
+                Ok((String::new(), Vec::new()))
+            }
+        }
+    }
+
+    /// An item of the File menu (PRD 9.11): its dialog is asked for here, and answered, read
+    /// and written on the runtime. One at a time.
+    fn start_file(&mut self, ctx: &egui::Context, job: FileJob) {
+        if self.view.file_busy {
+            self.view.note = Some("A file dialog is already open".to_owned());
+            return;
+        }
+        let (file_name, contents) = match self.file_contents(job) {
+            Ok(c) => c,
+            Err(reason) => {
+                self.view.note = Some(reason);
+                return;
+            }
+        };
+        let exports = self.config_dir.as_ref().map(|d| d.join("exports"));
+        // What Open Project replaces is taken now and kept before it is replaced.
+        let keep = (job == FileJob::OpenProject)
+            .then(|| (exports.clone(), Project::of(&self.config).to_bytes()));
+        let answer = self.picker.ask(Ask {
+            save: job.saves(),
+            title: job.title(),
+            file_name,
+            filter: job.filter(),
+            directory: self.view.file_dir.clone().or(exports),
+        });
+        self.view.file_busy = true;
+        let tx = self.files_tx.clone();
         let ctx = ctx.clone();
-        self.backend.io.spawn_blocking(move || {
-            let msg = match config::write_atomic(&path, contents.as_bytes()) {
-                Ok(()) => format!("saved {}", path.display()),
-                Err(e) => {
-                    let reason = format!("not saved to {}: {e}", path.display());
-                    tracing::warn!(target: "oscq_inspector::failure", "{reason}");
-                    reason
+        self.backend.io.spawn(async move {
+            let done = match answer.await {
+                None => FileDone::Cancelled,
+                Some(path) => {
+                    tokio::task::spawn_blocking(move || run_file_job(job, path, contents, keep))
+                        .await
+                        .unwrap_or_else(|e| FileDone::Failed(format!("file job stopped: {e}")))
                 }
             };
-            let _ = tx.send(msg);
+            let _ = tx.send(done);
             ctx.request_repaint();
+        });
+    }
+
+    /// What a file job came back with, applied on the UI thread.
+    fn file_done(&mut self, ctx: &egui::Context, done: FileDone) {
+        self.view.file_busy = false;
+        let path = match &done {
+            FileDone::Saved(p) => Some(p),
+            FileDone::Project { path, .. }
+            | FileDone::Servers { path, .. }
+            | FileDone::Presets { path, .. } => Some(path),
+            FileDone::Cancelled | FileDone::Failed(_) => None,
+        };
+        if let Some(dir) = path.and_then(|p| p.parent()) {
+            self.view.file_dir = Some(dir.to_path_buf());
+        }
+        match done {
+            FileDone::Cancelled => {}
+            FileDone::Failed(reason) => self.view.note = Some(reason),
+            FileDone::Saved(path) => self.view.note = Some(format!("Saved {}", path.display())),
+            FileDone::Project {
+                project,
+                path,
+                kept,
+            } => {
+                self.open_project(ctx, *project);
+                self.view.note = Some(match kept {
+                    Some(k) => format!(
+                        "Opened {}. The project it replaced is kept in {}",
+                        path.display(),
+                        k.display()
+                    ),
+                    None => format!("Opened {}", path.display()),
+                });
+            }
+            FileDone::Servers {
+                entries,
+                skipped,
+                path,
+            } => {
+                let said = self.import_servers(ctx, entries, skipped);
+                self.view.note = Some(format!("{}: {said}", path.display()));
+            }
+            FileDone::Presets { presets, path } => {
+                let n = presets.len();
+                self.config.presets = presets;
+                // The mark of the slot last recalled says what was sent; the slot now holds
+                // something else (CLAUDE.md law 1).
+                self.view.preset_recalled = None;
+                self.save_config(ctx);
+                self.view.note = Some(format!(
+                    "{}: {n} presets read, the {} slots replaced",
+                    path.display(),
+                    presets::SLOTS
+                ));
+            }
+        }
+    }
+
+    /// Replaces the project (PRD 9.11): the manual servers go, with their connections, and the
+    /// project's come in; the discovered servers stay and take the settings the project has for
+    /// them. The settings of this machine are not touched.
+    fn open_project(&mut self, ctx: &egui::Context, project: Project) {
+        let manual: Vec<ServerId> = self
+            .state
+            .servers
+            .iter()
+            .filter(|e| e.server.origin == Origin::Manual)
+            .map(|e| e.server.id)
+            .collect();
+        for id in manual {
+            let _ = self
+                .backend
+                .commands
+                .send(Command::Disconnect { server_id: id });
+            self.state.remove(id);
+            if self.state.selected == Some(id) {
+                self.state.selected = None;
+                self.view.selected_path = None;
+            }
+        }
+        let ports_before = self.config.osc_ports.clone();
+        project.apply(&mut self.config);
+        self.history = ManualHistory::from_entries(
+            self.config
+                .manual_entries
+                .iter()
+                .filter_map(|s| ManualEntry::parse(s).ok()),
+        );
+        self.config.manual_entries = self.history.entries().map(ToString::to_string).collect();
+        let entries: Vec<ManualEntry> = self.history.entries().cloned().collect();
+        for e in entries.iter().rev() {
+            self.state.add_manual(e.to_server());
+        }
+        // A discovered server whose OSC port the project sets otherwise sends to the new one.
+        for e in &self.state.servers {
+            let key = e.key();
+            let port = self.config.osc_ports.get(&key).copied();
+            if e.server.origin != Origin::Manual && port != ports_before.get(&key).copied() {
+                let _ = self.backend.commands.send(Command::SetOscPort {
+                    server_id: e.server.id,
+                    port,
+                });
+            }
+        }
+        self.view.preset_recalled = None;
+        self.view.map_generation += 1;
+        self.save_config(ctx);
+    }
+
+    /// Adds the servers of a list as manual entries, those not already listed, as many as the
+    /// list holds; says what was done.
+    fn import_servers(
+        &mut self,
+        ctx: &egui::Context,
+        entries: Vec<ManualEntry>,
+        skipped: usize,
+    ) -> String {
+        let (mut added, mut listed, mut over) = (0, 0, 0);
+        for e in entries {
+            let key = e.to_string();
+            if self
+                .state
+                .servers
+                .iter()
+                .any(|s| s.key().eq_ignore_ascii_case(&key))
+            {
+                listed += 1;
+                continue;
+            }
+            if self.history.len() >= oscq_discovery::HISTORY_LEN {
+                over += 1;
+                continue;
+            }
+            self.history.remember(e.clone());
+            self.state.add_manual(e.to_server());
+            added += 1;
+        }
+        if added > 0 {
+            self.config.manual_entries = self.history.entries().map(ToString::to_string).collect();
+            self.save_config(ctx);
+        }
+        let mut said = format!("{added} servers added");
+        if listed > 0 {
+            said.push_str(&format!(", {listed} already listed"));
+        }
+        if over > 0 {
+            said.push_str(&format!(
+                ", {over} not added, the list holds {}",
+                oscq_discovery::HISTORY_LEN
+            ));
+        }
+        if skipped > 0 {
+            said.push_str(&format!(
+                ", {skipped} skipped, OSC only or not a host and port"
+            ));
+        }
+        said
+    }
+
+    /// The File menu (PRD 9.11), beside Theme and About. On macOS the application's menu bar
+    /// carries it instead, once it is installed there.
+    fn file_menu(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        #[cfg(target_os = "macos")]
+        if self.view.menu_installed {
+            return;
+        }
+        let selected = self.state.selected_entry();
+        let enabled = |job: FileJob| {
+            !self.view.file_busy
+                && match job {
+                    FileJob::ExportServers => !self.state.servers.is_empty(),
+                    FileJob::ExportDocument => selected.is_some_and(|e| e.tree.is_some()),
+                    FileJob::ExportTraffic => selected.is_some_and(|e| !e.traffic.is_empty()),
+                    FileJob::ExportPresets => !self.config.presets.is_empty(),
+                    _ => true,
+                }
+        };
+        let shortcut = |key| {
+            ui.ctx()
+                .format_shortcut(&egui::KeyboardShortcut::new(Modifiers::COMMAND, key))
+        };
+        let (save_keys, open_keys) = (shortcut(Key::S), shortcut(Key::O));
+        ui.menu_button(style::caps("File"), |ui| {
+            file_item(ui, FileJob::SaveProject, enabled, Some(&save_keys), actions);
+            file_item(ui, FileJob::OpenProject, enabled, Some(&open_keys), actions);
+            ui.separator();
+            ui.menu_button("Export", |ui| {
+                for job in [
+                    FileJob::ExportServers,
+                    FileJob::ExportDocument,
+                    FileJob::ExportTraffic,
+                    FileJob::ExportPresets,
+                ] {
+                    file_item(ui, job, enabled, None, actions);
+                }
+            });
+            ui.menu_button("Import", |ui| {
+                for job in [FileJob::ImportServers, FileJob::ImportPresets] {
+                    file_item(ui, job, enabled, None, actions);
+                }
+            });
         });
     }
 
@@ -1211,6 +1599,7 @@ impl InspectorApp {
                     if ui.button(style::caps("About")).clicked() {
                         request_about(ui.ctx());
                     }
+                    self.file_menu(ui, actions);
                 });
                 ui.add_space(GRID);
             });
@@ -1289,15 +1678,6 @@ impl InspectorApp {
                 if ui.button(style::caps("+ manual")).clicked() {
                     self.view.manual_open = true;
                     self.view.manual_error = None;
-                }
-                // Its own line: beside + manual it would set the pane's narrowest width.
-                if !self.state.servers.is_empty()
-                    && ui
-                        .button(style::caps("Export list"))
-                        .on_hover_text("Save the server list, discovered and manual, as JSON")
-                        .clicked()
-                {
-                    actions.push(Action::ExportServers);
                 }
                 if let Some(e) = self.state.selected_entry() {
                     if e.conn == ConnState::Connected
@@ -2056,7 +2436,7 @@ impl InspectorApp {
             Tab::Traffic => {
                 let started = self.started;
                 if let Some(e) = self.state.entry_mut(id) {
-                    traffic_tab(ui, e, &mut self.view, started, actions);
+                    traffic_tab(ui, e, &mut self.view, started);
                 }
             }
             // Drawn above, before the selected server's tree is asked for.
@@ -2423,6 +2803,156 @@ fn about_request_id() -> egui::Id {
     egui::Id::new("about_requested")
 }
 
+fn file_item(
+    ui: &mut egui::Ui,
+    job: FileJob,
+    enabled: impl Fn(FileJob) -> bool,
+    shortcut: Option<&str>,
+    actions: &mut Vec<Action>,
+) {
+    let mut button = egui::Button::new(job.label());
+    if let Some(keys) = shortcut {
+        button = button.shortcut_text(keys);
+    }
+    if ui.add_enabled(enabled(job), button).clicked() {
+        actions.push(Action::File(job));
+        ui.close();
+    }
+}
+
+/// A file job once its file is chosen, on a blocking thread of the runtime: the write, or the
+/// read and its checks. Its failures are logged here, off the UI thread.
+fn run_file_job(
+    job: FileJob,
+    path: PathBuf,
+    contents: Vec<u8>,
+    keep: Option<(Option<PathBuf>, Vec<u8>)>,
+) -> FileDone {
+    let done = if job.saves() {
+        match config::write_atomic(&path, &contents) {
+            Ok(()) => FileDone::Saved(path),
+            Err(e) => FileDone::Failed(format!("Not saved to {}: {e}", path.display())),
+        }
+    } else {
+        match project::read_limited(&path) {
+            Ok(bytes) => read_file_job(job, path, &bytes, keep),
+            Err(e) => FileDone::Failed(e),
+        }
+    };
+    if let FileDone::Failed(reason) = &done {
+        tracing::warn!(target: "oscq_inspector::failure", "{reason}");
+    }
+    done
+}
+
+fn read_file_job(
+    job: FileJob,
+    path: PathBuf,
+    bytes: &[u8],
+    keep: Option<(Option<PathBuf>, Vec<u8>)>,
+) -> FileDone {
+    let shown = path.display().to_string();
+    match job {
+        FileJob::OpenProject => match Project::parse(bytes) {
+            Err(e) => FileDone::Failed(format!("{shown} not opened: {e}")),
+            Ok(project) => {
+                // The project replaced is kept first: if it cannot be, nothing is replaced.
+                let kept = match keep {
+                    Some((Some(dir), current)) => {
+                        let at = dir.join(format!(
+                            "autosave-{}.{}",
+                            file_stamp(SystemTime::now(), true),
+                            project::PROJECT_EXT
+                        ));
+                        if let Err(e) = config::write_atomic(&at, &current) {
+                            return FileDone::Failed(format!(
+                                "{shown} not opened: the current project could not be kept in \
+                                 {}: {e}",
+                                at.display()
+                            ));
+                        }
+                        Some(at)
+                    }
+                    _ => None,
+                };
+                FileDone::Project {
+                    project: Box::new(project),
+                    path,
+                    kept,
+                }
+            }
+        },
+        FileJob::ImportServers => match project::parse_servers(bytes) {
+            Err(e) => FileDone::Failed(format!("{shown} not imported: {e}")),
+            Ok((entries, skipped)) => FileDone::Servers {
+                entries,
+                skipped,
+                path,
+            },
+        },
+        FileJob::ImportPresets => match project::parse_presets(bytes) {
+            Err(e) => FileDone::Failed(format!("{shown} not imported: {e}")),
+            Ok(presets) => FileDone::Presets { presets, path },
+        },
+        _ => FileDone::Failed(format!("{shown}: nothing to read for {}", job.title())),
+    }
+}
+
+/// The date and time in a file name: `2026-11-23-1032`, with the seconds when asked.
+fn file_stamp(at: SystemTime, seconds: bool) -> String {
+    let utc = time::OffsetDateTime::from(at);
+    let t = match LOCAL_OFFSET.get() {
+        Some(offset) => utc.to_offset(*offset),
+        None => utc,
+    };
+    let mut out = format!(
+        "{:04}-{:02}-{:02}-{:02}{:02}",
+        t.year(),
+        u8::from(t.month()),
+        t.day(),
+        t.hour(),
+        t.minute()
+    );
+    if seconds {
+        out.push_str(&format!("{:02}", t.second()));
+    }
+    out
+}
+
+/// A server's name as the start of a file name: what a file system takes everywhere, at most
+/// 48 characters.
+fn file_stem(name: &str) -> String {
+    let stem: String = name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, '-' | '_' | ' ' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(48)
+        .collect();
+    let stem = stem.trim().trim_matches('.').to_owned();
+    if stem.is_empty() {
+        "server".to_owned()
+    } else {
+        stem
+    }
+}
+
+fn file_request_id() -> egui::Id {
+    egui::Id::new("file_requested")
+}
+
+/// Runs an item of the File menu on the next frame of `ctx`. The macOS application menu calls
+/// it, outside any frame.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn request_file(ctx: &egui::Context, job: FileJob) {
+    ctx.data_mut(|d| d.insert_temp(file_request_id(), Some(job)));
+    ctx.request_repaint();
+}
+
 /// Opens the about box on the next frame of `ctx`. The macOS application menu's About item calls
 /// it, outside any frame.
 pub fn request_about(ctx: &egui::Context) {
@@ -2680,8 +3210,12 @@ fn servers_json(servers: &[ServerEntry]) -> String {
             })
         })
         .collect();
-    let mut out =
-        serde_json::to_string_pretty(&serde_json::json!({ "servers": list })).unwrap_or_default();
+    let mut out = serde_json::to_string_pretty(&serde_json::json!({
+        "format": project::SERVERS_FORMAT,
+        "version": project::VERSION,
+        "servers": list,
+    }))
+    .unwrap_or_default();
     out.push('\n');
     out
 }
@@ -3987,13 +4521,14 @@ fn json_tab(ui: &mut egui::Ui, entry: &ServerEntry, view: &mut View, actions: &m
         view.json.key = Some(key);
     }
     // PRD 9.1 holds for a toolbar a tab draws for itself: down to the 640 px minimum no control
-    // of it leaves the screen. The two buttons keep their room, and the line that says what is
-    // shown takes what is left and is cut rather than pushing them off.
+    // of it leaves the screen. The button keeps its room, and the line that says what is shown
+    // takes what is left and is cut rather than pushing it off. Saving to a file is the File
+    // menu's (PRD 9.11).
     ui.horizontal_wrapped(|ui| {
         ui.set_min_height(ROW_H);
         let gap = ui.spacing().item_spacing.x;
-        // What the two buttons need, kept back from the line before the text is given its room.
-        let buttons = 2.0 * style::CONTROL_H + 2.0 * gap;
+        // What the button needs, kept back from the line before the text is given its room.
+        let buttons = style::CONTROL_H + gap;
         let room = (ui.max_rect().right() - ui.cursor().min.x - buttons).max(8.0 * GRID);
         let said = match &view.selected_path {
             Some(p) => format!("Subtree at {p}, as received"),
@@ -4011,16 +4546,6 @@ fn json_tab(ui: &mut egui::Ui, entry: &ServerEntry, view: &mut View, actions: &m
             .clicked()
         {
             actions.push(Action::Copy(view.json.exact.clone()));
-        }
-        if glyph::icon_button(ui, glyph::Icon::Save, "json_save")
-            .on_hover_text("Save the document to a file")
-            .clicked()
-        {
-            actions.push(Action::Save {
-                stem: "document",
-                ext: "json",
-                contents: view.json.exact.clone(),
-            });
         }
     });
     if let Some(n) = &view.json.note {
@@ -4098,17 +4623,11 @@ fn json_line(line: &Line, dark: bool) -> LayoutJob {
 
 // -------------------------------------------------------------------- traffic tab
 
-fn traffic_tab(
-    ui: &mut egui::Ui,
-    entry: &mut ServerEntry,
-    view: &mut View,
-    started: Instant,
-    actions: &mut Vec<Action>,
-) {
+fn traffic_tab(ui: &mut egui::Ui, entry: &mut ServerEntry, view: &mut View, started: Instant) {
     use traffic::DirFilter;
     // Wrapped, as the toolbar of the tabs is (PRD 9.1): at the 640 px minimum the centre pane
     // keeps 224 points, and this row asked for about 400 on one line, which cut the direction
-    // bar mid word and put Pause, Clear and Export off screen. Wrapping is the whole fix: the
+    // bar mid word and put Pause and Clear off screen. Wrapping is the whole fix: the
     // filter's 192 points fit the 224 on a line of their own, and the rest follows underneath.
     ui.horizontal_wrapped(|ui| {
         ui.set_min_height(ROW_H);
@@ -4137,14 +4656,6 @@ fn traffic_tab(
         }
         if ui.button(style::caps("Clear")).clicked() {
             entry.traffic.clear();
-        }
-        if ui.button(style::caps("Export")).clicked() {
-            let view_records = entry.traffic.view(&view.traffic_filter, view.traffic_dir);
-            actions.push(Action::Save {
-                stem: "traffic",
-                ext: "txt",
-                contents: traffic::export(started, &view_records),
-            });
         }
         ui.add_space(GROUP_GAP);
         ui.weak(format!(
@@ -4817,6 +5328,361 @@ mod tests {
             h.app.state.entry(gone_id).is_some_and(|e| !e.server.stale),
             "advertised again, it comes back"
         );
+    }
+
+    /// A scratch folder of its own for a test, removed by the test.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("oscq-files-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A dialog that answers `path`, and the asks it was given.
+    fn answering(path: PathBuf) -> (Picker, Arc<std::sync::Mutex<Vec<Ask>>>) {
+        let asked: Arc<std::sync::Mutex<Vec<Ask>>> = Arc::default();
+        let seen = Arc::clone(&asked);
+        let picker = Picker::new(move |ask| {
+            seen.lock().unwrap().push(ask);
+            let p = path.clone();
+            Box::pin(async move { Some(p) })
+        });
+        (picker, asked)
+    }
+
+    /// Frames until the file job in progress has come back.
+    fn until_filed(h: &mut Harness) {
+        for _ in 0..1000 {
+            h.frame(Vec::new());
+            if !h.app.view.file_busy {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("the file job never came back");
+    }
+
+    fn file(h: &mut Harness, job: FileJob) {
+        h.app.act(&h.ctx.clone(), Action::File(job));
+        until_filed(h);
+    }
+
+    fn sample_preset(server: &str, value: f64) -> presets::Preset {
+        presets::Preset {
+            server: server.into(),
+            server_name: "rig".into(),
+            values: vec![presets::PresetValue {
+                path: "/a".into(),
+                type_tags: "f".into(),
+                args: vec![presets::PresetArg::Float(value)],
+            }],
+        }
+    }
+
+    /// PRD 9.11: Save Project writes what the project holds; Open Project puts it back whole,
+    /// manual servers included, and keeps the project it replaces beside the exports first.
+    #[test]
+    fn a_project_saved_opens_again_and_the_one_it_replaces_is_kept() {
+        let dir = scratch("project");
+        let mut config = Config {
+            manual_entries: vec!["10.0.0.2:5678".into()],
+            ..Config::default()
+        };
+        config.osc_ports.insert("10.0.0.2:5678".into(), 9001);
+        config
+            .presets
+            .insert(2, sample_preset("10.0.0.2:5678", 0.5));
+        let mut h = harness_with(config);
+        h.app.config_dir = Some(dir.join("config"));
+        let path = dir.join("rig.oscqi");
+        let (picker, asked) = answering(path.clone());
+        h.app.picker = picker;
+        file(&mut h, FileJob::SaveProject);
+        assert!(
+            Project::parse(&std::fs::read(&path).unwrap()).is_ok(),
+            "{:?}",
+            h.app.view.note
+        );
+        assert!(asked.lock().unwrap()[0].save);
+
+        // The project changes: another manual server, another preset, the port gone.
+        let ctx = h.ctx.clone();
+        h.app.act(&ctx, Action::ClearSlot(2));
+        h.app.config.osc_ports.clear();
+        h.app
+            .config
+            .presets
+            .insert(7, sample_preset("other:1", 0.9));
+        let other = ManualEntry::parse("other.local:1").unwrap();
+        h.app.history.remember(other.clone());
+        h.app.config.manual_entries = vec![other.to_string(), "10.0.0.2:5678".into()];
+        let other_id = h.app.state.add_manual(other.to_server());
+        h.sent();
+
+        file(&mut h, FileJob::OpenProject);
+        assert!(!asked.lock().unwrap()[1].save, "an open dialog");
+        assert_eq!(h.app.config.manual_entries, ["10.0.0.2:5678"]);
+        assert_eq!(h.app.config.osc_ports.get("10.0.0.2:5678"), Some(&9001));
+        assert_eq!(
+            h.app.config.presets.keys().copied().collect::<Vec<_>>(),
+            [2]
+        );
+        let manual: Vec<String> = h
+            .app
+            .state
+            .servers
+            .iter()
+            .filter(|e| e.server.origin == Origin::Manual)
+            .map(|e| e.key())
+            .collect();
+        assert_eq!(
+            manual,
+            ["10.0.0.2:5678"],
+            "the list holds the project's servers"
+        );
+        assert!(
+            h.sent()
+                .iter()
+                .any(|c| matches!(c, Command::Disconnect { server_id } if *server_id == other_id)),
+            "a manual server the project does not have is disconnected"
+        );
+
+        // The project replaced is kept, whole, in the exports folder.
+        let kept: Vec<PathBuf> = std::fs::read_dir(dir.join("config").join("exports"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        let replaced = Project::parse(&std::fs::read(&kept[0]).unwrap()).unwrap();
+        assert_eq!(replaced.presets.keys().copied().collect::<Vec<_>>(), [7]);
+        assert_eq!(replaced.manual_entries.len(), 2);
+        let note = h.app.view.note.clone().unwrap();
+        assert!(note.contains("kept in"), "{note}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// PRD 9.11: a file that is not a project opens nothing, and says why.
+    #[test]
+    fn a_file_that_is_not_a_project_changes_nothing() {
+        let dir = scratch("not-project");
+        let path = dir.join("presets.json");
+        let mut bank = std::collections::BTreeMap::new();
+        bank.insert(1, sample_preset("a:1", 0.1));
+        std::fs::write(&path, project::presets_bytes(&bank)).unwrap();
+        let mut h = harness_with(Config {
+            manual_entries: vec!["10.0.0.2:5678".into()],
+            ..Config::default()
+        });
+        h.app.config_dir = Some(dir.join("config"));
+        h.app.picker = answering(path).0;
+        file(&mut h, FileJob::OpenProject);
+        assert_eq!(h.app.config.manual_entries, ["10.0.0.2:5678"]);
+        assert!(h.app.config.presets.is_empty());
+        assert!(
+            h.app.view.note.as_deref().unwrap().contains("not opened"),
+            "{:?}",
+            h.app.view.note
+        );
+        assert!(
+            !dir.join("config").join("exports").exists(),
+            "nothing replaced, nothing kept"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// PRD 9.11: a server list imports as manual entries, those not listed yet, as many as the
+    /// list holds, and says what it left out.
+    #[test]
+    fn a_server_list_imports_as_manual_entries_up_to_the_limit() {
+        let dir = scratch("servers");
+        let path = dir.join("servers.json");
+        let list = serde_json::json!({
+            "format": project::SERVERS_FORMAT,
+            "version": 1,
+            "servers": [
+                {"host": "127.0.0.1", "port": 2345},
+                {"host": "a.local", "port": 1},
+                {"host": "b.local", "port": 2},
+                {"host": "osc.local", "port": 3, "kind": "osc"},
+            ]
+        });
+        std::fs::write(&path, list.to_string()).unwrap();
+        // Room for one more: the list holds HISTORY_LEN.
+        let full: Vec<String> = (1..oscq_discovery::HISTORY_LEN as u16)
+            .map(|i| format!("h{i}.local:{i}"))
+            .collect();
+        let mut h = harness_with(Config {
+            manual_entries: full,
+            ..Config::default()
+        });
+        // The first server of the file is already listed, as a discovered one.
+        h.events.send(Event::ServerFound(server())).unwrap();
+        h.frame(Vec::new());
+        h.app.picker = answering(path).0;
+        file(&mut h, FileJob::ImportServers);
+        let note = h.app.view.note.clone().unwrap();
+        assert!(note.contains("1 servers added"), "{note}");
+        assert!(note.contains("1 already listed"), "{note}");
+        assert!(note.contains("1 not added"), "{note}");
+        assert!(note.contains("1 skipped"), "{note}");
+        assert_eq!(
+            h.app.config.manual_entries.len(),
+            oscq_discovery::HISTORY_LEN
+        );
+        assert_eq!(h.app.config.manual_entries[0], "a.local:1");
+        assert!(
+            h.app
+                .state
+                .servers
+                .iter()
+                .any(|e| e.server.origin == Origin::Manual && e.key() == "a.local:1")
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// PRD 9.11: a preset bank replaces every slot, the empty ones included, and the mark of the
+    /// slot last recalled goes.
+    #[test]
+    fn imported_presets_replace_every_slot() {
+        let dir = scratch("presets");
+        let path = dir.join("bank.json");
+        let mut bank = std::collections::BTreeMap::new();
+        bank.insert(4, sample_preset("a:1", 0.4));
+        std::fs::write(&path, project::presets_bytes(&bank)).unwrap();
+        let mut config = Config::default();
+        config.presets.insert(1, sample_preset("b:2", 0.1));
+        let mut h = harness_with(config);
+        h.app.view.preset_recalled = Some(1);
+        h.app.picker = answering(path.clone()).0;
+        file(&mut h, FileJob::ImportPresets);
+        assert_eq!(h.app.config.presets, bank, "{:?}", h.app.view.note);
+        assert_eq!(h.app.view.preset_recalled, None);
+
+        // And the bank exports as it was read.
+        let out = dir.join("out.json");
+        h.app.picker = answering(out.clone()).0;
+        file(&mut h, FileJob::ExportPresets);
+        assert_eq!(
+            project::parse_presets(&std::fs::read(&out).unwrap()).unwrap(),
+            bank
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// PRD 9.11: a cancelled dialog changes nothing; a second item while a dialog is open
+    /// opens no second one; an export with nothing to export opens none and says why.
+    #[test]
+    fn a_cancelled_dialog_changes_nothing_and_one_dialog_opens_at_a_time() {
+        let mut h = harness();
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (tx, rx) = flume::bounded::<Option<PathBuf>>(1);
+        let count = Arc::clone(&asked);
+        h.app.picker = Picker::new(move |_| {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let rx = rx.clone();
+            Box::pin(async move { rx.recv_async().await.ok().flatten() })
+        });
+        let ctx = h.ctx.clone();
+        h.app.act(&ctx, Action::File(FileJob::ImportPresets));
+        h.app.act(&ctx, Action::File(FileJob::OpenProject));
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            h.app.view.note.as_deref(),
+            Some("A file dialog is already open")
+        );
+        tx.send(None).unwrap();
+        until_filed(&mut h);
+        assert!(h.app.config == Config::default());
+
+        h.app.act(&ctx, Action::File(FileJob::ExportDocument));
+        assert_eq!(h.app.view.note.as_deref(), Some("No server selected"));
+        h.app.act(&ctx, Action::File(FileJob::ExportPresets));
+        assert_eq!(h.app.view.note.as_deref(), Some("No preset to export"));
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(!h.app.view.file_busy);
+    }
+
+    /// PRD 9.11: the File menu is the one place a file is written. The window draws it beside
+    /// Theme and About, its items open their dialogs, and no tab or pane draws an export button
+    /// of its own. The keys save and open a project.
+    #[test]
+    fn the_file_menu_is_the_one_place_files_are_written() {
+        let dir = scratch("menu");
+        let mut h = harness();
+        let id = connected(&mut h, &flat_tree(3));
+        h.frame(Vec::new());
+        h.app.act(
+            &h.ctx.clone(),
+            Action::Send(
+                SendReq {
+                    server_id: id,
+                    path: OscPath::parse("/p001").unwrap(),
+                    signature: TypeSignature::parse("f").unwrap(),
+                    args: vec![OscType::Float(0.25)],
+                    readable: true,
+                },
+                SendMode::Final,
+            ),
+        );
+        for tab in [Tab::Tree, Tab::Json, Tab::Traffic, Tab::Map] {
+            h.app.view.tab = tab;
+            h.frame(Vec::new());
+            let texts = drawn_texts(&h.frame(Vec::new()));
+            assert!(texts.iter().any(|t| t == "FILE"), "{tab:?}: {texts:?}");
+            for gone in ["EXPORT", "EXPORT LIST", "SAVE"] {
+                assert!(!texts.iter().any(|t| t == gone), "{tab:?}: {gone} drawn");
+            }
+            assert!(icon_drawn(&h, "json_save").is_none());
+        }
+
+        let path = dir.join("doc.json");
+        let (picker, asked) = answering(path.clone());
+        h.app.picker = picker;
+        h.app.view.tab = Tab::Tree;
+        let out = h.frame(Vec::new());
+        click(&mut h, place(&out, "FILE"), egui::PointerButton::Primary);
+        let out = h.frame(Vec::new());
+        let texts = drawn_texts(&out);
+        for item in ["Save Project…", "Open Project…", "Export", "Import"] {
+            assert!(texts.iter().any(|t| t == item), "{item} in {texts:?}");
+        }
+        // Export, then Document: the document of the selected server, as received.
+        click(&mut h, place(&out, "Export"), egui::PointerButton::Primary);
+        let out = h.frame(Vec::new());
+        click(
+            &mut h,
+            place(&out, "Document…"),
+            egui::PointerButton::Primary,
+        );
+        until_filed(&mut h);
+        assert_eq!(asked.lock().unwrap().len(), 1, "{:?}", h.app.view.note);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), flat_tree(3));
+
+        // Command S saves the project.
+        let project_path = dir.join("p.oscqi");
+        h.app.picker = answering(project_path.clone()).0;
+        h.frame(vec![egui::Event::Key {
+            key: Key::S,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::COMMAND,
+        }]);
+        until_filed(&mut h);
+        assert!(Project::parse(&std::fs::read(&project_path).unwrap()).is_ok());
+
+        // The macOS menu bar's items arrive as requests between frames.
+        let list_path = dir.join("servers.json");
+        h.app.picker = answering(list_path.clone()).0;
+        request_file(&h.ctx, FileJob::ExportServers);
+        h.frame(Vec::new());
+        until_filed(&mut h);
+        assert!(
+            std::fs::read_to_string(&list_path)
+                .unwrap()
+                .contains(project::SERVERS_FORMAT)
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// PRD 9.8: nodes pinned from the tree are listed in their own panel, whatever the tree
@@ -6980,7 +7846,7 @@ mod tests {
                     (
                         Tab::Json,
                         vec!["Whole document, as received"],
-                        vec!["json_copy", "json_save"],
+                        vec!["json_copy"],
                     ),
                     (
                         Tab::Traffic,
@@ -6991,7 +7857,6 @@ mod tests {
                             "OUT",
                             "PAUSE",
                             "CLEAR",
-                            "EXPORT",
                         ],
                         vec![],
                     ),
@@ -7024,22 +7889,20 @@ mod tests {
                     }
                     // Wrapping keeps a control on screen; it must not be the everyday answer.
                     // On a window with room to spare the JSON toolbar holds on one line, which
-                    // it does only because the text keeps its two buttons' room back from the
-                    // line before taking what is left.
+                    // it does only because the text keeps its button's room back from the line
+                    // before taking what is left.
                     if tab == Tab::Json && width >= 1100.0 && !dragged {
                         let said = drawn
                             .iter()
                             .find(|(t, _, _)| t == "Whole document, as received")
                             .map(|(_, r, _)| r.center().y)
                             .expect("the line that says what is shown");
-                        for salt in ["json_copy", "json_save"] {
-                            let at = icon_place(&h, salt).center().y;
-                            assert!(
-                                (at - said).abs() < ROW_H / 2.0,
-                                "{salt} on another line than the text at width {width}: \
-                                 {at} against {said}"
-                            );
-                        }
+                        let at = icon_place(&h, "json_copy").center().y;
+                        assert!(
+                            (at - said).abs() < ROW_H / 2.0,
+                            "json_copy on another line than the text at width {width}: {at} \
+                             against {said}"
+                        );
                     }
                 }
             }

@@ -9,7 +9,7 @@ use oscq_core::{DiscoveredServer, Origin, ServerId, ServiceKind};
 use crate::address;
 
 /// Number of manual entries remembered.
-pub const HISTORY_LEN: usize = 10;
+pub const HISTORY_LEN: usize = 64;
 
 /// A host and port typed by the user. The host is a name, an IPv4 address or an IPv6 address.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,13 +202,15 @@ mod tests {
     }
 
     #[test]
-    fn remembers_last_ten_most_recent_first() {
+    fn remembers_the_last_entries_most_recent_first() {
         let mut h = ManualHistory::new();
-        for i in 1..=12u16 {
+        let over = HISTORY_LEN as u16 + 2;
+        for i in 1..=over {
             h.remember(ManualEntry::new("h", i).unwrap());
         }
         let ports: Vec<u16> = h.entries().map(ManualEntry::port).collect();
-        assert_eq!(ports, [12, 11, 10, 9, 8, 7, 6, 5, 4, 3]);
+        let expected: Vec<u16> = (3..=over).rev().collect();
+        assert_eq!(ports, expected);
     }
 
     #[test]
@@ -223,12 +225,13 @@ mod tests {
 
     #[test]
     fn restores_saved_history() {
-        let saved: Vec<ManualEntry> = (1..=12u16)
+        let saved: Vec<ManualEntry> = (1..=HISTORY_LEN as u16 + 2)
             .map(|p| ManualEntry::new("h", p).unwrap())
             .collect();
         let h = ManualHistory::from_entries(saved);
         let ports: Vec<u16> = h.entries().map(ManualEntry::port).collect();
-        assert_eq!(ports, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        let expected: Vec<u16> = (1..=HISTORY_LEN as u16).collect();
+        assert_eq!(ports, expected);
     }
 
     #[test]

@@ -121,7 +121,7 @@ impl Config {
 
     /// No position that is not a number, none twice, at most [`MAP_POSITIONS_MAX`], the most
     /// recent kept. A config is edited by hand.
-    fn bound_map_positions(&mut self) {
+    pub fn bound_map_positions(&mut self) {
         self.map_positions
             .retain(|p| p.x.is_finite() && p.y.is_finite() && !p.node.is_empty());
         let mut seen = std::collections::HashSet::new();

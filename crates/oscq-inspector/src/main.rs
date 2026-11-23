@@ -5,6 +5,7 @@
 
 mod app;
 mod config;
+mod file_dialog;
 mod force;
 mod glyph;
 mod icon;
@@ -13,6 +14,7 @@ mod json_view;
 mod macos_menu;
 mod map;
 mod presets;
+mod project;
 mod rate;
 #[cfg(feature = "screenshot")]
 mod shot;
