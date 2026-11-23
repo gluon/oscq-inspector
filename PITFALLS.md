@@ -237,6 +237,9 @@ Case: `tests/fixtures/max-hostinfo.json`, identical to `max-root.json`, 2026-10-
 An accepted WebSocket, and an accepted `LISTEN`, do not mean the server notifies. Max 9 accepts both on its HTTP port and never sends a frame. Showing "live" on open told the user values were pushed when none ever would be. Claim live only after the first frame from the server.
 Case: Max 9 on the human's Mac, `LISTEN /test/param/fader/raw`, fader moved, nothing on the socket, checked with `websocat`, 2026-10-11.
 
+A `HOST_INFO` key that is present and empty is not the same as one that is absent, and reading the two alike is not harmless. A REAPER server serves `"WS_IP":""`. Kept as the empty string, it named no host: the address became `ws://:<port>/`, which nothing can connect to, so no `LISTEN` was ever sent and the server stayed on values on refresh only. Nothing in the failure names the field or the address. The service reported `failed to lookup address information: nodename nor servname provided, or not known`, a resolver error, retried with a growing backoff, while `Url::parse` of that same string answers `EmptyHost`: the mechanism differs depending on who reads the address, and neither mentions `WS_IP`. Treat an address that is empty or spaces only as absent, and do it at parse time rather than where the address is read, so that the flag saying whether the server advertised the address cannot claim the fallback.
+Case: the human's REAPER server, reported 2026-11-23, and `an_empty_ws_ip_opens_the_socket_on_the_http_host_and_a_value_comes_back`, which timed out after 11.79 s on the old code, having only reached `HttpOnly` and five `WebSocketLost`, and passes in 0.01 s.
+
 ## Config
 
 Two saves of the config in one frame lose the race and one of them is dropped. `write_atomic`

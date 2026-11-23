@@ -19,12 +19,16 @@ pub struct HostInfo {
     pub name: Option<String>,
     /// `EXTENSIONS`, attribute or command name to support flag. Absent means unsupported.
     pub extensions: BTreeMap<String, bool>,
+    /// `OSC_IP`. `None` when absent, and when the server sent it empty or as spaces only,
+    /// which names no host.
     pub osc_ip: Option<String>,
     /// `OSC_PORT` when present and valid.
     pub osc_port: Option<u16>,
     /// `OSC_PORT` was present but not a valid port. The server is then not controllable.
     pub osc_port_invalid: bool,
     pub osc_transport: Option<OscTransport>,
+    /// `WS_IP`. `None` when absent, and when the server sent it empty or as spaces only,
+    /// which names no host.
     pub ws_ip: Option<String>,
     pub ws_port: Option<u16>,
     /// Unknown keys, and known keys whose value had the wrong JSON type, kept verbatim.
@@ -133,12 +137,25 @@ impl HostInfo {
         }
         if let Some(v) = obj.remove("OSC_IP") {
             match v {
+                // An address that is empty, or spaces only, names no host: it counts as absent,
+                // so the proposal's default applies, and the field is reported by the same path
+                // as any other unusable attribute. A REAPER server serves `"OSC_IP":""`.
+                // Cleared here rather than where the address is read, so that the fallback is
+                // never reported as an address the server declared (PRD 7.2).
+                Value::String(s) if s.trim().is_empty() => {
+                    bad(&mut diags, &mut info, "OSC_IP", Value::String(s))
+                }
                 Value::String(s) => info.osc_ip = Some(s),
                 other => bad(&mut diags, &mut info, "OSC_IP", other),
             }
         }
         if let Some(v) = obj.remove("WS_IP") {
             match v {
+                // Empty or spaces only counts as absent, as for `OSC_IP` above. Left as it was,
+                // this is the `ws://:<port>/` that no connection can be made to.
+                Value::String(s) if s.trim().is_empty() => {
+                    bad(&mut diags, &mut info, "WS_IP", Value::String(s))
+                }
                 Value::String(s) => info.ws_ip = Some(s),
                 other => bad(&mut diags, &mut info, "WS_IP", other),
             }
@@ -189,7 +206,8 @@ impl HostInfo {
     }
 
     /// The OSC receiver, applying the proposal's defaults: `OSC_IP` absent means the HTTP host,
-    /// `OSC_PORT` absent means the HTTP port, `OSC_TRANSPORT` absent means UDP.
+    /// `OSC_PORT` absent means the HTTP port, `OSC_TRANSPORT` absent means UDP. An `OSC_IP` the
+    /// server sent empty, or as spaces only, counted as absent at parse time.
     pub fn osc_destination(
         &self,
         http_host: &str,
@@ -211,7 +229,9 @@ impl HostInfo {
     }
 
     /// The WebSocket address: `WS_IP` and `WS_PORT`, each defaulting to the HTTP host and port.
-    /// The flag tells whether either was given by the server.
+    /// The flag tells whether either was given by the server. A `WS_IP` the server sent empty,
+    /// or as spaces only, counted as absent at parse time, so it is a default here and the flag
+    /// does not claim it was declared.
     pub fn websocket_address(&self, http_host: &str, http_port: u16) -> (String, u16, bool) {
         let advertised = self.ws_ip.is_some() || self.ws_port.is_some();
         (
@@ -308,5 +328,82 @@ mod tests {
         assert_eq!(port(&Value::from(-1)), None);
         assert_eq!(port(&Value::from(9000.5)), None);
         assert_eq!(port(&Value::Bool(true)), None);
+    }
+
+    /// PRD 7.2: an address the server sends as an empty string, or as spaces only, names no
+    /// host. It counts as absent, so the proposal's default applies and the WebSocket address
+    /// falls back to the HTTP host. The flag stays false: a fallback never passes for a
+    /// declaration of the server's (CLAUDE.md laws 1 and 3). Seen on a REAPER server serving
+    /// `"WS_IP":""`, whose address became the unusable `ws://:<port>/`.
+    #[test]
+    fn an_empty_ws_ip_counts_as_absent_and_the_address_falls_back_to_the_http_host() {
+        for json in [
+            r#"{"WS_IP":""}"#,
+            r#"{"WS_IP":"   "}"#,
+            "{\"WS_IP\":\"\\t\"}",
+        ] {
+            let (info, diags) = HostInfo::parse(json.as_bytes()).unwrap();
+            assert_eq!(info.ws_ip, None, "{json}");
+            let (host, port, advertised) = info.websocket_address("10.0.0.2", 5678);
+            assert_eq!(
+                (host.as_str(), port, advertised),
+                ("10.0.0.2", 5678, false),
+                "{json}"
+            );
+            assert_eq!(
+                crate::ws::ws_url(&host, port),
+                "ws://10.0.0.2:5678/",
+                "{json}"
+            );
+            let kinds: Vec<DiagnosticKind> = diags.iter().map(|d| d.kind.clone()).collect();
+            assert_eq!(
+                kinds,
+                [DiagnosticKind::InvalidAttribute("WS_IP".to_owned())],
+                "the empty field is reported by the path every other invalid HOST_INFO \
+                 attribute takes: {json}"
+            );
+            assert!(
+                matches!(info.extra.get("WS_IP"), Some(Value::String(_))),
+                "the value the server sent is kept verbatim: {json}"
+            );
+        }
+    }
+
+    /// The same rule for `OSC_IP`: empty or blank counts as absent, so the OSC destination is
+    /// the HTTP host, and the empty field is reported.
+    #[test]
+    fn an_empty_osc_ip_counts_as_absent_and_the_destination_falls_back_to_the_http_host() {
+        for json in [r#"{"OSC_IP":""}"#, r#"{"OSC_IP":"   "}"#] {
+            let (info, diags) = HostInfo::parse(json.as_bytes()).unwrap();
+            assert_eq!(info.osc_ip, None, "{json}");
+            let d = info.osc_destination("10.0.0.2", 5678).unwrap();
+            assert_eq!(
+                (d.host.as_str(), d.port, d.port_source),
+                ("10.0.0.2", 5678, PortSource::InferredFromHttp),
+                "{json}"
+            );
+            let kinds: Vec<DiagnosticKind> = diags.iter().map(|d| d.kind.clone()).collect();
+            assert_eq!(
+                kinds,
+                [DiagnosticKind::InvalidAttribute("OSC_IP".to_owned())],
+                "{json}"
+            );
+        }
+    }
+
+    /// A non-empty address is untouched, spaces inside it included: the rule is about a field
+    /// that names nothing, not about trimming what the server said.
+    #[test]
+    fn a_non_empty_address_is_kept_as_the_server_sent_it() {
+        let (info, diags) =
+            HostInfo::parse(br#"{"WS_IP":"10.0.0.9","OSC_IP":"10.0.0.8"}"#).unwrap();
+        assert_eq!(info.ws_ip.as_deref(), Some("10.0.0.9"));
+        assert_eq!(info.osc_ip.as_deref(), Some("10.0.0.8"));
+        assert!(diags.is_empty(), "{diags:?}");
+        assert_eq!(
+            info.websocket_address("10.0.0.2", 5678),
+            ("10.0.0.9".to_owned(), 5678, true),
+            "an address the server did declare is advertised"
+        );
     }
 }

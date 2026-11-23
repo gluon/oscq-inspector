@@ -4,6 +4,10 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 
 ## [Unreleased]
 
+### Fixed
+
+- **A server that declares an empty `WS_IP` is followed live again.** A `HOST_INFO` carrying `WS_IP` as an empty string, or as spaces only, named no host: the WebSocket address became `ws://:<port>/`, nothing could connect to it, no `LISTEN` was ever sent, and the server stayed on values on refresh only. An empty or blank `WS_IP` or `OSC_IP` now counts as absent, so the address falls back to the HTTP host as the proposal's default intends, and the field is counted among the server's warnings. Seen on a REAPER server.
+
 ## [0.6.0] - 2026-11-23
 
 ### Added
