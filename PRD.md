@@ -519,8 +519,8 @@ A measurement from the synthetic server is not proof that the app works against 
 - `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test` on every push, on all three platforms.
 - GitHub Actions matrix: `macos-latest` building both aarch64 and x86_64 then joining them with `lipo` into a universal binary, `windows-latest` for x86_64 MSVC, `ubuntu-22.04` for x86_64 glibc.
 - Artifacts on every tagged commit: a macOS `.app` inside a zip; a Windows `.exe`, unsigned; a Linux binary and a `.desktop` file in a tarball.
-- No notarisation and no signing in v1, which left a disabled signing step in the macOS workflow. Since the human's decision of 2026-11-22, the versions after 0.5.1: on a tag, a job of its own signs the macOS `.app` with a Developer ID, notarises it and staples the ticket, with secrets kept in a GitHub environment that accepts tags `v*` only, so no branch push can reach them. The Windows `.exe` stays unsigned.
-- The documentation describes the first run procedure in plain language: the unsigned one for Windows and for macOS up to 0.5.1, the signed one for macOS after.
+- No notarisation and no signing in v1, which left a disabled signing step in the macOS workflow. Since the human's decision of 2026-11-22, from 0.6.0: on a tag, a job of its own signs the macOS `.app` with a Developer ID, notarises it and staples the ticket, with secrets kept in a GitHub environment that accepts tags `v*` only, so no branch push can reach them. The Windows `.exe` stays unsigned.
+- The documentation describes the first run procedure in plain language: the unsigned one for Windows and for macOS up to 0.5.1, the signed one for macOS from 0.6.0.
 - Linux build dependencies are listed in the workflow and in DEVELOPMENT.md. Do not assume a desktop environment is present in CI.
 
 ## 14. Milestones

@@ -20,7 +20,7 @@ How OSCQuery Inspector is used: what it does, what it does not do, and everythin
 - No OSC over TCP: nothing is sent to a server declaring TCP, and its writable nodes say so, with the reason.
 - No sending OSC over the WebSocket in this version; OSC goes over UDP.
 - The map reads; it connects, disconnects and reroutes nothing. It is not live either: the peers are read every two seconds by default while the map is shown, and when it is not, they are not read.
-- No code signing on Windows, nor on macOS up to 0.5.1: those downloads warn you on first launch (see [install.md](install.md)). The macOS app is signed and notarised from the version after 0.5.1.
+- No code signing on Windows, nor on macOS up to 0.5.1: those downloads warn you on first launch (see [install.md](install.md)). The macOS app is signed and notarised from 0.6.0.
 
 ## Using it
 
