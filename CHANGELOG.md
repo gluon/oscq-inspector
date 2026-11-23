@@ -4,6 +4,8 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-23
+
 ### Added
 
 - **Stale servers can be removed from the list.** A discovered server no longer advertised has an **x**, and **Clear stale** removes them all. One advertised again comes back, its settings kept.
@@ -179,7 +181,8 @@ The first version whose files are on the Releases page.
 
 - First release: discovery over Bonjour and manual entries, the address space as a tree, values read and sent with widgets fitting their types, values live over the WebSocket where the server pushes them, the JSON and Traffic tabs. Unsigned artifacts for macOS (universal), Windows and Linux.
 
-[Unreleased]: https://github.com/gluon/oscq-inspector/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/gluon/oscq-inspector/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/gluon/oscq-inspector/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/gluon/oscq-inspector/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/gluon/oscq-inspector/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/gluon/oscq-inspector/compare/v0.4.0...v0.4.2

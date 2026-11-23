@@ -120,11 +120,9 @@ git push origin v0.4.0
 
 ## Status and backlog
 
-Latest version: **0.5.1**, dated 2026-11-21, the version the documentation describes: it fixes a setting or a preset capture lost when two saves of the config passed their check at once, a defect 0.5.0 still had, listed in [CHANGELOG.md](CHANGELOG.md). Its tag `v0.5.1` builds the draft Release, published once [docs/acceptance.md](docs/acceptance.md) has passed. **0.5.0**, dated 2026-11-20, brought the new application icon, the preset gestures of Max's `preset` object and the clearing of a slot. Before it, **0.4.2**, tagged on 2026-11-18, carries everything 0.3.0 and 0.4.0 hold, and its changelog entry folds in the two fixes of 0.4.1, which was tagged and built the same day and never published. What the checks before it proved is recorded in [docs/acceptance.md](docs/acceptance.md), under "Acceptance record".
+Latest version: **0.6.0**, dated 2026-11-23, the version the documentation describes: the File menu, with projects saved and opened, and the server list, a document, the traffic and the presets exported or imported through the system's dialogs; stale servers removed from the list; 64 manual entries; and the first macOS app signed with a Developer ID and notarised. Its tag `v0.6.0` builds the draft Release, published once [docs/acceptance.md](docs/acceptance.md) has passed. **0.5.1**, dated 2026-11-21, fixes a setting or a preset capture lost when two saves of the config passed their check at once, a defect 0.5.0 still had, listed in [CHANGELOG.md](CHANGELOG.md). **0.5.0**, dated 2026-11-20, brought the new application icon, the preset gestures of Max's `preset` object and the clearing of a slot. Before it, **0.4.2**, tagged on 2026-11-18, carries everything 0.3.0 and 0.4.0 hold, and its changelog entry folds in the two fixes of 0.4.1, which was tagged and built the same day and never published. What the checks before it proved is recorded in [docs/acceptance.md](docs/acceptance.md), under "Acceptance record".
 
 Version 0.3.0 is tagged, at `v0.3.0`, and its draft Release was never published: the acceptance it waits on, section 6, asks for two applications implementing the `PEERS` extension, one a client of the other, and that has not been done by a person. Every later version carries what it holds.
-
-On `main` since 0.5.1, unreleased: the macOS app signed and notarised, stale servers removed from the list, and the File menu with its projects, exports and imports, listed under Unreleased in [CHANGELOG.md](CHANGELOG.md).
 
 Backlog:
 
@@ -133,7 +131,7 @@ Backlog:
 - Acceptance against a real server that notifies over its WebSocket (VDMX, ossia): a value changed inside it updates in the app without user action. Neither OSCQuery Helper nor Max 9 notifies; the synthetic server is the only proof so far. The known limit and what lifts it are in [docs/acceptance.md](docs/acceptance.md).
 - Real captured documents from VDMX and ossia, as test fixtures. OSCQuery Helper and Max 9 are captured.
 - OSC sent over the WebSocket, opt in per server, for servers that accept it; OSC goes over UDP only.
-- `ci/accept-artifact.sh` checks the Developer ID signature, the notarisation and the stapled ticket of the downloaded bundle, with a refusal on a bundle altered after signing. It waits for the first signed tag: the workflow checks the tag of the workspace version, 0.5.1, which is unsigned.
+- `ci/accept-artifact.sh` checks the Developer ID signature, the notarisation and the stapled ticket of the downloaded bundle, with a refusal on a bundle altered after signing. It waits for the first signed tag, `v0.6.0`: run against its Release once the tag is pushed.
 - The Traffic tab once listed the values a server sent back above the row of the preset recall that sent them, at the same millisecond: one launch out of three, recorded in [docs/images/readme](docs/images/readme/README.md). Not reproduced on demand; the cause is not established.
 
 ## Documents in this repository
