@@ -43,7 +43,7 @@ Setup: OSCQuery Helper running with its `SampleDocument`, its OSC target port se
 7. Select `/test`, open the **JSON** tab, click **Copy** and paste the text somewhere.
    Expected: the document of `/test` exactly as the Helper sent it, `\/` escapes included.
 8. Open the **Traffic** tab.
-   Expected: every message of steps 4 to 6, direction `out`, with path, type tags and arguments as the monitor received them. **in** shows none of them, **out** all of them. **Export** writes a text file, its path shown in the status bar.
+   Expected: every message of steps 4 to 6, direction `out`, with path, type tags and arguments as the monitor received them. **in** shows none of them, **out** all of them. **File ▸ Export ▸ Traffic…** opens the system's save dialog and writes a text file, its path shown in the status bar.
 
 Proves: discovery by Bonjour on the LAN, `HOST_INFO` with an advertised port, sending OSC to a real server with the declared types, the write only display, the JSON and traffic tabs. Cannot prove: values read from the server (the Helper serves none), the WebSocket (the Helper lists no `LISTEN` and has no value to push, see "Known limit").
 

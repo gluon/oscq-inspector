@@ -4,10 +4,20 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 
 ## [Unreleased]
 
+### Added
+
+- **Stale servers can be removed from the list.** A discovered server no longer advertised has an **x**, and **Clear stale** removes them all. One advertised again comes back, its settings kept.
+- **A File menu**, beside Theme and About, and in the menu bar on macOS: the one place where anything is saved or read, each time through the system's own dialog. **Save Project…** and **Open Project…** (Cmd or Ctrl S and O) keep the manual servers, OSC ports, pins, presets and map places in a `.oscqi` file; opening one first keeps the project it replaces in the exports folder. **Export** saves the server list, the selected server's document, its traffic or the presets; **Import** adds a server list as manual entries or replaces the presets.
+
 ### Changed
 
+- **The manual list holds 64 servers**, where it held 10.
 - **The macOS app is signed with a Developer ID and notarised by Apple.** It opens with a double click and one confirmation, where up to 0.5.1 macOS stopped it until **Open Anyway** in **Privacy & Security**. The Windows program is still unsigned.
 - **The README is the front page, the manual is its own file.** The README keeps what the application is, its features, the OSCQuery it implements and the links. Installation and first launch are in `docs/install.md`, the manual in `docs/manual.md`, the tested servers and systems in `docs/compatibility.md`, building, the tools, the budgets, the release, the status and the backlog in `DEVELOPMENT.md`. Its images show the window of 0.5.1, one large and three thumbnails beside the map.
+
+### Removed
+
+- **The export buttons of the JSON and Traffic tabs.** Their files are saved from the File menu, with a dialog, instead of always landing in the exports folder.
 
 ### Fixed
 
