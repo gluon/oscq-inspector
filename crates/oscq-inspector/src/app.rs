@@ -112,6 +112,13 @@ enum Action {
     SetOscPort(ServerId, Option<u16>),
     /// Drops a manual entry, its history line and its saved OSC port (PRD 9.1).
     RemoveManual(ServerId),
+    /// Drops a discovered server that is no longer advertised from the list (PRD 9.1). It comes
+    /// back if it is advertised again.
+    ForgetStale(ServerId),
+    /// Drops every discovered server that is no longer advertised (PRD 9.1).
+    ForgetAllStale,
+    /// Saves the server list, discovered and manual, to a JSON file (PRD 9.1).
+    ExportServers,
     /// Pins or unpins a path of the selected server (PRD 9.8).
     TogglePin(String),
     /// Captures the selected server into a preset slot, 1 to 16 (PRD 9.9).
@@ -842,6 +849,21 @@ impl InspectorApp {
                 }
                 self.save_config(ctx);
             }
+            Action::ForgetStale(id) => self.forget_stale(&[id]),
+            Action::ForgetAllStale => {
+                let ids: Vec<ServerId> = self
+                    .state
+                    .servers
+                    .iter()
+                    .filter(|e| forgettable(e))
+                    .map(|e| e.server.id)
+                    .collect();
+                self.forget_stale(&ids);
+            }
+            Action::ExportServers => {
+                let contents = servers_json(&self.state.servers);
+                self.write_export(ctx, "servers", "json", contents);
+            }
             Action::TogglePin(path) => {
                 let Some(key) = self.state.selected_entry().map(|e| e.key()) else {
                     return;
@@ -1101,6 +1123,26 @@ impl InspectorApp {
         });
     }
 
+    /// Drops discovered servers no longer advertised, with their connection, tree and traffic.
+    /// Their saved settings (OSC port, pins, map place) are kept: they are keyed by host and
+    /// port, and the server may be advertised again. A server that is not stale is left alone.
+    fn forget_stale(&mut self, ids: &[ServerId]) {
+        for &id in ids {
+            if !self.state.entry(id).is_some_and(forgettable) {
+                continue;
+            }
+            let _ = self
+                .backend
+                .commands
+                .send(Command::Disconnect { server_id: id });
+            self.state.remove(id);
+            if self.state.selected == Some(id) {
+                self.state.selected = None;
+                self.view.selected_path = None;
+            }
+        }
+    }
+
     fn write_export(&self, ctx: &egui::Context, stem: &str, ext: &str, contents: String) {
         let Some(dir) = self.config_dir.clone() else {
             let reason = "no config directory to export to";
@@ -1224,8 +1266,20 @@ impl InspectorApp {
                         }
                     }
                 }
-                for e in discovered {
+                for e in &discovered {
                     server_row(ui, e, self.state.selected, actions);
+                }
+                let stale = discovered.iter().filter(|e| forgettable(e)).count();
+                if stale > 0
+                    && ui
+                        .button(style::caps("Clear stale"))
+                        .on_hover_text(format!(
+                            "Remove the {stale} servers no longer advertised; one that is \
+                             advertised again comes back"
+                        ))
+                        .clicked()
+                {
+                    actions.push(Action::ForgetAllStale);
                 }
                 ui.add_space(GROUP_GAP);
                 style::section(ui, "Manual");
@@ -1235,6 +1289,15 @@ impl InspectorApp {
                 if ui.button(style::caps("+ manual")).clicked() {
                     self.view.manual_open = true;
                     self.view.manual_error = None;
+                }
+                // Its own line: beside + manual it would set the pane's narrowest width.
+                if !self.state.servers.is_empty()
+                    && ui
+                        .button(style::caps("Export list"))
+                        .on_hover_text("Save the server list, discovered and manual, as JSON")
+                        .clicked()
+                {
+                    actions.push(Action::ExportServers);
                 }
                 if let Some(e) = self.state.selected_entry() {
                     if e.conn == ConnState::Connected
@@ -2515,8 +2578,9 @@ fn state_text(e: &ServerEntry) -> &'static str {
     }
 }
 
-/// A server in the list: its dot and name; a manual entry has its remove button. A discovered
-/// server has none: it would come back with the next announcement.
+/// A server in the list: its dot and name; a manual entry has its remove button, and so has a
+/// discovered server no longer advertised (PRD 9.1). A discovered server still advertised has
+/// none: it would come back with the next announcement.
 fn server_row(
     ui: &mut egui::Ui,
     e: &ServerEntry,
@@ -2533,8 +2597,9 @@ fn server_row(
             text = text.weak();
         }
         let manual = e.server.origin == Origin::Manual;
+        let forget = forgettable(e);
         // The remove button and the gap before it: reserved, or the panel grows every frame.
-        let remove_w = if manual { 8.0 * GRID } else { 0.0 };
+        let remove_w = if manual || forget { 8.0 * GRID } else { 0.0 };
         let name_w = (ui.available_width() - remove_w).max(10.0 * GRID);
         let label = if e.server.kind == ServiceKind::OscOnly {
             ui.add_enabled(
@@ -2575,7 +2640,50 @@ fn server_row(
         {
             actions.push(Action::RemoveManual(e.server.id));
         }
+        if forget
+            && glyph::row_button(
+                ui,
+                glyph::Icon::Close,
+                &format!("forget {}", e.key()),
+                remove_w - GRID,
+            )
+            .on_hover_text("Remove this server, no longer advertised; it comes back if it is again")
+            .clicked()
+        {
+            actions.push(Action::ForgetStale(e.server.id));
+        }
     });
+}
+
+/// A discovered server that may be removed from the list: no longer advertised, and not being
+/// connected to.
+fn forgettable(e: &ServerEntry) -> bool {
+    e.server.origin != Origin::Manual && e.server.stale && e.conn != ConnState::Connecting
+}
+
+/// The server list as JSON: what the list shows, one object per server, in its order.
+fn servers_json(servers: &[ServerEntry]) -> String {
+    let list: Vec<serde_json::Value> = servers
+        .iter()
+        .map(|e| {
+            let s = &e.server;
+            serde_json::json!({
+                "name": e.declared_name(),
+                "advertised_name": s.name,
+                "origin": if s.origin == Origin::Manual { "manual" } else { "discovered" },
+                "kind": if s.kind == ServiceKind::OscOnly { "osc" } else { "oscquery" },
+                "host": s.host,
+                "port": s.port,
+                "addresses": s.addresses.iter().map(|a| a.ip.to_string()).collect::<Vec<_>>(),
+                "advertised": s.origin == Origin::Manual || !s.stale,
+                "state": state_text(e),
+            })
+        })
+        .collect();
+    let mut out =
+        serde_json::to_string_pretty(&serde_json::json!({ "servers": list })).unwrap_or_default();
+    out.push('\n');
+    out
 }
 
 /// A server's state dot: a square, since the system has no round corners (the human's decision
@@ -4644,6 +4752,70 @@ mod tests {
         assert!(
             icon_drawn(&h, "remove 10.0.0.2:2345").is_some(),
             "the entry that stays keeps its button"
+        );
+    }
+
+    /// PRD 9.1: a discovered server no longer advertised can be removed, one at a time or all
+    /// at once; one still advertised cannot; a removed one comes back when it is advertised
+    /// again; the list can be exported as JSON.
+    #[test]
+    fn stale_servers_are_forgotten_and_come_back_and_the_list_exports() {
+        let mut h = harness();
+        let live = server();
+        let mut gone = server();
+        gone.name = "load_demo".into();
+        gone.port = 5000;
+        let (live_id, gone_id) = (live.id, gone.id);
+        h.events.send(Event::ServerFound(live.clone())).unwrap();
+        h.events.send(Event::ServerFound(gone.clone())).unwrap();
+        h.frame(Vec::new());
+        gone.stale = true;
+        h.events.send(Event::ServerStale(gone.clone())).unwrap();
+        let out = h.frame(Vec::new());
+        h.frame(Vec::new());
+
+        let rect = icon_place(&h, "forget 127.0.0.1:5000");
+        assert!(
+            !strokes_inside(&out, rect).is_empty(),
+            "the stale server has its remove icon, drawn inside {rect:?}"
+        );
+        assert!(
+            icon_drawn(&h, "forget 127.0.0.1:2345").is_none(),
+            "a server still advertised has none"
+        );
+
+        let json: serde_json::Value =
+            serde_json::from_str(&servers_json(&h.app.state.servers)).unwrap();
+        let list = json["servers"].as_array().unwrap();
+        assert_eq!(list.len(), 2);
+        let stale = list.iter().find(|s| s["port"] == 5000).unwrap();
+        assert_eq!(stale["advertised"], false);
+        assert_eq!(stale["state"], "stale");
+        assert_eq!(stale["origin"], "discovered");
+
+        h.sent();
+        h.app.act(&h.ctx.clone(), Action::ForgetStale(live_id));
+        assert!(
+            h.app.state.entry(live_id).is_some(),
+            "an advertised server is not forgotten"
+        );
+        h.app.act(&h.ctx.clone(), Action::ForgetAllStale);
+        assert!(
+            h.app.state.entry(gone_id).is_none(),
+            "the stale server is gone"
+        );
+        assert!(h.app.state.entry(live_id).is_some(), "the live one stays");
+        assert!(matches!(
+            h.sent().as_slice(),
+            [Command::Disconnect { server_id }] if *server_id == gone_id
+        ));
+
+        gone.stale = false;
+        h.events.send(Event::ServerChanged(gone)).unwrap();
+        h.frame(Vec::new());
+        assert!(
+            h.app.state.entry(gone_id).is_some_and(|e| !e.server.stale),
+            "advertised again, it comes back"
         );
     }
 

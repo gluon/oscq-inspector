@@ -4,6 +4,11 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 
 ## [Unreleased]
 
+### Added
+
+- **Stale servers can be removed from the list.** A discovered server no longer advertised has an **x**, and **Clear stale** removes them all. One advertised again comes back, its settings kept.
+- **Export list** saves the server list, discovered and manual, as JSON in the exports folder.
+
 ### Changed
 
 - **The macOS app is signed with a Developer ID and notarised by Apple.** It opens with a double click and one confirmation, where up to 0.5.1 macOS stopped it until **Open Anyway** in **Privacy & Security**. The Windows program is still unsigned.
