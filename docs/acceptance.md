@@ -119,7 +119,7 @@ Setup: the synthetic server of section 3 running, Max 9 with its patch as in sec
 2. Switch **Theme** to light, then dark, then system; quit and open again.
    Expected: each one applied at once; system follows the setting of macOS; the last choice kept after the restart.
 3. In the server pane, look at the **Discovered** and **Manual** sections.
-   Expected: the manual entries under **Manual**, each with a cross at the end of its row; a discovered server has none.
+   Expected: the manual entries under **Manual**, each with a cross at the end of its row; a discovered server has none while it is advertised, and one once it is stale, with **Clear stale** under the discovered servers.
 4. Right click `/g0/p0`, **Pin**; the same for `/g0/p1` and `/g0/p2`. Collapse `/g0`, open the **JSON** tab.
    Expected: the three nodes in **Pinned** on the right, with their widgets, whatever the tree or the tab shows. Moving a pinned widget sends, as in the tree.
 5. Set the three pinned values to 0.1, 0.2, 0.3. The preset section is folded: click **PRESETS** to open it.
@@ -136,7 +136,7 @@ Setup: the synthetic server of section 3 running, Max 9 with its patch as in sec
    Expected: a menu naming **Recall**, **Capture** and **Clear** in words, **Recall** and **Clear** greyed on an empty slot.
 7. In **Traffic**, click **IN**, then **OUT**, then **ALL**, in the segmented bar beside the filter.
    Expected: **IN** shows only values received, **OUT** only what was sent, **ALL** both; the chosen one is drawn inverted. Narrow the window to its smallest, 640 points.
-   Expected: the tab's own row of controls wraps onto further lines and every one of them stays on screen, the filter, the bar, **PAUSE**, **CLEAR**, **EXPORT** and the count; each record of the log stays on one line, the rest of it reached by scrolling sideways.
+   Expected: the tab's own row of controls wraps onto further lines and every one of them stays on screen, the filter, the bar, **PAUSE**, **CLEAR** and the count; each record of the log stays on one line, the rest of it reached by scrolling sideways.
 8. Right click a node, **Copy path**, and paste it somewhere.
    Expected: its full path.
    Then click the cross at the end of the row of `/g0/p2` in **Pinned**.
