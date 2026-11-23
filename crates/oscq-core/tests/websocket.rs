@@ -441,3 +441,44 @@ async fn a_silent_socket_is_open_and_becomes_live_only_when_the_server_sends() {
     ));
     h.until(|e| is_state(e, live)).await;
 }
+
+/// A server that serves `"WS_IP":""`, as a REAPER server does: the empty field names no host, so
+/// it counts as absent and the socket is opened on the HTTP host instead of the unusable
+/// `ws://:<port>/`. Without that rule the socket never opens, no `LISTEN` is ever sent, and the
+/// server stays on values on refresh only. End to end: the socket opens, the `LISTEN` reaches the
+/// server, and a value pushed for that path comes back.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_empty_ws_ip_opens_the_socket_on_the_http_host_and_a_value_comes_back() {
+    let host_info =
+        r#"{"NAME":"syn","WS_IP":"","EXTENSIONS":{"LISTEN":true,"VALUE":true}}"#.to_owned();
+    let server = SyntheticServer::start_ws("127.0.0.1:0", routes(host_info))
+        .await
+        .unwrap();
+    let h = harness();
+    let (id, seen) = connect(&h, &server).await;
+    assert_eq!(
+        states(&seen),
+        [
+            TransportState::Connecting,
+            TransportState::HttpOnly,
+            TransportState::WebSocketOpen
+        ],
+        "the empty WS_IP must not stop the socket from opening"
+    );
+
+    listen(&h, id, "/b");
+    server
+        .ws
+        .wait("the LISTEN of /b", |w| w.listens() == set(&["/b"]))
+        .await;
+    server
+        .ws
+        .push(Push::Osc("/b".into(), vec![OscType::Int(7)]));
+    let seen = h.until(|e| value_of(e, "/b").is_some()).await;
+    assert_eq!(value_of(seen.last().unwrap(), "/b"), Some(json!([7])));
+    assert_eq!(
+        states(&seen),
+        [TransportState::WebSocketLive],
+        "live with the first value from the server"
+    );
+}

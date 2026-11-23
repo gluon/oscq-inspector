@@ -1,0 +1,12 @@
+{
+  "FULL_PATH": "/",
+  "CONTENTS": {
+    "gain": {
+      "FULL_PATH": "/gain",
+      "TYPE": "f",
+      "ACCESS": 3,
+      "VALUE": [0.5],
+      "RANGE": [{ "MIN": 0.0, "MAX": 1.0 }]
+    }
+  }
+}

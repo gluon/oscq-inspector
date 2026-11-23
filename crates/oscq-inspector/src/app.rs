@@ -12,8 +12,8 @@ use egui::{Color32, FontId, Key, Modifiers, RichText, TextFormat};
 use oscq_core::model::parse_rgba_hex;
 use oscq_core::osc::arg_from_text;
 use oscq_core::{
-    ArgType, Command, Event, Origin, OscPath, PortSource, ServerId, ServiceKind, TypeSignature,
-    TypeTag,
+    ArgType, Command, DiagnosticKind, Event, Origin, OscPath, PortSource, ServerId, ServiceKind,
+    TypeSignature, TypeTag,
 };
 use oscq_discovery::{ManualEntry, ManualHistory};
 use rosc::{OscColor, OscType};
@@ -27,7 +27,7 @@ use crate::presets;
 use crate::project::{self, Project};
 use crate::rate::{INTERVAL, RateLimiter};
 use crate::state::{
-    AppState, ConnState, PeersSnapshot, PeersView, ServerEntry, WsState, client_label,
+    AppState, ConnState, PeersSnapshot, PeersView, ServerEntry, TreeState, WsState, client_label,
 };
 use crate::style::{self, GRID, GROUP_GAP, ROW_H};
 use crate::traffic;
@@ -2122,6 +2122,83 @@ impl InspectorApp {
 
     // ---------------------------------------------------------------- status bar
 
+    /// PRD 9.6: a warning the window counts, it also names. An `InvalidAttribute` gives the
+    /// attribute, the value the server sent for it, and that it counts as absent: the count alone
+    /// says neither which attribute was dropped nor what it held, so nothing on screen told a user
+    /// that a `WS_IP` of `""` was the reason a server was never followed live. The diagnostics of
+    /// `HOST_INFO` come first, concerning the server itself rather than a node of its tree.
+    fn warning_lines(e: &ServerEntry, tree: Option<&TreeState>) -> Vec<String> {
+        fn absent(what: &str, key: &str, raw: Option<&serde_json::Value>) -> String {
+            match raw {
+                Some(v) => format!("{what} {key}: {v} treated as absent"),
+                None => format!("{what} {key} treated as absent"),
+            }
+        }
+        let mut lines = Vec::new();
+        for d in &e.host_info_diagnostics {
+            lines.push(match &d.kind {
+                DiagnosticKind::InvalidAttribute(key) => absent(
+                    "HOST_INFO",
+                    key,
+                    e.host_info.as_ref().and_then(|i| i.extra.get(key)),
+                ),
+                other => format!("HOST_INFO: {}", Self::warning_kind(other)),
+            });
+        }
+        for d in tree.iter().flat_map(|t| t.diagnostics.iter()) {
+            lines.push(match &d.kind {
+                DiagnosticKind::InvalidAttribute(key) => absent(
+                    &d.path,
+                    key,
+                    tree.and_then(|t| t.node(&d.path))
+                        .and_then(|n| n.extra.get(key)),
+                ),
+                other => format!("{}: {}", d.path, Self::warning_kind(other)),
+            });
+        }
+        lines
+    }
+
+    /// `1 warning`, `2 warnings`: a count the window writes in words a reader does not stumble
+    /// on, rather than always in the plural.
+    fn counted(n: usize, word: &str) -> String {
+        if n == 1 {
+            format!("1 {word}")
+        } else {
+            format!("{n} {word}s")
+        }
+    }
+
+    /// Every other kind of diagnostic in its own words, so that a counted warning is never left
+    /// without its line.
+    fn warning_kind(kind: &DiagnosticKind) -> String {
+        match kind {
+            DiagnosticKind::MissingFullPath => {
+                "FULL_PATH absent or not a string, derived from the parent".to_owned()
+            }
+            DiagnosticKind::InvalidOscPath(e) => {
+                format!("FULL_PATH is not an OSC address: {e}. Nothing can be sent to it")
+            }
+            DiagnosticKind::InvalidType(e) => {
+                format!("TYPE could not be read: {e}. Nothing can be sent to it")
+            }
+            DiagnosticKind::ValueLengthMismatch { declared, received } => {
+                format!("TYPE declares {declared} values and VALUE carries {received}")
+            }
+            DiagnosticKind::InvalidAccess => {
+                "ACCESS is not 0, 1, 2 or 3: treated as absent".to_owned()
+            }
+            DiagnosticKind::InvalidAttribute(key) => format!("{key} treated as absent"),
+            DiagnosticKind::InvalidChild(name) => {
+                format!("CONTENTS entry {name} is not an object: skipped")
+            }
+            DiagnosticKind::DepthLimit => "CONTENTS below the depth limit were dropped".to_owned(),
+            DiagnosticKind::HostInfoIgnored => {
+                "the HOST_INFO query was answered with an address space document".to_owned()
+            }
+        }
+    }
+
     /// One line in fixed zones: state, server, transport, node count, then the message (PRD 9.1).
     /// Each zone is short; the details are on hover.
     fn status_bar(&mut self, ui: &mut egui::Ui) {
@@ -2248,21 +2325,41 @@ impl InspectorApp {
             });
             style::divider(ui, ROW_H);
             zone(ui, 40.0 * GRID * scale, &mut |ui| {
+                let warnings = Self::warning_lines(e, e.tree.as_ref());
+                // Hidden nodes are a count of the tree: without one, nothing is hidden.
+                let hidden = hidden.filter(|_| e.tree.is_some());
+                let mut text = String::new();
                 if let Some(t) = &e.tree {
-                    let mut text = format!("{} nodes", t.nodes.saturating_sub(1));
+                    text = Self::counted(t.nodes.saturating_sub(1), "node");
                     if let Some(n) = hidden {
                         text.push_str(&format!(", {n} hidden"));
                     }
-                    if !t.diagnostics.is_empty() {
-                        text.push_str(&format!(", {} warnings", t.diagnostics.len()));
+                }
+                // A warning of the `HOST_INFO` stands on its own: it was read before any tree was
+                // asked for, and a server whose tree never loads is where it matters most.
+                if !warnings.is_empty() {
+                    let counted = Self::counted(warnings.len(), "warning");
+                    if text.is_empty() {
+                        text = counted;
+                    } else {
+                        text.push_str(&format!(", {counted}"));
                     }
+                }
+                if !text.is_empty() {
                     let label = ui.add(egui::Label::new(text).truncate());
-                    if let Some(n) = hidden {
+                    if hidden.is_some() || !warnings.is_empty() {
                         label.on_hover_ui(|ui| {
-                            ui.label(format!(
-                                "{n} nodes hidden: read only, or containers holding only read \
-                                 only nodes. Unchecking Writable, in the toolbar, shows them again."
-                            ));
+                            if let Some(n) = hidden {
+                                ui.label(format!(
+                                    "{} hidden: read only, or containers holding only read only \
+                                     nodes. Unchecking Writable, in the toolbar, shows them again.",
+                                    Self::counted(n, "node")
+                                ));
+                            }
+                            // Each warning named, not just counted: PRD 9.6.
+                            for line in &warnings {
+                                ui.label(line);
+                            }
                         });
                     }
                 }
@@ -5027,7 +5124,7 @@ mod tests {
         h.frame(Vec::new());
         let ctx = h.ctx.clone();
         h.app.act(&ctx, Action::SelectServer(id));
-        let (info, _) = oscq_core::HostInfo::parse(host.as_bytes()).unwrap();
+        let (info, diagnostics) = oscq_core::HostInfo::parse(host.as_bytes()).unwrap();
         let destination = info.osc_destination("127.0.0.1", 2345);
         let tree_loaded = || Event::TreeLoaded {
             server_id: id,
@@ -5039,6 +5136,7 @@ mod tests {
                 server_id: id,
                 info,
                 destination,
+                diagnostics,
             })
             .unwrap();
         h.events.send(tree_loaded()).unwrap();
@@ -5167,13 +5265,14 @@ mod tests {
         h.app.act(&h.ctx.clone(), Action::SelectServer(id));
         // It declares the name it is listed under, as a server usually does.
         let host_info = format!(r#"{{"NAME":"{name}","EXTENSIONS":{{"VALUE":true}}}}"#);
-        let (info, _) = oscq_core::HostInfo::parse(host_info.as_bytes()).unwrap();
+        let (info, diagnostics) = oscq_core::HostInfo::parse(host_info.as_bytes()).unwrap();
         let destination = info.osc_destination(host, port);
         for event in [
             Event::HostInfo {
                 server_id: id,
                 info,
                 destination,
+                diagnostics,
             },
             Event::TreeLoaded {
                 server_id: id,
@@ -8619,13 +8718,14 @@ mod tests {
             r#""VALUE":true"#
         };
         let host_info = format!(r#"{{"NAME":"{name}","EXTENSIONS":{{{extensions}}}}}"#);
-        let (info, _) = oscq_core::HostInfo::parse(host_info.as_bytes()).unwrap();
+        let (info, diagnostics) = oscq_core::HostInfo::parse(host_info.as_bytes()).unwrap();
         let destination = info.osc_destination(ip, port);
         for event in [
             Event::HostInfo {
                 server_id: id,
                 info,
                 destination,
+                diagnostics,
             },
             Event::TreeLoaded {
                 server_id: id,
@@ -9290,13 +9390,14 @@ mod tests {
             Some(n) => format!(r#"{{"NAME":"{n}","EXTENSIONS":{{"VALUE":true,"PEERS":true}}}}"#),
             None => r#"{"EXTENSIONS":{"VALUE":true,"PEERS":true}}"#.to_owned(),
         };
-        let (info, _) = oscq_core::HostInfo::parse(host_info.as_bytes()).unwrap();
+        let (info, diagnostics) = oscq_core::HostInfo::parse(host_info.as_bytes()).unwrap();
         let destination = info.osc_destination("127.0.0.1", port);
         for event in [
             Event::HostInfo {
                 server_id: id,
                 info,
                 destination,
+                diagnostics,
             },
             Event::TreeLoaded {
                 server_id: id,
@@ -10779,6 +10880,196 @@ mod tests {
         h.frame_at(100.1, Vec::new());
         h.frame_at(102.0, Vec::new());
         h.frame_at(102.1, Vec::new())
+    }
+
+    /// PRD 9.6 and CLAUDE.md law 1: a warning the status bar counts, hovering it names. A server
+    /// whose `HOST_INFO` carries `"WS_IP":""`, as a REAPER server does, had that field dropped
+    /// with nothing on screen saying which attribute it was or what it held, the count alone
+    /// saying neither. The attribute, the value received and that it counts as absent are drawn
+    /// on hover. Read as glyphs, not as the text a label was given, which stays whole when egui
+    /// elides it (PITFALLS.md, `Galley::text()`).
+    #[test]
+    fn a_counted_warning_is_named_on_hover_with_its_attribute_and_its_value() {
+        let mut h = harness();
+        let s = server();
+        let id = s.id;
+        h.events.send(Event::ServerFound(s)).unwrap();
+        h.frame(Vec::new());
+        h.app.act(&h.ctx.clone(), Action::SelectServer(id));
+        let (info, diagnostics) =
+            oscq_core::HostInfo::parse(br#"{"NAME":"Reaper","WS_IP":""}"#).unwrap();
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "the parser found the empty WS_IP: {diagnostics:?}"
+        );
+        let destination = info.osc_destination("127.0.0.1", 5678);
+        h.events
+            .send(Event::HostInfo {
+                server_id: id,
+                info,
+                destination,
+                diagnostics,
+            })
+            .unwrap();
+        h.events
+            .send(Event::TreeLoaded {
+                server_id: id,
+                raw: Arc::from(ONE_METHOD),
+                report: parse_document(ONE_METHOD.as_bytes()).unwrap(),
+            })
+            .unwrap();
+        h.frame_at(99.0, Vec::new());
+        let out = h.frame_at(99.1, Vec::new());
+        let (count, rect) = status_message(&h, &out, "1 node");
+        // The exact line docs/acceptance.md tells the human to read, locked here.
+        assert_eq!(
+            count, "1 node, 1 warning",
+            "the node and the warning, both counted in the singular"
+        );
+        let squeezed = |t: &str| -> String { t.chars().filter(|c| !c.is_whitespace()).collect() };
+        let out = hover_still(&mut h, rect);
+        let drawn: Vec<String> = shown_outside_status(&h, &out)
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        let named = squeezed(r#"HOST_INFO WS_IP: "" treated as absent"#);
+        assert!(
+            drawn.contains(&named),
+            "the attribute, its value and that it counts as absent, drawn on hover: {drawn:?}"
+        );
+    }
+
+    /// The same `counted` inside the tooltip of the hidden nodes: one node hidden, not `1 nodes
+    /// hidden`. Read as glyphs, whitespace dropped, as a wrapped tooltip draws no space at a
+    /// break.
+    #[test]
+    fn one_hidden_node_is_one_node_in_the_tooltip() {
+        const MIXED: &str = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]},"b":{"FULL_PATH":"/b","TYPE":"f","ACCESS":1,"VALUE":[0.5]}}}"#;
+        let mut h = harness_with(Config {
+            hide_read_only: true,
+            ..Config::default()
+        });
+        let s = server();
+        let id = s.id;
+        h.events.send(Event::ServerFound(s)).unwrap();
+        h.frame(Vec::new());
+        h.app.act(&h.ctx.clone(), Action::SelectServer(id));
+        h.events
+            .send(Event::TreeLoaded {
+                server_id: id,
+                raw: Arc::from(MIXED),
+                report: parse_document(MIXED.as_bytes()).unwrap(),
+            })
+            .unwrap();
+        h.frame_at(99.0, Vec::new());
+        let out = h.frame_at(99.1, Vec::new());
+        let (count, rect) = status_message(&h, &out, "2 nodes");
+        assert!(
+            count.contains("1 hidden"),
+            "one of the two is read only and hidden: {count:?}"
+        );
+        let out = hover_still(&mut h, rect);
+        let drawn: Vec<String> = shown_outside_status(&h, &out)
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        assert!(
+            drawn.iter().any(|t| t.starts_with("1nodehidden")),
+            "one node hidden, in the singular, on hover: {drawn:?}"
+        );
+    }
+
+    /// PRD 9.1: the node count is written in words a reader does not stumble on, by the same
+    /// `counted` as the warnings: one node, not `1 nodes`. Read as glyphs, not as the text a
+    /// label was given (PITFALLS.md, `Galley::text()`).
+    #[test]
+    fn the_node_count_is_written_in_words_like_every_other_count() {
+        const TWO_METHODS: &str = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]},"b":{"FULL_PATH":"/b","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
+        let mut h = harness();
+        let s = server();
+        let id = s.id;
+        h.events.send(Event::ServerFound(s)).unwrap();
+        h.frame(Vec::new());
+        h.app.act(&h.ctx.clone(), Action::SelectServer(id));
+        let loaded = |doc: &str| Event::TreeLoaded {
+            server_id: id,
+            raw: Arc::from(doc),
+            report: parse_document(doc.as_bytes()).unwrap(),
+        };
+        h.events.send(loaded(ONE_METHOD)).unwrap();
+        h.frame_at(99.0, Vec::new());
+        let out = h.frame_at(99.1, Vec::new());
+        let (count, _) = status_message(&h, &out, "1 node");
+        assert!(
+            count.starts_with("1 node") && !count.starts_with("1 nodes"),
+            "one node, in the singular: {count:?}"
+        );
+
+        h.events.send(loaded(TWO_METHODS)).unwrap();
+        h.frame_at(100.0, Vec::new());
+        let out = h.frame_at(100.1, Vec::new());
+        let (count, _) = status_message(&h, &out, "2 node");
+        assert!(
+            count.starts_with("2 nodes"),
+            "two nodes, in the plural: {count:?}"
+        );
+    }
+
+    /// PRD 9.6: a warning of the `HOST_INFO` is read before any tree is asked for, so it stands
+    /// without one. A server whose tree never loads is where it matters most, and it was the one
+    /// place the count said nothing at all. The count is written in words a reader does not
+    /// stumble on: one warning, not `1 warnings`. Read as glyphs, not as the text a label was
+    /// given (PITFALLS.md, `Galley::text()`).
+    #[test]
+    fn a_host_info_warning_shows_with_no_tree_and_its_count_is_written_in_words() {
+        let mut h = harness();
+        let s = server();
+        let id = s.id;
+        h.events.send(Event::ServerFound(s)).unwrap();
+        h.frame(Vec::new());
+        h.app.act(&h.ctx.clone(), Action::SelectServer(id));
+        let host_info = |json: &str| {
+            let (info, diagnostics) = oscq_core::HostInfo::parse(json.as_bytes()).unwrap();
+            let destination = info.osc_destination("127.0.0.1", 5678);
+            Event::HostInfo {
+                server_id: id,
+                info,
+                destination,
+                diagnostics,
+            }
+        };
+        // No tree is ever loaded here: the HOST_INFO is all that has been read.
+        h.events
+            .send(host_info(r#"{"NAME":"Reaper","WS_IP":""}"#))
+            .unwrap();
+        h.frame_at(99.0, Vec::new());
+        let out = h.frame_at(99.1, Vec::new());
+        assert!(
+            h.app.state.entry(id).unwrap().tree.is_none(),
+            "no tree, so no node count to carry the warning"
+        );
+        let (count, rect) = status_message(&h, &out, "1 warning");
+        assert_eq!(count, "1 warning", "one warning, in the singular");
+        let squeezed = |t: &str| -> String { t.chars().filter(|c| !c.is_whitespace()).collect() };
+        let out = hover_still(&mut h, rect);
+        let drawn: Vec<String> = shown_outside_status(&h, &out)
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        assert!(
+            drawn.contains(&squeezed(r#"HOST_INFO WS_IP: "" treated as absent"#)),
+            "named on hover with no tree at all: {drawn:?}"
+        );
+
+        // Two unusable attributes, counted in the plural.
+        h.events
+            .send(host_info(r#"{"NAME":"Reaper","WS_IP":"","OSC_IP":""}"#))
+            .unwrap();
+        h.frame_at(103.0, vec![egui::Event::PointerGone]);
+        let out = h.frame_at(103.1, Vec::new());
+        let (count, _) = status_message(&h, &out, "2 warning");
+        assert_eq!(count, "2 warnings", "two warnings, in the plural");
     }
 
     /// PRD 9.6: a failed reading of peers is in the status line with its reason, which the map

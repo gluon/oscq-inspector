@@ -1,0 +1,5 @@
+{
+  "NAME": "empty WS_IP",
+  "WS_IP": "",
+  "EXTENSIONS": { "VALUE": true, "LISTEN": true }
+}

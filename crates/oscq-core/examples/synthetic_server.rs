@@ -16,11 +16,20 @@
 //! images. `--echo` sends every OSC message received back over the WebSocket to the clients
 //! listening to its path, as a server confirming a change.
 //!
+//! `--host-info FILE` serves the JSON of FILE as the whole `HOST_INFO`, byte for byte, in place of
+//! the one this server would write: the way to put a `HOST_INFO` no server should send, an empty
+//! `WS_IP` for instance, in front of a client. `--name` then does not reach it, and what it
+//! declares, `EXTENSIONS` included, is the file's. `host-info-empty-ws-ip.json`, beside this
+//! file, is that empty `WS_IP`, and `one-method.json` a document of a single method.
+//!
 //! ```text
 //! cargo run -p oscq-core --example synthetic_server -- --port 5678 --nodes 5000 --stream 2
 //! cargo run -p oscq-core --example synthetic_server -- --port 5679 --peers serve --name Alpha
 //! cargo run -p oscq-core --example synthetic_server -- --port 5680 --peers serve --echo \
 //!   --doc crates/oscq-core/examples/demo-space.json --name "AV rig" --stream 4
+//! cargo run -p oscq-core --example synthetic_server -- --port 5690 \
+//!   --doc crates/oscq-core/examples/one-method.json \
+//!   --host-info crates/oscq-core/examples/host-info-empty-ws-ip.json
 //! ```
 
 #![allow(clippy::unwrap_used)] // shares the test helpers, which unwrap
@@ -105,6 +114,7 @@ async fn main() -> anyhow::Result<()> {
     let name = arg(&args, "--name").unwrap_or_else(|| format!("synthetic {nodes}"));
     let doc = arg(&args, "--doc");
     let echo = args.iter().any(|a| a == "--echo");
+    let host_info = arg(&args, "--host-info");
 
     let osc = OscReceiver::bind("127.0.0.1:0").await?;
     let (mut routes, floats) = match &doc {
@@ -115,10 +125,15 @@ async fn main() -> anyhow::Result<()> {
         Some(_) => routes.iter().filter(|(k, _)| k.ends_with("?VALUE")).count(),
         None => nodes,
     };
-    routes.push((
-        "/?HOST_INFO".to_owned(),
-        Reply::json(host_info_json(&name, osc.port(), peers != PeersMode::Off)),
-    ));
+    // Served as it is, so that a `HOST_INFO` this server would never write itself can be put in
+    // front of a client: an attribute present and empty, for one, which counts as absent.
+    let host_info_body = match &host_info {
+        Some(file) => {
+            std::fs::read(file).map_err(|e| anyhow::anyhow!("--host-info {file}: {e}"))?
+        }
+        None => host_info_json(&name, osc.port(), peers != PeersMode::Off).into_bytes(),
+    };
+    routes.push(("/?HOST_INFO".to_owned(), Reply::json(host_info_body)));
     let server = SyntheticServer::start_ws(&format!("127.0.0.1:{port}"), borrowed(&routes)).await?;
     server.ws.set_peers(peers);
     println!(
@@ -126,6 +141,9 @@ async fn main() -> anyhow::Result<()> {
         server.addr,
         osc.port()
     );
+    if let Some(file) = &host_info {
+        println!("HOST_INFO from {file}, served as it is: --name does not reach it");
+    }
 
     let received = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counter = std::sync::Arc::clone(&received);

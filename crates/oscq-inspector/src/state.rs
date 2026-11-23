@@ -195,6 +195,9 @@ pub struct ServerEntry {
     pub host_info: Option<HostInfo>,
     pub destination: Option<Result<OscDestination, SendBlocked>>,
     pub host_info_error: Option<String>,
+    /// What the parser found unusable in that `HOST_INFO`. Empty until one has arrived, and
+    /// emptied again when the server stops answering: a warning outlives nothing it came with.
+    pub host_info_diagnostics: Vec<Diagnostic>,
     pub tree: Option<TreeState>,
     pub traffic: TrafficLog,
     pub last_error: Option<UserFacingError>,
@@ -212,6 +215,7 @@ impl ServerEntry {
             host_info: None,
             destination: None,
             host_info_error: None,
+            host_info_diagnostics: Vec::new(),
             tree: None,
             traffic: TrafficLog::default(),
             last_error: None,
@@ -403,11 +407,13 @@ impl AppState {
                 server_id,
                 info,
                 destination,
+                diagnostics,
             } => {
                 if let Some(e) = self.entry_mut(server_id) {
                     e.host_info = Some(info);
                     e.destination = Some(destination);
                     e.host_info_error = None;
+                    e.host_info_diagnostics = diagnostics;
                     // What a server no longer declares, it no longer publishes.
                     if !e.publishes_peers() {
                         e.peers = PeersState::default();
@@ -419,6 +425,7 @@ impl AppState {
                     e.host_info = None;
                     e.destination = None;
                     e.host_info_error = Some(reason);
+                    e.host_info_diagnostics.clear();
                     e.peers = PeersState::default();
                 }
             }
@@ -656,12 +663,13 @@ mod tests {
             state: TransportState::HttpOnly,
         });
         let host_info = |json: &str| {
-            let (info, _) = HostInfo::parse(json.as_bytes()).unwrap();
+            let (info, diagnostics) = HostInfo::parse(json.as_bytes()).unwrap();
             let destination = info.osc_destination("studio.local", 2345);
             Event::HostInfo {
                 server_id: id,
                 info,
                 destination,
+                diagnostics,
             }
         };
         let answer = || {
@@ -1014,12 +1022,14 @@ mod tests {
                 .unwrap()
                 .contains("404")
         );
-        let (info, _) = HostInfo::parse(br#"{"OSC_PORT":1240,"OSC_TRANSPORT":"TCP"}"#).unwrap();
+        let (info, diagnostics) =
+            HostInfo::parse(br#"{"OSC_PORT":1240,"OSC_TRANSPORT":"TCP"}"#).unwrap();
         let destination = info.osc_destination("studio.local", 2345);
         st.apply(Event::HostInfo {
             server_id: id,
             info,
             destination,
+            diagnostics,
         });
         assert!(
             st.entry(id)

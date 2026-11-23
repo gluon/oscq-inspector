@@ -93,6 +93,15 @@ Case: `a_server_moved_by_hand_is_drawn_once`, 8 nodes found for 6, 2026-11-17.
 
 ## Status display
 
+A count is not a name. The status bar said `N warnings` and no hover gave them, so nothing on screen said which attribute a server had sent unusably, or what it held: a `WS_IP` of `""` was dropped with no trace in the window. The diagnostics of `HOST_INFO` did not even reach the window, `connect` taking them as `Ok((info, _))` and dropping them, so that count only ever covered the address space document. Carry the diagnostics to the window and give one line per warning.
+Case: the REAPER server of 2026-11-23, and `a_counted_warning_is_named_on_hover_with_its_attribute_and_its_value`.
+
+A zone built inside `if let Some(tree)` says nothing in the very case its reader needs it: the warning count of a server whose tree never loads, a `HOST_INFO` having been read long before any tree was asked for. Read what a zone depends on, not only what it draws.
+Case: the same empty `WS_IP`, counted only once a tree had loaded, and `a_host_info_warning_shows_with_no_tree_and_its_count_is_written_in_words`.
+
+`HostInfo::extra` and `Node::extra` hold two different things under one name: the server's unknown keys, and its known keys whose value had the wrong JSON type. A window reading `extra` to tell which attributes were dropped marks an extension the server legitimately published as a fault. Only the parser's diagnostics say which key was dropped; `extra` says what it held.
+Case: the same change, whose first design was to name the keys of `extra`.
+
 An `egui::Label` with `truncate()` shows its whole text in a tooltip of its own when it is cut, `show_tooltip_when_elided` being true by default. A cut label given `on_hover_text` as well shows two tooltips, one over the other. Turn one off.
 Case: the status bar's message, the reason of a failed `?PEERS` drawn twice on hover, found by `the_whole_reason_of_a_failed_peers_reading_reaches_the_status_line`, 2026-11-14. The other zones of the status bar cut their labels and add a hover of their own; not checked.
 
@@ -236,6 +245,9 @@ Case: `tests/fixtures/max-hostinfo.json`, identical to `max-root.json`, 2026-10-
 
 An accepted WebSocket, and an accepted `LISTEN`, do not mean the server notifies. Max 9 accepts both on its HTTP port and never sends a frame. Showing "live" on open told the user values were pushed when none ever would be. Claim live only after the first frame from the server.
 Case: Max 9 on the human's Mac, `LISTEN /test/param/fader/raw`, fader moved, nothing on the socket, checked with `websocat`, 2026-10-11.
+
+A `HOST_INFO` key that is present and empty is not the same as one that is absent, and reading the two alike is not harmless. A REAPER server serves `"WS_IP":""`. Kept as the empty string, it named no host: the address became `ws://:<port>/`, which nothing can connect to, so no `LISTEN` was ever sent and the server stayed on values on refresh only. Nothing in the failure names the field or the address. The service reported `failed to lookup address information: nodename nor servname provided, or not known`, a resolver error, retried with a growing backoff, while `Url::parse` of that same string answers `EmptyHost`: the mechanism differs depending on who reads the address, and neither mentions `WS_IP`. Treat an address that is empty or spaces only as absent, and do it at parse time rather than where the address is read, so that the flag saying whether the server advertised the address cannot claim the fallback.
+Case: the human's REAPER server, reported 2026-11-23, and `an_empty_ws_ip_opens_the_socket_on_the_http_host_and_a_value_comes_back`, which timed out after 11.79 s on the old code, having only reached `HttpOnly` and five `WebSocketLost`, and passes in 0.01 s.
 
 ## Config
 

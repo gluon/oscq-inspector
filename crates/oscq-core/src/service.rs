@@ -17,7 +17,7 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use url::Url;
 
 use crate::client::{AttributeReply, OscQueryClient};
-use crate::document::ParseReport;
+use crate::document::{Diagnostic, ParseReport};
 use crate::host_info::{HostInfo, OscDestination, SendBlocked};
 use crate::osc::{OscUdpSender, coerce_args, encode_message};
 use crate::path::OscPath;
@@ -204,6 +204,9 @@ pub enum Event {
         server_id: ServerId,
         info: HostInfo,
         destination: Result<OscDestination, SendBlocked>,
+        /// What the parser found unusable in that `HOST_INFO`, carried rather than left to be
+        /// guessed from `info.extra`, which holds the server's unknown keys too.
+        diagnostics: Vec<Diagnostic>,
     },
     /// `HOST_INFO` failed: the server is browsable but not controllable.
     HostInfoUnavailable {
@@ -275,6 +278,9 @@ struct Conn {
     /// The last `HOST_INFO` of this connection, from which the destination is derived again when
     /// the user's port changes.
     host_info: Option<HostInfo>,
+    /// The diagnostics of that same `HOST_INFO`, so that reporting it again says as much as the
+    /// first time.
+    host_info_diagnostics: Vec<Diagnostic>,
     destination: Option<Result<OscDestination, SendBlocked>>,
     generation: u64,
     /// Methods the UI wants values for. A live WebSocket session sends `LISTEN` for each.
@@ -473,10 +479,13 @@ impl Shared {
             };
         }
         let current = self.conns.lock().ok().and_then(|c| {
-            c.get(&id)
-                .and_then(|c| c.host_info.clone().map(|i| (i, c.client.clone())))
+            c.get(&id).and_then(|c| {
+                c.host_info
+                    .clone()
+                    .map(|i| (i, c.host_info_diagnostics.clone(), c.client.clone()))
+            })
         });
-        let Some((info, client)) = current else {
+        let Some((info, diagnostics, client)) = current else {
             return;
         };
         let destination = self.destination(id, &info, &client);
@@ -489,6 +498,7 @@ impl Shared {
             server_id: id,
             info,
             destination,
+            diagnostics,
         });
     }
 
@@ -609,6 +619,7 @@ async fn run(rx: flume::Receiver<Command>, shared: Shared) {
                         Conn {
                             client,
                             host_info: None,
+                            host_info_diagnostics: Vec::new(),
                             destination: None,
                             generation,
                             listens: HashSet::new(),
@@ -695,13 +706,14 @@ async fn connect(shared: Shared, id: ServerId, generation: u64) {
     // and the failure is the connection's. Reported only if the tree is then loaded.
     let mut unreached_host_info = None;
     match client.fetch_host_info().await {
-        Ok((info, _)) => {
+        Ok((info, diagnostics)) => {
             ws_address = info.websocket_address(client.http_host(), client.http_port());
             let destination = shared.destination(id, &info, &client);
             if let Ok(mut conns) = shared.conns.lock() {
                 match conns.get_mut(&id) {
                     Some(c) if c.generation == generation => {
                         c.host_info = Some(info.clone());
+                        c.host_info_diagnostics = diagnostics.clone();
                         c.destination = Some(destination.clone())
                     }
                     _ => return,
@@ -711,6 +723,7 @@ async fn connect(shared: Shared, id: ServerId, generation: u64) {
                 server_id: id,
                 info,
                 destination,
+                diagnostics,
             });
         }
         Err(e) if e.is_unreachable() => unreached_host_info = Some(e.to_string()),

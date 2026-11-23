@@ -1652,12 +1652,13 @@ mod tests {
             json!({})
         };
         let host_info = json!({"NAME": name, "EXTENSIONS": extensions}).to_string();
-        let (info, _) = HostInfo::parse(host_info.as_bytes()).unwrap();
+        let (info, diagnostics) = HostInfo::parse(host_info.as_bytes()).unwrap();
         let destination = info.osc_destination(ip, port);
         state.apply(Event::HostInfo {
             server_id: id,
             info,
             destination,
+            diagnostics,
         });
         state.apply(Event::TransportState {
             server_id: id,
