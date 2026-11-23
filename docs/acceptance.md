@@ -99,6 +99,29 @@ cargo run -p oscq-core --example synthetic_server --release -- --port 5678 --str
 
 Proves: the nominal WebSocket path end to end, listen and ignore following the rows on screen, reconnection with backoff and listens sent again, idle with no repaint. Cannot prove: interoperability with a third party server: the synthetic server is this project's own.
 
+## 3b. A HOST_INFO whose warning the window must name, synthetic server
+
+Nothing from the sections above is needed here, and nothing else must be listening on port 5690. From a clone of the repository at the release tag, in a terminal of its own:
+
+```
+cargo run -p oscq-core --example synthetic_server --release -- --port 5690 --doc crates/oscq-core/examples/one-method.json --host-info crates/oscq-core/examples/host-info-empty-ws-ip.json
+```
+
+Expected in that terminal: a line beginning `http://127.0.0.1:5690`, and under it `HOST_INFO from crates/oscq-core/examples/host-info-empty-ws-ip.json, served as it is: --name does not reach it`. That file declares `WS_IP` as an empty string, which names no host. A REAPER server was found doing it, and until 0.6.0 the application built `ws://:5690/` from it, which nothing can connect to, so no `LISTEN` was ever sent.
+
+1. In OSCQuery Inspector, **+ manual**, `127.0.0.1:5690`, connect.
+   Expected: the node count of the status bar reads exactly `1 node, 1 warning`, both in the singular: not `1 nodes`, not `1 warnings`.
+2. Leave the pointer still on that `1 node, 1 warning` until its tooltip appears.
+   Expected: one line, `HOST_INFO WS_IP: "" treated as absent`: the attribute, the value the server sent for it, and that it counts as absent. The empty pair of quotes is in it, so what is read is the value itself and not a word standing for it.
+3. Read the state at the left of the status bar, and the OSC destination beside it.
+   Expected: `live` or `connected, silent`, and in no case `values on refresh only`. The empty `WS_IP` counted as absent, the WebSocket went to the HTTP host and opened. The destination says the port was inferred from the HTTP port, the file declaring no `OSC_PORT`.
+4. Stop the server with Ctrl C, wait for the status bar to say the socket was lost, then start it again with the same command.
+   Expected: the warning comes back with the connection, still counted once and not twice.
+
+Why by hand: a tooltip is drawn by a pointer left still, and whether its line says the attribute and the value a person can act on is a judgment of what the screen shows. The headless tests of `app.rs` lock the same two strings on the code, `a_counted_warning_is_named_on_hover_with_its_attribute_and_its_value` reading the glyphs laid out; this check is on the built application.
+
+Proves: an unusable `HOST_INFO` attribute is named on screen with the value received, in the singular, on the real binary and seen by a person; and that an empty `WS_IP` no longer keeps the WebSocket shut. Cannot prove: that a real server sending the same is read the same way. The synthetic server serves the file it was handed, byte for byte, and REAPER, the server this was found on, is not among the three covered here.
+
 ## 4. Windows and Linux, when available
 
 Not required for the macOS release. On each system available:

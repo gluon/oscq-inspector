@@ -2330,7 +2330,7 @@ impl InspectorApp {
                 let hidden = hidden.filter(|_| e.tree.is_some());
                 let mut text = String::new();
                 if let Some(t) = &e.tree {
-                    text = format!("{} nodes", t.nodes.saturating_sub(1));
+                    text = Self::counted(t.nodes.saturating_sub(1), "node");
                     if let Some(n) = hidden {
                         text.push_str(&format!(", {n} hidden"));
                     }
@@ -2351,9 +2351,9 @@ impl InspectorApp {
                         label.on_hover_ui(|ui| {
                             if let Some(n) = hidden {
                                 ui.label(format!(
-                                    "{n} nodes hidden: read only, or containers holding only read \
-                                     only nodes. Unchecking Writable, in the toolbar, shows them \
-                                     again."
+                                    "{} hidden: read only, or containers holding only read only \
+                                     nodes. Unchecking Writable, in the toolbar, shows them again.",
+                                    Self::counted(n, "node")
                                 ));
                             }
                             // Each warning named, not just counted: PRD 9.6.
@@ -10921,10 +10921,11 @@ mod tests {
             .unwrap();
         h.frame_at(99.0, Vec::new());
         let out = h.frame_at(99.1, Vec::new());
-        let (count, rect) = status_message(&h, &out, "1 nodes");
-        assert!(
-            count.contains("1 warning") && !count.contains("1 warnings"),
-            "the HOST_INFO warning is counted in the status bar, singular: {count:?}"
+        let (count, rect) = status_message(&h, &out, "1 node");
+        // The exact line docs/acceptance.md tells the human to read, locked here.
+        assert_eq!(
+            count, "1 node, 1 warning",
+            "the node and the warning, both counted in the singular"
         );
         let squeezed = |t: &str| -> String { t.chars().filter(|c| !c.is_whitespace()).collect() };
         let out = hover_still(&mut h, rect);
@@ -10936,6 +10937,82 @@ mod tests {
         assert!(
             drawn.contains(&named),
             "the attribute, its value and that it counts as absent, drawn on hover: {drawn:?}"
+        );
+    }
+
+    /// The same `counted` inside the tooltip of the hidden nodes: one node hidden, not `1 nodes
+    /// hidden`. Read as glyphs, whitespace dropped, as a wrapped tooltip draws no space at a
+    /// break.
+    #[test]
+    fn one_hidden_node_is_one_node_in_the_tooltip() {
+        const MIXED: &str = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]},"b":{"FULL_PATH":"/b","TYPE":"f","ACCESS":1,"VALUE":[0.5]}}}"#;
+        let mut h = harness_with(Config {
+            hide_read_only: true,
+            ..Config::default()
+        });
+        let s = server();
+        let id = s.id;
+        h.events.send(Event::ServerFound(s)).unwrap();
+        h.frame(Vec::new());
+        h.app.act(&h.ctx.clone(), Action::SelectServer(id));
+        h.events
+            .send(Event::TreeLoaded {
+                server_id: id,
+                raw: Arc::from(MIXED),
+                report: parse_document(MIXED.as_bytes()).unwrap(),
+            })
+            .unwrap();
+        h.frame_at(99.0, Vec::new());
+        let out = h.frame_at(99.1, Vec::new());
+        let (count, rect) = status_message(&h, &out, "2 nodes");
+        assert!(
+            count.contains("1 hidden"),
+            "one of the two is read only and hidden: {count:?}"
+        );
+        let out = hover_still(&mut h, rect);
+        let drawn: Vec<String> = shown_outside_status(&h, &out)
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        assert!(
+            drawn.iter().any(|t| t.starts_with("1nodehidden")),
+            "one node hidden, in the singular, on hover: {drawn:?}"
+        );
+    }
+
+    /// PRD 9.1: the node count is written in words a reader does not stumble on, by the same
+    /// `counted` as the warnings: one node, not `1 nodes`. Read as glyphs, not as the text a
+    /// label was given (PITFALLS.md, `Galley::text()`).
+    #[test]
+    fn the_node_count_is_written_in_words_like_every_other_count() {
+        const TWO_METHODS: &str = r#"{"FULL_PATH":"/","CONTENTS":{"a":{"FULL_PATH":"/a","TYPE":"f","ACCESS":3,"VALUE":[0.5]},"b":{"FULL_PATH":"/b","TYPE":"f","ACCESS":3,"VALUE":[0.5]}}}"#;
+        let mut h = harness();
+        let s = server();
+        let id = s.id;
+        h.events.send(Event::ServerFound(s)).unwrap();
+        h.frame(Vec::new());
+        h.app.act(&h.ctx.clone(), Action::SelectServer(id));
+        let loaded = |doc: &str| Event::TreeLoaded {
+            server_id: id,
+            raw: Arc::from(doc),
+            report: parse_document(doc.as_bytes()).unwrap(),
+        };
+        h.events.send(loaded(ONE_METHOD)).unwrap();
+        h.frame_at(99.0, Vec::new());
+        let out = h.frame_at(99.1, Vec::new());
+        let (count, _) = status_message(&h, &out, "1 node");
+        assert!(
+            count.starts_with("1 node") && !count.starts_with("1 nodes"),
+            "one node, in the singular: {count:?}"
+        );
+
+        h.events.send(loaded(TWO_METHODS)).unwrap();
+        h.frame_at(100.0, Vec::new());
+        let out = h.frame_at(100.1, Vec::new());
+        let (count, _) = status_message(&h, &out, "2 node");
+        assert!(
+            count.starts_with("2 nodes"),
+            "two nodes, in the plural: {count:?}"
         );
     }
 

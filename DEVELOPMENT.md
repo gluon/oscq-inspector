@@ -95,6 +95,12 @@ cargo run -p oscq-core --example synthetic_server -- --port 5679 --nodes 200 --p
 cargo run -p oscq-core --example synthetic_server -- --port 5680 --peers serve --echo --doc crates/oscq-core/examples/demo-space.json --name "AV rig" --stream 4
 ```
 
+`--host-info FILE` serves the JSON of FILE as the whole `HOST_INFO`, byte for byte, in place of the one the server would write. It is how a `HOST_INFO` no server should send is put in front of the application: an attribute present and empty, a port that is not a number, an extension declared and not answered. `--name` then does not reach it, and what it declares, `EXTENSIONS` included, is the file's; the server prints the file it is serving so that there is no doubt which `HOST_INFO` is in play. Beside the example, `host-info-empty-ws-ip.json` is a `WS_IP` sent as an empty string, which names no host and counts as absent, and `one-method.json` a document of a single method:
+
+```
+cargo run -p oscq-core --example synthetic_server -- --port 5690 --doc crates/oscq-core/examples/one-method.json --host-info crates/oscq-core/examples/host-info-empty-ws-ip.json
+```
+
 ### Performance budgets
 
 The limits the application is held to, against the synthetic server: window visible under 300 ms after start, a 5000 node document parsed under 150 ms, a frame while scrolling it under 8 ms at p95, under 1 percent of one core at rest with 50 values listened to, no repaint at rest, under 2 ms from a slider to its UDP packet, under 150 MB resident with 5000 nodes, a macOS binary under 25 MB. With eight servers publishing 24 peers: a frame of the map under 8 ms at p95, one repaint per poll interval at rest with the map shown, none with it hidden. The measures are in [docs/decisions.md](docs/decisions.md). On a release build. In process, also run in CI:
