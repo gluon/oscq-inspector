@@ -6,7 +6,7 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 
 ### Added
 
-- **Every warning the status bar counts, it now names.** The node count said `3 warnings` and nothing more: not which attribute a server had sent unusably, not what it held. Hovering the count now gives one line per warning, an unusable attribute as the attribute, the value received and that it counts as absent, so a `WS_IP` of `""` is read on screen instead of being dropped in silence. The diagnostics of `HOST_INFO` reach the window for this, having been discarded before it; they come first, being the server's own rather than a node's.
+- **Every warning the status bar counts, it now names.** The node count said `3 warnings` and nothing more: not which attribute a server had sent unusably, not what it held. Hovering the count now gives one line per warning, an unusable attribute as the attribute, the value received and that it counts as absent, so a `WS_IP` of `""` is read on screen instead of being dropped in silence. The diagnostics of `HOST_INFO` reach the window for this, having been discarded before it; they come first, being the server's own rather than a node's. A warning of the `HOST_INFO` stands there without a tree, where the zone used to show nothing at all, which was the one case it mattered most: a server whose tree never loads. The count is written in words rather than always in the plural, one warning and not `1 warnings`.
 
 ### Fixed
 

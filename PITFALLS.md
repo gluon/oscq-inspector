@@ -96,6 +96,9 @@ Case: `a_server_moved_by_hand_is_drawn_once`, 8 nodes found for 6, 2026-11-17.
 A count is not a name. The status bar said `N warnings` and no hover gave them, so nothing on screen said which attribute a server had sent unusably, or what it held: a `WS_IP` of `""` was dropped with no trace in the window. The diagnostics of `HOST_INFO` did not even reach the window, `connect` taking them as `Ok((info, _))` and dropping them, so that count only ever covered the address space document. Carry the diagnostics to the window and give one line per warning.
 Case: the REAPER server of 2026-11-23, and `a_counted_warning_is_named_on_hover_with_its_attribute_and_its_value`.
 
+A zone built inside `if let Some(tree)` says nothing in the very case its reader needs it: the warning count of a server whose tree never loads, a `HOST_INFO` having been read long before any tree was asked for. Read what a zone depends on, not only what it draws.
+Case: the same empty `WS_IP`, counted only once a tree had loaded, and `a_host_info_warning_shows_with_no_tree_and_its_count_is_written_in_words`.
+
 `HostInfo::extra` and `Node::extra` hold two different things under one name: the server's unknown keys, and its known keys whose value had the wrong JSON type. A window reading `extra` to tell which attributes were dropped marks an extension the server legitimately published as a fault. Only the parser's diagnostics say which key was dropped; `extra` says what it held.
 Case: the same change, whose first design was to name the keys of `extra`.
 

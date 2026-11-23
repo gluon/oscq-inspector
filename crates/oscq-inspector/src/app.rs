@@ -2127,7 +2127,7 @@ impl InspectorApp {
     /// says neither which attribute was dropped nor what it held, so nothing on screen told a user
     /// that a `WS_IP` of `""` was the reason a server was never followed live. The diagnostics of
     /// `HOST_INFO` come first, concerning the server itself rather than a node of its tree.
-    fn warning_lines(e: &ServerEntry, t: &TreeState) -> Vec<String> {
+    fn warning_lines(e: &ServerEntry, tree: Option<&TreeState>) -> Vec<String> {
         fn absent(what: &str, key: &str, raw: Option<&serde_json::Value>) -> String {
             match raw {
                 Some(v) => format!("{what} {key}: {v} treated as absent"),
@@ -2145,15 +2145,28 @@ impl InspectorApp {
                 other => format!("HOST_INFO: {}", Self::warning_kind(other)),
             });
         }
-        for d in &t.diagnostics {
+        for d in tree.iter().flat_map(|t| t.diagnostics.iter()) {
             lines.push(match &d.kind {
-                DiagnosticKind::InvalidAttribute(key) => {
-                    absent(&d.path, key, t.node(&d.path).and_then(|n| n.extra.get(key)))
-                }
+                DiagnosticKind::InvalidAttribute(key) => absent(
+                    &d.path,
+                    key,
+                    tree.and_then(|t| t.node(&d.path))
+                        .and_then(|n| n.extra.get(key)),
+                ),
                 other => format!("{}: {}", d.path, Self::warning_kind(other)),
             });
         }
         lines
+    }
+
+    /// `1 warning`, `2 warnings`: a count the window writes in words a reader does not stumble
+    /// on, rather than always in the plural.
+    fn counted(n: usize, word: &str) -> String {
+        if n == 1 {
+            format!("1 {word}")
+        } else {
+            format!("{n} {word}s")
+        }
     }
 
     /// Every other kind of diagnostic in its own words, so that a counted warning is never left
@@ -2312,15 +2325,27 @@ impl InspectorApp {
             });
             style::divider(ui, ROW_H);
             zone(ui, 40.0 * GRID * scale, &mut |ui| {
+                let warnings = Self::warning_lines(e, e.tree.as_ref());
+                // Hidden nodes are a count of the tree: without one, nothing is hidden.
+                let hidden = hidden.filter(|_| e.tree.is_some());
+                let mut text = String::new();
                 if let Some(t) = &e.tree {
-                    let warnings = Self::warning_lines(e, t);
-                    let mut text = format!("{} nodes", t.nodes.saturating_sub(1));
+                    text = format!("{} nodes", t.nodes.saturating_sub(1));
                     if let Some(n) = hidden {
                         text.push_str(&format!(", {n} hidden"));
                     }
-                    if !warnings.is_empty() {
-                        text.push_str(&format!(", {} warnings", warnings.len()));
+                }
+                // A warning of the `HOST_INFO` stands on its own: it was read before any tree was
+                // asked for, and a server whose tree never loads is where it matters most.
+                if !warnings.is_empty() {
+                    let counted = Self::counted(warnings.len(), "warning");
+                    if text.is_empty() {
+                        text = counted;
+                    } else {
+                        text.push_str(&format!(", {counted}"));
                     }
+                }
+                if !text.is_empty() {
                     let label = ui.add(egui::Label::new(text).truncate());
                     if hidden.is_some() || !warnings.is_empty() {
                         label.on_hover_ui(|ui| {
@@ -10898,8 +10923,8 @@ mod tests {
         let out = h.frame_at(99.1, Vec::new());
         let (count, rect) = status_message(&h, &out, "1 nodes");
         assert!(
-            count.contains("1 warnings"),
-            "the HOST_INFO warning is counted in the status bar: {count:?}"
+            count.contains("1 warning") && !count.contains("1 warnings"),
+            "the HOST_INFO warning is counted in the status bar, singular: {count:?}"
         );
         let squeezed = |t: &str| -> String { t.chars().filter(|c| !c.is_whitespace()).collect() };
         let out = hover_still(&mut h, rect);
@@ -10912,6 +10937,62 @@ mod tests {
             drawn.contains(&named),
             "the attribute, its value and that it counts as absent, drawn on hover: {drawn:?}"
         );
+    }
+
+    /// PRD 9.6: a warning of the `HOST_INFO` is read before any tree is asked for, so it stands
+    /// without one. A server whose tree never loads is where it matters most, and it was the one
+    /// place the count said nothing at all. The count is written in words a reader does not
+    /// stumble on: one warning, not `1 warnings`. Read as glyphs, not as the text a label was
+    /// given (PITFALLS.md, `Galley::text()`).
+    #[test]
+    fn a_host_info_warning_shows_with_no_tree_and_its_count_is_written_in_words() {
+        let mut h = harness();
+        let s = server();
+        let id = s.id;
+        h.events.send(Event::ServerFound(s)).unwrap();
+        h.frame(Vec::new());
+        h.app.act(&h.ctx.clone(), Action::SelectServer(id));
+        let host_info = |json: &str| {
+            let (info, diagnostics) = oscq_core::HostInfo::parse(json.as_bytes()).unwrap();
+            let destination = info.osc_destination("127.0.0.1", 5678);
+            Event::HostInfo {
+                server_id: id,
+                info,
+                destination,
+                diagnostics,
+            }
+        };
+        // No tree is ever loaded here: the HOST_INFO is all that has been read.
+        h.events
+            .send(host_info(r#"{"NAME":"Reaper","WS_IP":""}"#))
+            .unwrap();
+        h.frame_at(99.0, Vec::new());
+        let out = h.frame_at(99.1, Vec::new());
+        assert!(
+            h.app.state.entry(id).unwrap().tree.is_none(),
+            "no tree, so no node count to carry the warning"
+        );
+        let (count, rect) = status_message(&h, &out, "1 warning");
+        assert_eq!(count, "1 warning", "one warning, in the singular");
+        let squeezed = |t: &str| -> String { t.chars().filter(|c| !c.is_whitespace()).collect() };
+        let out = hover_still(&mut h, rect);
+        let drawn: Vec<String> = shown_outside_status(&h, &out)
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        assert!(
+            drawn.contains(&squeezed(r#"HOST_INFO WS_IP: "" treated as absent"#)),
+            "named on hover with no tree at all: {drawn:?}"
+        );
+
+        // Two unusable attributes, counted in the plural.
+        h.events
+            .send(host_info(r#"{"NAME":"Reaper","WS_IP":"","OSC_IP":""}"#))
+            .unwrap();
+        h.frame_at(103.0, vec![egui::Event::PointerGone]);
+        let out = h.frame_at(103.1, Vec::new());
+        let (count, _) = status_message(&h, &out, "2 warning");
+        assert_eq!(count, "2 warnings", "two warnings, in the plural");
     }
 
     /// PRD 9.6: a failed reading of peers is in the status line with its reason, which the map
