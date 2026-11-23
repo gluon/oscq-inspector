@@ -124,7 +124,11 @@ Latest version: **0.5.1**, dated 2026-11-21, the version the documentation descr
 
 Version 0.3.0 is tagged, at `v0.3.0`, and its draft Release was never published: the acceptance it waits on, section 6, asks for two applications implementing the `PEERS` extension, one a client of the other, and that has not been done by a person. Every later version carries what it holds.
 
+On `main` since 0.5.1, unreleased: the macOS app signed and notarised, stale servers removed from the list, and the File menu with its projects, exports and imports, listed under Unreleased in [CHANGELOG.md](CHANGELOG.md).
+
 Backlog:
+
+- The map exported as SVG, from the File menu. Asked for on 2026-11-23, left out of the File menu's first version.
 
 - Acceptance against a real server that notifies over its WebSocket (VDMX, ossia): a value changed inside it updates in the app without user action. Neither OSCQuery Helper nor Max 9 notifies; the synthetic server is the only proof so far. The known limit and what lifts it are in [docs/acceptance.md](docs/acceptance.md).
 - Real captured documents from VDMX and ossia, as test fixtures. OSCQuery Helper and Max 9 are captured.

@@ -71,8 +71,10 @@ Setup: Max 9 running `tests/fixtures/max/test.maxpat`, which serves OSCQuery on 
    Expected: the status bar says the connection failed once, with the system's reason (for example "Connection refused"). The tree stays; its read write nodes still show `rw`, have no widget and say "cannot send", the reason on hover. Never "read only".
 10. Open the patch again and click the server.
    Expected: connected, the widgets back, no error left in the status bar.
+11. **File ▸ Save Project…** (Cmd S), save. Remove the Max entry with its **x**, then **File ▸ Open Project…** (Cmd O) on the file saved, and select the entry.
+   Expected: on macOS the File menu is in the menu bar and the dialogs are the system's own sheets. The Max entry is back, with "OSC localhost:30338 UDP" and "port set by the user"; the status bar says where the project replaced is kept, in `exports/`.
 
-Proves: a server that ignores the `HOST_INFO` query is used with the proposal's defaults and no error, reading values from a real server, sending to a real server on the port set by the user where the inferred one is wrong, that port kept across a restart, the honest display of a WebSocket that accepts and stays silent. Cannot prove: live values (Max does not notify), discovery (Max does not advertise and listens on 127.0.0.1 only).
+Proves: a server that ignores the `HOST_INFO` query is used with the proposal's defaults and no error, reading values from a real server, sending to a real server on the port set by the user where the inferred one is wrong, that port kept across a restart and in a project, the honest display of a WebSocket that accepts and stays silent, the File menu and its dialogs on the system. Cannot prove: live values (Max does not notify), discovery (Max does not advertise and listens on 127.0.0.1 only).
 
 ## 3. Synthetic server, on the same Mac
 

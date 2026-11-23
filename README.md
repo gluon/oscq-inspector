@@ -10,7 +10,7 @@ OSCQuery Inspector is a desktop application for macOS, Windows and Linux that co
   <tr>
     <td width="25%" valign="top"><a href="docs/images/map.png"><img src="docs/images/map.png" alt="The Map tab: this application in the middle, connected to three servers"></a><br><sub><b>Map</b>: who is connected to whom, as each server publishes it, with the packets it counted.</sub></td>
     <td width="25%" valign="top"><a href="docs/images/readme/traffic-dark.png"><img src="docs/images/readme/traffic-dark.png" alt="The Traffic tab: three preset recalls, each a block of messages out, and each value coming back in"></a><br><sub><b>Traffic</b>: three presets recalled, each a block out, and each value coming back over the WebSocket.</sub></td>
-    <td width="25%" valign="top"><a href="docs/images/readme/json-dark.png"><img src="docs/images/readme/json-dark.png" alt="The JSON tab: the document as the server sent it"></a><br><sub><b>JSON</b>: the document as the server sent it, copied or saved in one click.</sub></td>
+    <td width="25%" valign="top"><a href="docs/images/readme/json-dark.png"><img src="docs/images/readme/json-dark.png" alt="The JSON tab: the document as the server sent it"></a><br><sub><b>JSON</b>: the document as the server sent it, copied in one click, saved from the File menu.</sub></td>
     <td width="25%" valign="top"><a href="docs/images/readme/tree-light.png"><img src="docs/images/readme/tree-light.png" alt="The tree in the light theme"></a><br><sub><b>Light theme</b>, dark, or the system's.</sub></td>
   </tr>
 </table>
@@ -19,14 +19,14 @@ The window of 0.5.1. The map was taken against the PRISM demo device, found over
 
 ## Features
 
-- **Discovery**: servers advertised over Bonjour appear on their own; any other is added by hand with its `host:port`.
+- **Discovery**: servers advertised over Bonjour appear on their own; any other is added by hand with its `host:port`, the last 64 kept. A server no longer advertised is marked stale and removed in one click, one at a time or all at once.
 - **The address space as a tree**, fast with thousands of nodes, with a fuzzy filter and a prefix to root it anywhere.
 - **Live values, and where they come from**: pushed by the server over its WebSocket or read on refresh; a value sent and not yet confirmed is marked as sent.
 - **A widget fitting each type**: sliders, toggles, buttons, menus, text fields, colour pickers; the OSC goes to the port the server declares, coerced to the types it declares.
 - **Pinned nodes**, per server, kept across restarts.
 - **Presets**: sixteen slots with the gestures of Max's `preset` object, recalled on the same server or on another.
 - **JSON and Traffic tabs**: each node's document as the server sent it, and every OSC message out and in, filtered.
-- **Projects**: the manual servers, ports, pins, presets and map in one file, saved and opened from the File menu, with the server list, a document, the traffic and the presets exported or imported on their own.
+- **The File menu and projects**: the manual servers, OSC ports, pins, presets and map in one `.oscqi` file, saved and opened with Cmd or Ctrl S and O; the server list, a server's document, its traffic and the presets exported on their own, the server list and the presets imported. Every file through the system's own dialog; in the menu bar on macOS.
 - **The map**: who is connected to whom, drawn from what each server publishes of its own connections, nothing guessed.
 
 Each of them in detail, and the keyboard: [docs/manual.md](docs/manual.md).
