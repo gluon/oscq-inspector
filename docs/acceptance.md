@@ -122,6 +122,31 @@ Why by hand: a tooltip is drawn by a pointer left still, and whether its line sa
 
 Proves: an unusable `HOST_INFO` attribute is named on screen with the value received, in the singular, on the real binary and seen by a person; and that an empty `WS_IP` no longer keeps the WebSocket shut. Cannot prove: that a real server sending the same is read the same way. The synthetic server serves the file it was handed, byte for byte, and REAPER, the server this was found on, is not among the three covered here.
 
+## 3c. The same warning against a real server, ossia-prism in Max on the same Mac
+
+This is the check 3b states it cannot make. It needs Max with the `ossia-prism` package at `2.1.0+prism.18`, the version that serves the empty attribute; the package's `package-info.json` names the one installed. `2.1.0+prism.19` does not reproduce it, having been changed to serve `127.0.0.1`, which its authors report and this repository has not verified. Nothing else must be listening on port 5678.
+
+In Max, open `distant_device.maxpat` from the package's help files and click its `expose oscquery` message box. The device holds one model and two writable floats, `foo` and `bar`, so four nodes with the root.
+
+Worth reading once before the window is opened, the point of this check being that the document is nobody's fixture here:
+
+```
+curl -s 'http://127.0.0.1:5678/?HOST_INFO'
+```
+
+Expected in it: `"WS_IP":""`, with `"WS_PORT":5678`, `"OSC_PORT":9999`, `LISTEN` among the extensions, and no `OSC_IP` key at all.
+
+1. In OSCQuery Inspector, **+ manual**, `127.0.0.1:5678`, connect.
+   Expected: the status bar reads exactly `3 nodes, 1 warning`.
+2. Leave the pointer still on that count until its tooltip appears.
+   Expected: `HOST_INFO WS_IP: "" treated as absent`, the same line as 3b, from a server nobody here wrote.
+3. Read the state at the left of the status bar.
+   Expected: `CONNECTED, SILENT`, and in no case `values on refresh only`. Silent rather than live is right: the device pushes nothing until one of its two parameters moves.
+
+Why by hand: the reason 3b gives, and one more. A fixture proves the code reads what this repository wrote; only a server written elsewhere proves it reads what the world sends.
+
+Proves: that the empty `WS_IP` of a real server is counted as absent and named on screen with the value received, and that the WebSocket address the fallback chooses is where that server answers, a handshake on `http://127.0.0.1:5678/` being answered `101 Switching Protocols` by `Boost.Beast/359`. Cannot prove: that two implementations agree, the empty field coming from one code path, the beast server's `get_local_ip`, seen in two deployments and not in two libraries; anything about `2.1.0+prism.19`, which was not run here; and nothing about the release artifact, this reading having been taken on a debug build wrapped in a minimal bundle.
+
 ## 4. Windows and Linux, when available
 
 Not required for the macOS release. On each system available:
@@ -351,3 +376,4 @@ What was proven, by whom and against what, milestone after milestone, as the REA
 - CLAUDE.md made public: done, merged. It states the laws the application is held to, each pointing into the PRD, and no longer carries the internal working conventions. Nothing in the tracked files names a private repository or infrastructure; the history keeps those names, by the ruling recorded in docs/decisions.md.
 - v0.5.0: tagged and released on 2026-11-20. The tagged run built the three artifacts and the draft. Accept artifact passed on the draft, run 44772959196, once `ci/accept-artifact.sh` counted the font licenses the tag holds: it required four, and stopped every release since the two Space typefaces were bundled. Checked by the human on the Mac, section 0: the draft's macOS zip, downloaded with `gh` and given a quarantine attribute by hand in place of a browser download, reported as unverified, never as damaged, opened through **Open Anyway**, then with no warning; the magnifier icon in the Finder and the Dock; the application's own About box, 0.5.0. Not run for this release: sections 1 to 6b, the preset gestures of section 5 included, which the headless tests of `app.rs` cover on the code but no person has seen on this build.
 - v0.6.0: tagged on 2026-11-23, the first macOS app signed with a Developer ID and notarised. The Release run 45156624642 failed four times in `macos-sign` before passing at its fifth attempt, the secrets and the developer agreement at fault and not the workflow (PITFALLS.md, macOS signing); notarisation Accepted. Accept artifact passed on the draft, run 45234573661. Checked by the human on the Mac on 2026-11-23, the macOS version not noted: the draft's macOS zip, downloaded with `gh` and given a quarantine attribute by hand, `spctl` accepted with "source=Notarized Developer ID", `stapler validate` worked, the app opened; the magnifier icon in the Dock; the application's own About box, 0.6.0. Section 6b: after `tccutil reset LocalNetwork`, the waiting line, then the servers once the permission was given, `lo-only` among them. The File menu with the synthetic server in place of Max 9: a project saved with a manual entry and a pinned node, the entry removed, the project opened, the entry and the pin back, the project replaced kept in `exports/`; the export and import of a server list, a document, the traffic and the presets checked on the branch build the same day. Section 3: live values, the loss and return of the server, 0.0 to 0.2 percent of a core at rest, 1.7 to 3.2 percent with one pinned value pushed twice a second. Not run for this release: section 1 (no Helper running), section 2 (the Max 9 test patch served nothing on 30339 that evening, cause not looked into), sections 4, 5 and 6.
+- Empty `WS_IP` against a real server: checked by the human on the Mac on 2026-11-24, section 3c, `ossia-prism 2.1.0+prism.18` in Max serving `distant_device` on 5678. The status bar read `3 nodes, 1 warning`, its tooltip `HOST_INFO WS_IP: "" treated as absent`, the state `CONNECTED, SILENT`. Read on a debug build of `38eec5a` wrapped in a minimal bundle, not on a release artifact. It closes what 3b says it cannot prove: until then the empty attribute had only been met on a REAPER server, and no real server had been put in front of the window.
