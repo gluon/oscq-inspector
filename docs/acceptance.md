@@ -126,7 +126,7 @@ Proves: an unusable `HOST_INFO` attribute is named on screen with the value rece
 
 This is the check 3b states it cannot make. It needs Max with the `ossia-prism` package at `2.1.0+prism.18`, the version that serves the empty attribute; the package's `package-info.json` names the one installed. `2.1.0+prism.19` does not reproduce it, having been changed to serve `127.0.0.1`, which its authors report and this repository has not verified. Nothing else must be listening on port 5678.
 
-In Max, open `distant_device.maxpat` from the package's help files and click its `expose oscquery` message box. The device holds one model and two writable floats, `foo` and `bar`, so four nodes with the root.
+In Max, open `distant_device.maxpat` from the package's help files and click its `expose oscquery` message box. The device holds one model and two writable floats, `foo` and `bar`, so four nodes with the root. The status bar leaves the root out of its count, which is why the number to read below is three.
 
 Worth reading once before the window is opened, the point of this check being that the document is nobody's fixture here:
 
