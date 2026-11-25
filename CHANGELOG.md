@@ -4,7 +4,7 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 
 ## [Unreleased]
 
-## [0.6.1] - 2026-11-25
+## [0.7.0] - 2026-11-25
 
 ### Added
 
@@ -197,8 +197,8 @@ The first version whose files are on the Releases page.
 
 - First release: discovery over Bonjour and manual entries, the address space as a tree, values read and sent with widgets fitting their types, values live over the WebSocket where the server pushes them, the JSON and Traffic tabs. Unsigned artifacts for macOS (universal), Windows and Linux.
 
-[Unreleased]: https://github.com/gluon/oscq-inspector/compare/v0.6.1...HEAD
-[0.6.1]: https://github.com/gluon/oscq-inspector/compare/v0.6.0...v0.6.1
+[Unreleased]: https://github.com/gluon/oscq-inspector/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/gluon/oscq-inspector/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/gluon/oscq-inspector/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/gluon/oscq-inspector/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/gluon/oscq-inspector/compare/v0.4.2...v0.5.0

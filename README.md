@@ -57,7 +57,7 @@ Vidvox OSCQuery Helper, Max 9, prism-oscquery and its demo device, and the synth
 
 ## Status
 
-Latest version: **0.6.1**, 2026-11-25: a server declaring an empty `WS_IP` is followed live again, and the status bar names the warnings it counts. Formerly void-oscq, published under that name up to 0.2.3. The status of every version and the backlog are in [DEVELOPMENT.md](DEVELOPMENT.md#status-and-backlog).
+Latest version: **0.7.0**, 2026-11-25: a server declaring an empty `WS_IP` is followed live again, and the status bar names the warnings it counts. Formerly void-oscq, published under that name up to 0.2.3. The status of every version and the backlog are in [DEVELOPMENT.md](DEVELOPMENT.md#status-and-backlog).
 
 ## License
 
