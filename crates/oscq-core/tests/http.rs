@@ -115,11 +115,12 @@ async fn osc_port_absent_sends_to_http_port() {
     );
 }
 
-/// A number the receiver could bind in UDP and the server cannot bind in TCP is left for
-/// another: here the first number is taken in TCP, as Windows may reserve it, and the second
-/// attempt holds.
+/// A number the server could bind in TCP and the receiver cannot bind in UDP is left for
+/// another: here the first number is taken in UDP, and the second attempt holds. The pair is
+/// built TCP first since Windows reserves TCP ranges it does not reserve in UDP, so the side
+/// that can be refused, and the side this test occupies, is UDP.
 #[tokio::test]
-async fn a_port_refused_in_tcp_is_left_for_another() {
+async fn a_port_refused_in_udp_is_left_for_another() {
     let mut held = Vec::new();
     let mut first = None;
     let ((server, receiver), attempts) = server_and_receiver_on_one_port_with(
@@ -127,12 +128,17 @@ async fn a_port_refused_in_tcp_is_left_for_another() {
         |port| {
             if first.is_none() {
                 first = Some(port);
-                held.push(std::net::TcpListener::bind(("127.0.0.1", port)).unwrap());
+                // Best effort: if the system refuses this number in UDP too, the helper's own
+                // bind refuses it for the same reason and the number is left all the same.
+                held.extend(std::net::UdpSocket::bind(("127.0.0.1", port)));
             }
         },
     )
     .await;
-    assert_eq!(attempts, 2, "the refused number left, the next one bound");
+    assert!(
+        attempts >= 2,
+        "the number taken in UDP was left, another was tried: {attempts} attempt(s)"
+    );
     assert_ne!(Some(server.addr.port()), first);
     assert_eq!(server.addr.port(), receiver.port());
 }

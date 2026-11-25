@@ -498,23 +498,39 @@ pub async fn server_and_receiver_on_one_port(
     server_and_receiver_on_one_port_with(routes, |_| {}).await.0
 }
 
-/// [`server_and_receiver_on_one_port`], `before_tcp` called with each number before the server
-/// is bound on it, and the number of attempts it took.
+/// [`server_and_receiver_on_one_port`], `before_udp` called with each number before the
+/// receiver is bound on it, and the number of attempts it took.
+///
+/// TCP is bound first, on port 0, and the number it gave is then asked of UDP. The other way
+/// round cannot survive Windows: its TCP exclusions are contiguous ranges that it does not take
+/// out of the UDP ephemeral pool, so UDP hands out consecutive numbers inside one and every
+/// attempt is refused with `os error 10013`, a band as wide as the loop (PITFALLS.md). A number
+/// the system itself gave for a TCP bind is never in an excluded range, so only the UDP side is
+/// left to retry, and that is a collision rather than a reservation. The numbers that failed
+/// are held until a pair is made, so the system moves on instead of offering them again, and
+/// the listener is handed to the server still bound: a port released is not a port kept.
 pub async fn server_and_receiver_on_one_port_with(
     routes: Vec<(&str, Reply)>,
-    mut before_tcp: impl FnMut(u16),
+    mut before_udp: impl FnMut(u16),
 ) -> ((SyntheticServer, OscReceiver), usize) {
     let mut refused = Vec::new();
+    let mut held = Vec::new();
     for attempt in 1..=ONE_PORT_ATTEMPTS {
-        let receiver = OscReceiver::bind("127.0.0.1:0").await.unwrap();
-        let port = receiver.port();
-        before_tcp(port);
-        match SyntheticServer::start(&format!("127.0.0.1:{port}"), routes.clone()).await {
-            Ok(server) => return ((server, receiver), attempt),
-            Err(e) => refused.push(format!("{port}: {e}")),
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        before_udp(port);
+        match OscReceiver::bind(&format!("127.0.0.1:{port}")).await {
+            Ok(receiver) => {
+                let server = SyntheticServer::serve_on(listener, routes.clone(), false).unwrap();
+                return ((server, receiver), attempt);
+            }
+            Err(e) => {
+                refused.push(format!("{port}: {e}"));
+                held.push(listener);
+            }
         }
     }
-    panic!("no port free in both UDP and TCP in {ONE_PORT_ATTEMPTS} attempts: {refused:?}")
+    panic!("no port free in both TCP and UDP in {ONE_PORT_ATTEMPTS} attempts: {refused:?}")
 }
 
 /// A document of `n` methods spread over containers of 100 children, as a JSON string.
