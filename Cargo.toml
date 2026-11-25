@@ -6,7 +6,7 @@ members = [
     "crates/oscq-inspector",
 ]
 
-# One version for every crate and for the release tag, checked by ci/check-release-version.sh.
+# One version for every crate and for the release tag, checked by ci/release-version.sh.
 [workspace.package]
 version = "0.6.1"
 authors = ["Julien Bayle"]
