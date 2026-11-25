@@ -90,6 +90,40 @@ fn with_causes(e: &(dyn std::error::Error + 'static)) -> String {
     text
 }
 
+/// A failure at the connection level, whatever step reqwest says it was in when it surfaced.
+/// A connection kept in the pool and reused after the server has gone is reset while the
+/// request is being sent, which reqwest reports as a send failure and Windows as
+/// `os error 10054`; the same server on Linux or macOS has usually closed the socket already,
+/// so a new connection is opened, refused, and reported as a connect failure. One thing
+/// happened, the server was not reached, and the window says so in one way (PRD 9.6,
+/// CLAUDE.md law 1) instead of leaking which step reqwest was in.
+fn is_connection_level(e: &(dyn std::error::Error + 'static)) -> bool {
+    use std::io::ErrorKind::{
+        BrokenPipe, ConnectionAborted, ConnectionRefused, ConnectionReset, HostUnreachable,
+        NetworkDown, NetworkUnreachable, NotConnected,
+    };
+    let mut cause = Some(e);
+    while let Some(c) = cause {
+        if let Some(io) = c.downcast_ref::<std::io::Error>()
+            && matches!(
+                io.kind(),
+                ConnectionReset
+                    | ConnectionRefused
+                    | ConnectionAborted
+                    | NotConnected
+                    | BrokenPipe
+                    | HostUnreachable
+                    | NetworkUnreachable
+                    | NetworkDown
+            )
+        {
+            return true;
+        }
+        cause = c.source();
+    }
+    false
+}
+
 /// A fetched address space document: the body exactly as received, and its parsed model.
 #[derive(Debug, Clone)]
 pub struct Document {
@@ -280,7 +314,7 @@ impl OscQueryClient {
             let e = e.without_url();
             if e.is_timeout() {
                 ClientError::Timeout { url: u.clone() }
-            } else if e.is_connect() {
+            } else if e.is_connect() || is_connection_level(&e) {
                 ClientError::Connect {
                     url: u.clone(),
                     source: e,
@@ -321,6 +355,56 @@ impl OscQueryClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An error whose cause is an `io::Error`, the shape reqwest hands back: it names the step
+    /// it was in and keeps the reason underneath.
+    #[derive(Debug)]
+    struct SendFailure(std::io::Error);
+
+    impl std::fmt::Display for SendFailure {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "error sending request")
+        }
+    }
+
+    impl std::error::Error for SendFailure {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+
+    /// Two Windows runs of CI on 2026-11-25, 45696633313 and 45706928879, failed in
+    /// `a_failed_connection_keeps_the_declared_access_and_says_nothing_can_be_sent` because a
+    /// pooled connection to a server that had gone was reset as the request was sent, `os error
+    /// 10054`, and reqwest called that a send failure rather than a connect failure. The reason
+    /// shown then began "request to ... failed" and carried reqwest's own steps, where every
+    /// other platform said "could not connect to". The reset is read out of the causes here.
+    #[test]
+    fn a_reset_under_a_send_failure_counts_as_a_connection_level_failure() {
+        let reset = SendFailure(std::io::Error::from(std::io::ErrorKind::ConnectionReset));
+        assert!(
+            is_connection_level(&reset),
+            "a reset under a send failure is the server being gone, not a new kind of fault"
+        );
+    }
+
+    #[test]
+    fn the_other_connection_level_kinds_count_and_a_document_fault_does_not() {
+        for kind in [
+            std::io::ErrorKind::ConnectionRefused,
+            std::io::ErrorKind::ConnectionAborted,
+            std::io::ErrorKind::NotConnected,
+            std::io::ErrorKind::BrokenPipe,
+        ] {
+            let e = SendFailure(std::io::Error::from(kind));
+            assert!(is_connection_level(&e), "{kind:?}");
+        }
+        let parse = SendFailure(std::io::Error::from(std::io::ErrorKind::InvalidData));
+        assert!(
+            !is_connection_level(&parse),
+            "a fault in what the server sent is not the server being unreachable"
+        );
+    }
 
     #[test]
     fn urls() {
