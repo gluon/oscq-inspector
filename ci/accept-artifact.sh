@@ -204,4 +204,4 @@ fi
 bundle "$dir"
 
 echo
-echo "ok: the bundle of $tag passes every check a script can make; Gatekeeper, the icon and the About box by the menu are for a person, docs/acceptance.md section 0"
+echo "ok: the bundle of $tag passes every check this script makes; the Developer ID signature, the notarisation and the stapled ticket are not among them, and Gatekeeper, the icon and the About box by the menu are for a person, docs/acceptance.md section 0"
