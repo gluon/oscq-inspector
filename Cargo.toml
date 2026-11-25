@@ -6,9 +6,9 @@ members = [
     "crates/oscq-inspector",
 ]
 
-# One version for every crate and for the release tag, checked by ci/check-release-version.sh.
+# One version for every crate and for the release tag, checked by ci/release-version.sh.
 [workspace.package]
-version = "0.6.0"
+version = "0.7.0"
 authors = ["Julien Bayle"]
 license = "GPL-3.0-or-later"
 repository = "https://github.com/gluon/oscq-inspector"

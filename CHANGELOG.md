@@ -4,9 +4,13 @@ Every published version of OSCQuery Inspector, formerly void-oscq and published 
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-25
+
 ### Added
 
 - **Every warning the status bar counts, it now names.** The node count said `3 warnings` and nothing more: not which attribute a server had sent unusably, not what it held. Hovering the count now gives one line per warning, an unusable attribute as the attribute, the value received and that it counts as absent, so a `WS_IP` of `""` is read on screen instead of being dropped in silence. The diagnostics of `HOST_INFO` reach the window for this, having been discarded before it; they come first, being the server's own rather than a node's. A warning of the `HOST_INFO` stands there without a tree, where the zone used to show nothing at all, which was the one case it mattered most: a server whose tree never loads. The count is written in words rather than always in the plural, one warning and not `1 warnings`.
+- **The synthetic server can be handed a `HOST_INFO` and serve it as it is.** `--host-info FILE` serves the JSON of FILE as the whole `HOST_INFO`, byte for byte, in place of the one the server writes itself: the way to put a `HOST_INFO` no server should send in front of the window, an attribute present and empty for one, a port that is not a number, an extension declared and not answered. `--name` then does not reach it, what it declares, `EXTENSIONS` included, is the file's, and the server prints the file it is serving so that there is no doubt which `HOST_INFO` is in play. Beside the example, `host-info-empty-ws-ip.json` is a `WS_IP` sent as an empty string and `one-method.json` a document of a single method. A tool of this repository and not of the application: it is what makes the fix below provable on the built window and not in the headless tests alone.
+- **Two manual checks for an unusable `HOST_INFO` attribute**, in [docs/acceptance.md](docs/acceptance.md). Section 3b puts the empty `WS_IP` in front of the built application from the synthetic server above and reads the count, the tooltip and the state; section 3c is the check 3b states it cannot make, the same attribute from a server nobody here wrote. Section 3c was run on the Mac on 2026-11-24 against `ossia-prism 2.1.0+prism.18` in Max, which joins the table of [docs/compatibility.md](docs/compatibility.md) with what it serves and what it does not: that reading is in the acceptance record, on a debug build and not on a release artifact.
 
 ### Changed
 
@@ -193,7 +197,8 @@ The first version whose files are on the Releases page.
 
 - First release: discovery over Bonjour and manual entries, the address space as a tree, values read and sent with widgets fitting their types, values live over the WebSocket where the server pushes them, the JSON and Traffic tabs. Unsigned artifacts for macOS (universal), Windows and Linux.
 
-[Unreleased]: https://github.com/gluon/oscq-inspector/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/gluon/oscq-inspector/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/gluon/oscq-inspector/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/gluon/oscq-inspector/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/gluon/oscq-inspector/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/gluon/oscq-inspector/compare/v0.4.2...v0.5.0

@@ -2709,7 +2709,7 @@ dependencies = [
 
 [[package]]
 name = "oscq-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "flume",
@@ -2727,7 +2727,7 @@ dependencies = [
 
 [[package]]
 name = "oscq-discovery"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "flume",
  "if-addrs",
@@ -2739,7 +2739,7 @@ dependencies = [
 
 [[package]]
 name = "oscq-inspector"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "eframe",
